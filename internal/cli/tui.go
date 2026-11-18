@@ -3,9 +3,11 @@ package cli
 import (
 	"bytes"
 	"context"
+	"maps"
 	"os"
 	"os/signal"
 	"strings"
+	"sync/atomic"
 	"syscall"
 
 	"bupt.local/cli/internal/config"
@@ -52,11 +54,28 @@ func (a *app) openTUI(cmd *cobra.Command, cached bool, area string) error {
 	}
 	ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	// Publish a new snapshot only when the presets page requests a refresh.
+	// An unrelated edit on disk must not change a pending command's preview.
+	var session atomic.Pointer[config.Config]
+	session.Store(a.cfg)
+	sessionConfig := func(config.Options) (*config.Config, error) { return session.Load(), nil }
+	reloadPresets := func() (*config.Config, error) {
+		local := *a
+		local.profile = a.cfg.Selected
+		local.options.ConfigOptions.Overrides = maps.Clone(a.options.ConfigOptions.Overrides)
+		if err := local.loadConfig(cmd); err != nil {
+			return nil, err
+		}
+		current := *a.cfg
+		current.Presets, current.DefaultPreset = local.cfg.Presets, local.cfg.DefaultPreset
+		session.Store(&current)
+		return &current, nil
+	}
 	// After temporarily releasing the screen, use the same terminal handlers
 	// (QR, SSH, password input and file copies) and the same selected account.
 	foreground := func(ctx context.Context, args []string) error {
 		opts := a.options
-		opts.LoadConfig = func(config.Options) (*config.Config, error) { return a.cfg, nil }
+		opts.LoadConfig = sessionConfig
 		opts.Hooks.NewClient = func(*config.Config, string) (Backend, error) { return b, nil }
 		child := NewRoot(opts)
 		prefix := []string{}
@@ -75,7 +94,7 @@ func (a *app) openTUI(cmd *cobra.Command, cached bool, area string) error {
 		opts.Out = &text
 		opts.Err = &text
 		root := NewRoot(opts)
-		root.SetArgs([]string{"help", name})
+		root.SetArgs(append([]string{"help"}, strings.Fields(name)...))
 		if err := root.ExecuteContext(ctx); err != nil {
 			return err.Error()
 		}
@@ -83,9 +102,9 @@ func (a *app) openTUI(cmd *cobra.Command, cached bool, area string) error {
 	}
 	capture := func(ctx context.Context, args []string) (string, error) {
 		opts := a.options
-		opts.LoadConfig = func(config.Options) (*config.Config, error) { return a.cfg, nil }
+		opts.LoadConfig = sessionConfig
 		opts.Hooks.NewClient = func(*config.Config, string) (Backend, error) { return b, nil }
 		return captureCommand(ctx, opts, args)
 	}
-	return tui.Run(ctx, tui.Options{Commands: a.tuiCommands(cmd), Capture: capture, InitialArea: area, Explain: explain, Config: a.cfg, Backend: b, Foreground: foreground, Cached: cached, NoColor: a.noColor || strings.TrimSpace(os.Getenv("NO_COLOR")) != "", Timeout: a.timeout})
+	return tui.Run(ctx, tui.Options{ReloadPresets: reloadPresets, Commands: a.tuiCommands(cmd), Capture: capture, InitialArea: area, Explain: explain, Config: a.cfg, Backend: b, Foreground: foreground, Cached: cached, NoColor: a.noColor || strings.TrimSpace(os.Getenv("NO_COLOR")) != "", Timeout: a.timeout})
 }

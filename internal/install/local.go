@@ -203,7 +203,7 @@ func (h *handler) setup(ctx context.Context, cfg *config.Config, method string, 
 		addBackup(&backups, backup)
 	}
 	result["backups"] = backups
-	result["recovery"] = localRecovery(record, cfg, keyPath)
+	result["recovery"] = localRecovery(record, &updated, keyPath)
 	if start {
 		if err = h.waitReady(ctx, &updated); err != nil {
 			return result, err
@@ -431,14 +431,24 @@ func (h *handler) stop(ctx context.Context, cfg *config.Config, p map[string]any
 }
 
 func localRecovery(r serviceRecord, cfg *config.Config, keyPath string) map[string]any {
-	info := map[string]any{"stop": []string{"bupt", "--config", cfg.Paths.ConfigFile, "agent", "stop"}, "preserve": []string{cfg.Paths.ConfigFile, cfg.Paths.DataDir, cfg.Paths.StateDir, keyPath}, "note": "Stopping or uninstalling the controller retains credentials, cached routes and instance tunnels; copy the master key with encrypted data for recovery."}
+	stop := []string{
+		r.Executable, "--no-project", "--config", cfg.Paths.ConfigFile,
+		"--state-dir", cfg.Paths.StateDir, "--data-dir", cfg.Paths.DataDir,
+		"--profile", cfg.Selected, "--controller", "local",
+		"--socket", cfg.Profiles[cfg.Selected].ControllerSocket, "agent", "stop",
+	}
+	info := map[string]any{
+		"stop":     stop,
+		"preserve": []string{cfg.Paths.ConfigFile, cfg.Paths.DataDir, cfg.Paths.StateDir, keyPath},
+		"note":     "Stopping or uninstalling the controller retains credentials, cached routes and instance tunnels. Copy the master key with encrypted data for recovery.",
+	}
 	switch r.Manager {
 	case "launchd":
-		info["uninstall"] = []string{"bupt agent stop", "remove the managed launchd file: " + r.Path}
+		info["uninstall"] = []string{"run the stop command in recovery.stop", "remove the managed launchd file at " + r.Path}
 	case "systemd-user":
 		info["uninstall"] = []string{"systemctl --user disable --now " + r.Name + ".service", "remove the managed unit: " + r.Path, "systemctl --user daemon-reload"}
 	default:
-		info["uninstall"] = []string{"bupt agent stop", "remove the bupt executable only after preserving data"}
+		info["uninstall"] = []string{"run the stop command in recovery.stop", "remove the bupt executable only after preserving data"}
 	}
 	return info
 }

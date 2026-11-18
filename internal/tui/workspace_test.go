@@ -166,7 +166,7 @@ func TestCachedBrowsingAndCancelOfSlowList(t *testing.T) {
 	w.refreshStatus(true)
 	waitFor(t, w, func() bool { return !w.refreshing })
 	click(t, w, "compute")
-	click(t, w, "files")
+	click(t, w, "group/data")
 	click(t, w, "stores")
 	if w.current().problem == "" || len(f.observed()) != 1 {
 		t.Fatal(f.observed())
@@ -185,7 +185,7 @@ func TestCachedBrowsingAndCancelOfSlowList(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("leaving a page did not cancel its fetch")
 	}
-	if w.current().title != "存储与文件" || w.current().key != "stores" {
+	if w.current().title != "裸算力服务" || w.current().key != "stores" {
 		t.Fatal(w.current().title, w.current().key)
 	}
 }
@@ -241,7 +241,7 @@ func TestLoginMenuOffersBothSSOMethodsWithoutStartingEither(t *testing.T) {
 		t.Fatal("login choices did not reflect the CLI")
 	}
 	w.back()
-	if w.current().title != "账号与平台" {
+	if w.current().title != "账号状态与配置" {
 		t.Fatal("login menu lost its place")
 	}
 }

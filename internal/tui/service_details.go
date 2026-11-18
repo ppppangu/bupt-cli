@@ -2,82 +2,12 @@ package tui
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"bupt.local/cli/internal/domain"
 )
 
-func (w *workspace) portalNews(v *content, page domain.PortalPage) {
-	items, _ := page.Data["items"].([]any)
-	for _, obj := range items {
-		article := object(obj)
-		id := value(article["id"])
-		if id == "" {
-			continue
-		}
-		title := value(article["title"])
-		status := "未读"
-		if article["read"] == true {
-			status = "已读"
-		}
-		cmd := cmdline("news", "show", id)
-		v.rows = append(v.rows, link(id, title, status+" · "+value(article["publishedAt"]), cmd, func() { w.portalPage("news.show", title, cmd, map[string]any{"target": id}) }))
-	}
-	if next := value(page.Data["nextCursor"]); next != "" {
-		v.rows = append(v.rows, link("next", "下一页", "", cmdline("news", "--cursor", next), func() {
-			w.portalPage("news", "平台动态", cmdline("news", "--cursor", next), map[string]any{"cursor": next})
-		}))
-	}
-	if !w.Cached && len(items) > 0 {
-		v.rows = append(v.rows, link("all", "全部标记已读", "", "bupt news read all", func() {
-			w.portalConfirm("全部标记已读", []string{"news", "read", "all"}, map[string]any{"action": "news.read", "target": "all"}, func() { w.portalPage("news", "平台动态", "bupt news", nil) })
-		}))
-	}
-}
-func (w *workspace) article(v *content, cmd string, p domain.PortalPage) {
-	item := p.Data
-	if m := object(item["item"]); m != nil {
-		item = m
-	}
-	title, id := value(item["title"]), value(item["id"])
-	v.facts = append(v.facts, title, value(item["publishedAt"]))
-	text := value(item["body"])
-	if text == "" {
-		text = value(item["content"])
-	}
-	if text == "" {
-		text = value(item["markdown"])
-	}
-	if text != "" {
-		v.rows = append(v.rows, link("body", "阅读全文", "", cmd, func() { w.textPage(title, cmd, text) }))
-	} else {
-		v.rows = append(v.rows, link("detail", "动态详情", "", cmd, func() { w.objectPage(title, cmd, item) }))
-	}
-	if !w.Cached && id != "" {
-		args := []string{"news", "read", id}
-		v.rows = append(v.rows, link("read", "标记为已读", "", cmdline(args...), func() {
-			w.portalConfirm("标记为已读", args, map[string]any{"action": "news.read", "target": id}, func() { w.portalPage("news", "平台动态", "bupt news", nil) })
-		}))
-	}
-}
-func (w *workspace) agreement(v *content, p domain.PortalPage) {
-	data := p.Data
-	if m := object(data["agreement"]); m != nil {
-		data = m
-	}
-	id := value(data["id"])
-	title := value(data["title"])
-	if title == "" {
-		title = "服务协议"
-	}
-	v.rows = append(v.rows, link("text", "阅读"+title, "版本 "+id, "bupt agreement", func() { w.objectPage(title, "bupt agreement", data) }))
-	if !w.Cached && p.Account != nil && p.Account.ConsentRequired && id != "" {
-		args := []string{"agreement", "accept", id, "--confirm", id}
-		v.rows = append(v.rows, link("accept", "接受此版本", id, cmdline(args...), func() {
-			w.portalConfirm("接受协议 "+id, args, map[string]any{"action": "agreement.accept", "target": id, "confirm": id}, func() { w.portalPage("agreement", "服务协议", "bupt agreement", nil) })
-		}))
-	}
-}
 func (w *workspace) lifecycleRows(v *content, i domain.Instance) {
 	if w.Cached {
 		return
@@ -112,37 +42,28 @@ func (w *workspace) nodeSnapshots(i domain.Instance, n domain.Node) {
 	id, node := string(i.ID), string(n.ID)
 	args := []string{"compute", "snapshot", "ls", id, "--node", node}
 	w.local("节点快照", cmdline(args...), func() content {
+		current, nodeData, found := w.node(i.ID, n.ID)
+		if !found {
+			return content{empty: "当前实例中已找不到此节点。"}
+		}
 		v := content{empty: "此节点没有已记录的快照。"}
-		for _, snap := range n.Snapshots {
-			sid := value(snap["eid"])
+		for _, snap := range nodeData.Snapshots {
+			sid := snapshotID(snap)
 			if sid == "" {
-				sid = value(snap["id"])
+				continue
 			}
 			name := value(snap["name"])
 			v.rows = append(v.rows, link(sid, name, value(snap["state"]), cmdline(args...), func() {
-				w.local(name, cmdline(args...), func() content {
-					cv := content{facts: []string{fmt.Sprintf("实例 %s · 节点 %s · 快照 %s", id, node, sid)}}
-					if !w.Cached {
-						for _, act := range []string{"restore", "delete"} {
-							op := act
-							label := map[string]string{"restore": "从快照恢复", "delete": "删除快照"}[op]
-							a := []string{"compute", "snapshot", op, id, sid, "--node", node, "--no-wait"}
-							cv.rows = append(cv.rows, link(op, label, name, cmdline(a...), func() {
-								w.review(change{title: label, method: "snapshot." + op, args: a, params: map[string]any{"target": id, "node": node, "snapshot_id": sid}, facts: []string{name + " · " + sid}, deleteName: name, task: true})
-							}))
-						}
-					}
-					return cv
-				})
+				w.snapshotPage(i.ID, n.ID, sid, name)
 			}))
 		}
-		if !w.Cached {
+		if !w.Cached && canChangeSnapshots(current, nodeData) {
 			v.rows = append(v.rows, link("new", "创建节点快照", "", "bupt compute snapshot create", func() {
 				w.edit("快照名称", "", func(name string) error {
 					if strings.TrimSpace(name) == "" {
 						return fmt.Errorf("请输入快照名称")
 					}
-					a := []string{"compute", "snapshot", "create", id, name, "--node", node, "--no-wait"}
+					a := []string{"compute", "snapshot", "create", "--node", node, "--no-wait", "--", id, name}
 					w.review(change{title: "创建快照", method: "snapshot.create", args: a, params: map[string]any{"target": id, "node": node, "name": name}, facts: []string{name, "实例 " + id + " · 节点 " + node}, task: true})
 					return nil
 				})
@@ -150,4 +71,41 @@ func (w *workspace) nodeSnapshots(i domain.Instance, n domain.Node) {
 		}
 		return v
 	})
+}
+
+func snapshotID(record map[string]any) string {
+	if id := value(record["eid"]); id != "" {
+		return id
+	}
+	return value(record["id"])
+}
+
+func (w *workspace) snapshotPage(instanceID, nodeID domain.ID, sid, name string) {
+	id, node := string(instanceID), string(nodeID)
+	w.local(name, cmdline("compute", "snapshot", "ls", id, "--node", node), func() content {
+		i, n, ok := w.node(instanceID, nodeID)
+		if !ok {
+			return content{empty: "当前实例中已找不到此节点。"}
+		}
+		index := slices.IndexFunc(n.Snapshots, func(s map[string]any) bool { return snapshotID(s) == sid })
+		if index < 0 {
+			return content{empty: "此快照已移除。"}
+		}
+		name := value(n.Snapshots[index]["name"])
+		v := content{facts: []string{name, fmt.Sprintf("实例 %s · 节点 %s · 快照 %s", id, node, sid)}}
+		if w.Cached || name == "" || !canChangeSnapshots(i, n) {
+			return v
+		}
+		for _, a := range []struct{ op, title string }{{"restore", "从快照恢复"}, {"delete", "删除快照"}} {
+			args := []string{"compute", "snapshot", a.op, "--node", node, "--no-wait", "--", id, sid}
+			v.rows = append(v.rows, link(a.op, a.title, name, cmdline(args...), func() {
+				w.review(change{title: a.title, method: "snapshot." + a.op, args: args, params: map[string]any{"target": id, "node": node, "snapshot_id": sid}, facts: []string{name + " · " + sid}, deleteName: name, task: true})
+			}))
+		}
+		return v
+	})
+}
+
+func canChangeSnapshots(i domain.Instance, n domain.Node) bool {
+	return n.Type == "qemu" && (i.State == "stopped" || i.State == "approved")
 }

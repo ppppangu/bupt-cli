@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -23,8 +24,40 @@ func (w *workspace) quotas() {
 		for _, m := range w.report.Capacity {
 			v.rows = append(v.rows, row{key: m.Scope + "/" + m.Resource, title: m.Resource, detail: m.Amounts() + " · " + m.Scope})
 		}
+		if !w.Cached {
+			v.rows = append(v.rows, link("request", "申请调整额度…", "选择个人算力或存储额度", "bupt compute quota request", w.quotaRequests))
+		}
 		return v
 	})
+}
+
+func (w *workspace) quotaRequests() {
+	w.push(queryPage(w, "选择申请额度", "bupt compute quota", "quota.get", nil, true, func(quotas map[string]any) content {
+		v := content{empty: "没有可申请调整的额度。"}
+		for _, key := range orderedKeys(quotas) {
+			kind, id, ok := strings.Cut(key, ":")
+			quota, valid := quotas[key].(map[string]any)
+			if !ok || !valid || (kind != "UserQuota" && kind != "UserStorageQuota") {
+				continue
+			}
+			if _, err := strconv.ParseUint(id, 10, 64); err != nil {
+				continue
+			}
+			title, detail := "算力额度", "CPU、GPU、内存和实例数量"
+			scope, _ := quota["domain"].(string)
+			if kind == "UserStorageQuota" {
+				title, detail = "存储额度", "块存储与文件空间"
+				scope, _ = quota["storageName"].(string)
+			}
+			if scope != "" {
+				title += " · " + scope
+			}
+			r := w.contextAction(title, detail+" · ID "+id, []string{"compute", "quota", "request"}, id)
+			r.key = key
+			v.rows = append(v.rows, r)
+		}
+		return v
+	}))
 }
 func (w *workspace) catalog() {
 	p := queryPage(w, "资源池与模板", "bupt resources", "resources.overview", map[string]any{"cached": w.Cached}, false, func(result domain.ResourceOverview) content {
@@ -138,6 +171,10 @@ func (w *workspace) specPage(s domain.Spec) {
 		v := content{facts: []string{strings.TrimSpace(s.Name+" "+s.Version) + "   ·   " + value(s.Options["poolDisplayName"]), resourceSummary(object(s.Options["resourceSummary"]))}}
 		v.rows = []row{link("create", "用此模板创建…", "下一步填写名称和资源", cmdline("instance", "create", "NAME", "--spec-id", string(s.ID)), func() { w.createForm(s, nil) }),
 			link("estimate", "估算模板默认价格", "读取平台估价", cmdline("estimate", "--spec-id", string(s.ID)), func() { w.estimate(s.ID, nil) })}
+		v.rows = append(v.rows,
+			w.contextAction("自定义资源估价", "按所选 CPU、GPU 和内存查询价格", []string{"compute", "catalog", "estimate"}, "--spec-id="+string(s.ID)),
+			w.contextAction("保存模板预设", "为常用配置命名", []string{"compute", "preset", "set"}, "--spec-id="+string(s.ID)),
+		)
 		v.rows = append(v.rows, constraintRows(s.Options["resourceConstraints"])...)
 		if d := seconds(s.Options["expDuration"]); d != "" {
 			v.rows = append(v.rows, info("平台默认时长", d))
@@ -177,9 +214,27 @@ func (w *workspace) estimate(id domain.ID, preset *domain.Preset) {
 		return v
 	}))
 }
+func (w *workspace) refreshPresets() {
+	if w.ReloadPresets == nil {
+		return
+	}
+	fresh, err := w.ReloadPresets()
+	if err != nil {
+		w.notice = "读取预设失败 · " + err.Error()
+		return
+	}
+	current := *w.Config
+	current.Presets = fresh.Presets
+	current.DefaultPreset = fresh.DefaultPreset
+	w.Config = &current
+}
+
 func (w *workspace) presets() {
 	w.local("我的预设", "bupt preset ls", func() content {
 		v := content{empty: "还没有预设。可用 bupt preset set NAME --from INSTANCE 保存常用配置。"}
+		if !w.Cached {
+			v.rows = append(v.rows, w.contextAction("新建资源预设", "选择模板或实例作为来源", []string{"compute", "preset", "set"}))
+		}
 		for _, name := range orderedKeys(w.Config.Presets) {
 			p := w.Config.Presets[name]
 			title := name
@@ -188,10 +243,21 @@ func (w *workspace) presets() {
 			}
 			v.rows = append(v.rows, link(name, title, policyText(p.Policy), cmdline("preset", "show", name), func() {
 				w.local(name, cmdline("preset", "show", name), func() content {
+					p, exists := w.Config.Presets[name]
+					if !exists {
+						return content{empty: "此预设已移除。"}
+					}
 					c := content{facts: []string{"模板 " + string(p.SpecID), policyText(p.Policy)}}
 					if !w.Cached {
 						c.rows = append(c.rows, link("create", "按预设创建…", "预览后提交", cmdline("instance", "create", "NAME", "--preset", name), func() { w.createForm(domain.Spec{ID: p.SpecID}, &p) }),
 							link("estimate", "估算费用", "读取预设资源的价格", cmdline("estimate", "--preset", name), func() { w.estimate(p.SpecID, &p) }))
+						c.rows = append(c.rows, w.contextAction("编辑预设", "调整资源与托管策略", []string{"compute", "preset", "set"}, name))
+						if w.Config.DefaultPreset == name {
+							c.rows = append(c.rows, w.contextAction("取消默认预设", "新建实例时不再自动使用此预设", []string{"compute", "preset", "use"}, "-"))
+						} else {
+							c.rows = append(c.rows, w.contextAction("设为默认", "新建实例优先使用此配置", []string{"compute", "preset", "use"}, name),
+								w.contextAction("移除预设", "从选定的配置文件删除", []string{"compute", "preset", "rm"}, name))
+						}
 					}
 					for _, group := range orderedKeys(p.Constraints) {
 						b, _ := json.Marshal(p.Constraints[group])
@@ -208,6 +274,7 @@ func (w *workspace) presets() {
 		}
 		return v
 	})
+	w.refreshPresets()
 }
 func policyText(p domain.RunPolicy) string {
 	limit := p.MaxRuntime

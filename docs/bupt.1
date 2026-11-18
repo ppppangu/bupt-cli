@@ -35,6 +35,7 @@ Configure the preset from the actual platform catalogue before allocation.
 Outside the school network, a reachable direct SSH route or a configured
 SSH relay is required. Automatic peer-to-peer NAT traversal is not provided.
 .SH DISCOVERY
+Use bupt help tutorial for the offline terminal guide.
 With no arguments, bupt prints the command summary and exits.
 Run bupt tui to open the interactive platform overview.
 Use arrows, Enter and Escape to browse, / to filter, r to refresh, and q to quit.
@@ -195,19 +196,21 @@ CLI usage. 130 indicates interruption. Native exec and completed jobs preserve
 the remote command's exit status, so those statuses can overlap local codes.
 .SH FILES
 .TP
-.I $XDG_CONFIG_HOME/bupt/config.toml
-Trusted profiles and non-secret defaults; default base is ~/.config.
+.I ~/.bupt/config.toml
+Trusted profiles and non-secret defaults. An explicit XDG_CONFIG_HOME overrides this directory.
 .TP
 .I .bupt.toml
 Project selection, presets, and runtime policy. Trusted endpoint and identity
 settings are not accepted from this file.
 .TP
-.I $XDG_STATE_HOME/bupt/
-Controller state database and local socket; default base is ~/.local/state.
+.I ~/.bupt/state/
+Controller database, Unix socket and private per-profile status.json snapshots. An explicit XDG_STATE_HOME overrides this directory.
 .TP
-.I $XDG_DATA_HOME/bupt/
-Encrypted credentials, protected master key, and dedicated key files;
-default base is ~/.local/share.
+.I ~/.bupt/data/
+Encrypted credentials, protected master key and dedicated keys. An explicit XDG_DATA_HOME overrides this directory.
+.TP
+.I ~/.bupt/tui.toml
+Device-local header preferences and automatic account checks.
 .SH EXAMPLES
 .nf
 bupt run --preset gpu-small --max-runtime 4h -- python3 train.py

@@ -58,8 +58,10 @@ func portalCacheKey(ns, sid string, v any) string {
 	return fmt.Sprintf("%s%x", ns, sha256.Sum256(domain.Result([]any{sid, v})))
 }
 func (c *Controller) portalAccount(ctx context.Context, profile, ns string, b portalBackend, i *portalIndex) (domain.PortalAccount, error) {
+	ticket := c.accountTicket(profile)
 	a, e := b.PortalAccount(ctx)
 	if e != nil {
+		ticket.failure(e, true)
 		code := managedCode(e)
 		if code == "AUTH_REQUIRED" || code == "AUTH_EXPIRED" || code == "GATEWAY_AUTH_EXPIRED" {
 			_ = c.Vault.Put("platform/"+profile+"/pending-service", "portal")
@@ -82,7 +84,11 @@ func (c *Controller) portalAccount(ctx context.Context, profile, ns string, b po
 	i.Summary.State = "authenticated"
 	i.Summary.CheckedAt = time.Now().UTC()
 	i.Summary.Balance = a.Balance
-	return a, c.Vault.Put(ns+"index", *i)
+	e = c.Vault.Put(ns+"index", *i)
+	if e == nil {
+		ticket.observePortal(a, false)
+	}
+	return a, e
 }
 func (c *Controller) PortalRead(ctx context.Context, profile string, p Params) (domain.PortalPage, error) {
 	defer c.lockLogin(profile)()
@@ -100,6 +106,9 @@ func (c *Controller) portalReadLocked(ctx context.Context, profile string, p Par
 	if q.Days == 0 && (q.Section == "usage" || q.Section == "overview") {
 		q.Days = 30
 	}
+	if q.Section == "news" && q.Limit <= 0 {
+		q.Limit = 20
+	}
 	if c.Vault == nil {
 		return domain.PortalPage{}, domain.E("SECRET_STORE", "门户需要控制器的私有存储。")
 	}
@@ -111,7 +120,19 @@ func (c *Controller) portalReadLocked(ctx context.Context, profile string, p Par
 	var page domain.PortalPage
 	if idx.SID != "" {
 		e = c.Vault.Get(portalCacheKey(ns, idx.SID, q), &page)
+		if q.Section == "news" && q.Limit == 20 && (state.IsNotFound(e) || errors.Is(e, os.ErrNotExist)) {
+			legacy := q
+			legacy.Limit = 0
+			e = c.Vault.Get(portalCacheKey(ns, idx.SID, legacy), &page)
+		}
 		if e == nil && (p.Bool("cached") || !p.Bool("refresh") && idx.Summary.State == "authenticated" && page.ObservedAt.After(idx.ChangedAt) && time.Since(page.ObservedAt) < time.Minute) {
+			if q.Section == "guide" {
+				base, _ := page.Data["base_url"].(string)
+				page.Data, e = platform.ModelGuideData(base, c.Configuration().Profiles[profile].PortalURL)
+				if e != nil {
+					return page, e
+				}
+			}
 			page.Source = "cached"
 			if !idx.ChangedAt.IsZero() && page.ObservedAt.Before(idx.ChangedAt) {
 				page.Warnings = append(page.Warnings, "此快照早于最近一次会话或对象变更。可用 --refresh 更新。")
@@ -138,9 +159,14 @@ func (c *Controller) portalReadLocked(ctx context.Context, profile string, p Par
 			return domain.PortalPage{}, e
 		}
 	}
+	ticket := c.accountTicket(profile)
 	page, e = b.PortalPage(ctx, account, q)
 	if e != nil {
+		ticket.failure(e, true)
 		return page, e
+	}
+	if err := page.ValidateContent(); err != nil {
+		return page, err
 	}
 	for n, k := range page.Keys {
 		var marker bool
@@ -241,7 +267,11 @@ func (c *Controller) PortalWrite(ctx context.Context, profile string, p Params) 
 	if e = c.Vault.Put(id, receipt); e != nil {
 		return nil, e
 	}
+	ticket := c.accountTicket(profile)
 	key, secret, e := b.PortalChange(ctx, op)
+	if e != nil {
+		ticket.failure(e, true)
+	}
 	if e != nil {
 		if definitivePortalRejection(e) {
 			_ = c.Vault.Delete(id)

@@ -138,6 +138,10 @@ func (c *Controller) serveConnection(ctx context.Context, n net.Conn) {
 		_ = wire.WriteJSON(n, domain.RPCResponse{ID: req.ID, Error: rpcError(e)})
 		return
 	}
+	if req.Method == "account.watch" {
+		c.watchAccount(ctx, req, p, reader, n)
+		return
+	}
 	if c.HandleStream(ctx, req, p, reader, n) {
 		return
 	}

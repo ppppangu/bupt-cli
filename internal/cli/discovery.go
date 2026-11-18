@@ -2,13 +2,13 @@ package cli
 
 import (
 	"fmt"
-	"github.com/spf13/pflag"
 	"io"
 	"slices"
 	"strings"
 
 	"bupt.local/cli/internal/navigation"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 )
 
 // The root prints the short command index. The full index is generated from
@@ -42,12 +42,32 @@ func installDiscovery(root *cobra.Command) {
 		fmt.Fprintln(w, "    instance           实例、预留、期限与节点")
 		fmt.Fprintln(w, "    quota              账号与存储配额")
 		fmt.Fprintln(w, "\nbupt help api 或 bupt help compute 查看业务命令。bupt help resources 查看模板相关快捷命令。")
-		fmt.Fprintln(w, "\nbupt help --all  查看完整命令树和全局选项")
+		fmt.Fprintln(w, "\nbupt help tutorial  阅读教程\nbupt help --all  查看完整命令树和全局选项")
 	})
 	help := &cobra.Command{Use: "help [TOPIC|COMMAND...]", Short: "Browse commands by purpose or show the full command tree", Annotations: map[string]string{"skip_config": "true"}}
 	all := help.Flags().BoolP("all", "a", false, "Show the complete command tree and global options")
 	help.RunE = func(cmd *cobra.Command, args []string) error {
 		w := cmd.OutOrStdout()
+		if len(args) > 0 && args[0] == "tutorial" {
+			if len(args) > 2 {
+				return usage("bupt help tutorial [TOPIC]")
+			}
+			if len(args) == 2 {
+				for _, l := range navigation.Lessons {
+					if l.ID == args[1] {
+						fmt.Fprintf(w, "%s\n\n%s\n", l.Title, l.Text)
+						return nil
+					}
+				}
+				return usage("unknown tutorial topic %q", args[1])
+			}
+			fmt.Fprintln(w, "教程说明\n\n用法  bupt help tutorial TOPIC")
+			for _, l := range navigation.Lessons {
+				fmt.Fprintf(w, "  %-8s %s\n", l.ID, l.Title)
+			}
+			fmt.Fprintln(w, "\nbupt help --all  完整命令树")
+			return nil
+		}
 		if *all && len(args) == 0 {
 			for _, area := range navigation.Areas {
 				printArea(w, root, area, true)

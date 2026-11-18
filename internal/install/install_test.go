@@ -206,13 +206,24 @@ func TestUserServiceTemplatesAndStop(t *testing.T) {
 			h, cfg, calls := testSetup(t)
 			h.goos = goos
 			h.executable = filepath.Join(h.home, "bin dir", "bupt&test")
-			result, err := h.handle(context.Background(), cfg, "init", map[string]any{}, nil, nil, nil)
+			cfg.Paths.StateDir = filepath.Join(h.home, "custom state")
+			cfg.Paths.DataDir = filepath.Join(h.home, "custom data")
+			socket := filepath.Join(cfg.Paths.StateDir, "worker.sock")
+			result, err := h.handle(context.Background(), cfg, "init", map[string]any{"socket": socket}, nil, nil, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
 			m := result.(map[string]any)
 			if m["started"] != true || m["installed"] != true {
 				t.Fatal(m)
+			}
+			wantStop := []string{
+				h.executable, "--no-project", "--config", cfg.Paths.ConfigFile,
+				"--state-dir", cfg.Paths.StateDir, "--data-dir", cfg.Paths.DataDir,
+				"--profile", cfg.Selected, "--controller", "local", "--socket", socket, "agent", "stop",
+			}
+			if stop := m["recovery"].(map[string]any)["stop"]; !reflect.DeepEqual(stop, wantStop) {
+				t.Fatalf("recovery stop = %v, want %v", stop, wantStop)
 			}
 			data, err := os.ReadFile(m["service_file"].(string))
 			if err != nil {

@@ -82,6 +82,17 @@ func (w *workspace) runPage(id string) {
 		if r.LastTaskID != "" {
 			v.rows = append(v.rows, link("receipt", "最近操作回执", r.LastTaskID, cmdline("task", "show", r.LastTaskID), func() { w.taskPage(r.LastTaskID) }))
 		}
+		if active(r) && !w.Cached {
+			if r.Kind == "job" {
+				v.rows = append(v.rows,
+					w.contextAction("跟随作业输出", "在前台持续查看输出", []string{"compute", "run", "attach"}, id),
+					w.contextAction("等待作业结束", "等待并取得作业退出状态", []string{"compute", "run", "wait"}, id),
+					w.contextAction("调整作业策略", "设置托管时限、续期与清理方式", []string{"compute", "run", "update"}, id),
+				)
+			} else {
+				v.rows = append(v.rows, w.contextAction("等待托管状态", "选择完成条件", []string{"compute", "wait"}, id))
+			}
+		}
 		if active(r) && !w.Cached && r.Kind == "job" {
 			v.rows = append(v.rows, link("cancel", "取消作业…", "按当前周期策略清理", cmdline("job", "cancel", id), func() { w.cancelReview(r) }))
 		}
@@ -110,8 +121,15 @@ func (w *workspace) taskPage(id string) {
 		if t.Result != nil {
 			v.rows = append(v.rows, info("平台返回码", fmt.Sprint(t.Result.Code)), info("结果", t.Result.Message))
 		}
-		if id := t.Request.TargetID; id != "" {
-			v.rows = append(v.rows, link("target", "所属实例", string(id), cmdline("inspect", string(id)), func() { w.instancePage(id) }))
+		if !w.Cached && slices.Contains([]string{"prepared", "submitted", "uncertain", "auth_required"}, t.State) {
+			v.rows = append(v.rows, w.contextAction("等待操作完成", "等待控制器确认此回执的结果", []string{"compute", "task", "wait"}, id))
+		}
+		target := t.Request.TargetID
+		if t.Result != nil && t.Result.InstanceID != "" {
+			target = t.Result.InstanceID
+		}
+		if _, ok := w.instance(target); ok {
+			v.rows = append(v.rows, link("target", "所属实例", string(target), cmdline("inspect", string(target)), func() { w.instancePage(target) }))
 		}
 		return v
 	}))
@@ -121,8 +139,9 @@ func (w *workspace) audit() {
 		v := content{empty: "暂无控制器事件。"}
 		events = slices.Clone(events)
 		slices.SortStableFunc(events, func(a, b domain.AuditEvent) int { return b.Time.Compare(a.Time) })
-		for i, e := range events {
-			v.rows = append(v.rows, link(fmt.Sprint(i), e.Kind, moment(e.Time)+" · "+e.Message, "bupt audit ls", func() { w.textPage(e.Kind, "bupt audit ls", moment(e.Time)+"\n"+e.Message+"\n"+e.Target) }))
+		for _, e := range events {
+			key := strings.Join([]string{e.Time.Format(time.RFC3339Nano), e.Kind, e.Target, e.RunID, e.TaskID, e.Message}, "\x00")
+			v.rows = append(v.rows, link(key, e.Kind, moment(e.Time)+" · "+e.Message, "bupt audit ls", func() { w.textPage(e.Kind, "bupt audit ls", moment(e.Time)+"\n"+e.Message+"\n"+e.Target) }))
 		}
 		return v
 	}))

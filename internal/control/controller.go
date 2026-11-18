@@ -32,6 +32,7 @@ type Options struct {
 	JobBackend     JobBackend
 }
 type Controller struct {
+	accounts      accountFeeds
 	Config        *config.Config
 	Store         *state.Store
 	Vault         domain.SecretStore
@@ -60,6 +61,11 @@ func New(o Options) (*Controller, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	c := &Controller{Config: o.Config, Store: o.Store, Vault: o.Vault, opts: o, ctx: ctx, cancel: cancel, apis: map[string]domain.PlatformAPI{}, working: map[string]bool{}, lastAuth: map[string]time.Time{}}
 	c.configuration.Store(o.Config)
+	for profile := range o.Config.Profiles {
+		// An unavailable projection is reported by that profile's account RPC;
+		// a colliding legacy profile name must not disable other profiles.
+		_, _ = c.account(profile)
+	}
 	return c, nil
 }
 func (c *Controller) Configuration() *config.Config {
@@ -70,6 +76,7 @@ func (c *Controller) Configuration() *config.Config {
 }
 func (c *Controller) Close() error {
 	c.cancel()
+	c.closeAccounts()
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()
@@ -112,12 +119,14 @@ func (c *Controller) api(profile string) (domain.PlatformAPI, error) {
 	return a, nil
 }
 func (c *Controller) snapshot(ctx context.Context, p string) (domain.Snapshot, error) {
+	ticket := c.accountTicket(p)
 	a, e := c.api(p)
 	if e != nil {
 		return domain.Snapshot{}, e
 	}
 	if auth, ok := a.(interface{ PrepareCompute(context.Context) error }); ok {
 		if err := auth.PrepareCompute(ctx); err != nil {
+			ticket.failure(err, false)
 			return domain.Snapshot{}, err
 		}
 	}
@@ -146,6 +155,9 @@ func (c *Controller) snapshot(ctx context.Context, p string) (domain.Snapshot, e
 	}
 	if e == nil {
 		_ = c.Store.Put("snapshots", p, s)
+		ticket.instances(s)
+	} else {
+		ticket.failure(e, false)
 	}
 	return s, e
 }

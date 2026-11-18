@@ -45,15 +45,17 @@ func (c *Controller) ReloadConfiguration(ctx context.Context) (any, error) {
 			return nil, domain.E("PROFILE_BUSY", "a changed profile still has a pending platform task")
 		}
 	}
-	c.mu.Lock()
+	// Complete pending account transactions against their original namespace.
+	// Stable ordering also supports replacing multiple profiles at once.
+	changedNames := make([]string, 0, len(changed))
 	for name := range changed {
-		if a := c.apis[name]; a != nil {
-			_ = a.Close()
-			delete(c.apis, name)
-		}
+		changedNames = append(changedNames, name)
 	}
-	c.configuration.Store(next)
-	c.mu.Unlock()
+	sort.Strings(changedNames)
+	for _, name := range changedNames {
+		defer c.lockLogin(name)()
+	}
+	c.reloadAccounts(next, changed)
 	profiles := []string{}
 	for name := range next.Profiles {
 		profiles = append(profiles, name)

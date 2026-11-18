@@ -50,10 +50,7 @@ func (c *Controller) computeRead(ctx context.Context, profile string, p Params) 
 		}
 		if section == "project.show" {
 			id := p.ID("target")
-			for _, role := range s.Identity.Memberships {
-				if id != role.GroupID {
-					continue
-				}
+			if role, ok := projectMembership(s.Identity.Memberships, id); ok {
 				var instances []domain.Instance
 				for _, i := range s.Instances {
 					if i.GroupID == id {
@@ -136,6 +133,32 @@ func (c *Controller) computeRead(ctx context.Context, profile string, p Params) 
 		limit = 25
 	}
 	return service.ComputePage(ctx, section, page, limit, p.String("group_id"))
+}
+
+// A project can carry old and current roles simultaneously. Prefer active
+// membership and, within it, the role controlling project-wide visibility.
+func projectMembership(memberships []domain.ProjectMembership, group domain.ID) (domain.ProjectMembership, bool) {
+	var chosen domain.ProjectMembership
+	highest := -1
+	for _, m := range memberships {
+		if m.GroupID != group {
+			continue
+		}
+		rank := 0
+		if m.State == "" || m.State == "active" {
+			rank += 3
+		}
+		switch m.Role {
+		case "admin":
+			rank += 2
+		case "manager":
+			rank++
+		}
+		if rank > highest {
+			chosen, highest = m, rank
+		}
+	}
+	return chosen, highest >= 0
 }
 
 func (c *Controller) computeFeatures(ctx context.Context, profile string, online, refresh bool) (map[string]bool, error) {

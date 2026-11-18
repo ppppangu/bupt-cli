@@ -24,6 +24,7 @@ type Backend interface {
 	Stream(context.Context, string, any, io.Reader, io.Writer) (map[string]any, error)
 }
 type Options struct {
+	ReloadPresets   func() (*config.Config, error)
 	Commands        map[string]CommandForm
 	Capture         func(context.Context, []string) (string, error)
 	InitialArea     string
@@ -35,24 +36,37 @@ type Options struct {
 	Timeout         time.Duration
 }
 type row struct {
+	group                       string
+	preview                     []string
 	key, title, detail, command string
 	open                        func()
 }
 type content struct {
+	split     bool
+	groups    []navGroup
 	fullWidth bool
 	facts     []string
 	rows      []row
 	empty     string
 }
 type page struct {
+	queryMethod          string
+	stale                bool
+	expanded             map[string]bool
+	filterAnchor         string
+	copyText             string
 	watch                bool
 	title, command, area string
 	build                func() content
+	// Local navigation that remains safe when the query has no usable data.
+	readNavigation       func() content
 	load                 func(context.Context) (func() content, error)
 	needsSchool          bool
 	focus, scroll        int
 	key, filter, problem string
 	loading, submitting  bool
+	blockedByLogin       bool
+	readLoginRevision    uint64
 	generation           int
 	cancel               context.CancelFunc
 }
@@ -63,22 +77,23 @@ type prompt struct {
 	problem string
 }
 type workspace struct {
+	bar      accountView
 	composer *trialEditor
 	fatal    error
 	Options
-	ctx                           context.Context
-	screen                        tcell.Screen
-	events                        chan func()
-	pages                         []*page
-	report                        domain.StatusReport
-	hasReport, refreshing         bool
-	statusCancel                  context.CancelFunc
-	statusGeneration              int
-	statusErr, notice             string
-	input                         *prompt
-	filtering, quit, paste        bool
-	listTop, listHeight, firstRow int
-	lastMouse                     tcell.ButtonMask
+	ctx                                      context.Context
+	screen                                   tcell.Screen
+	events                                   chan func()
+	pages                                    []*page
+	report                                   domain.StatusReport
+	hasReport, refreshing                    bool
+	statusCancel                             context.CancelFunc
+	statusGeneration                         int
+	statusErr, notice                        string
+	input                                    *prompt
+	filtering, quit, paste                   bool
+	listTop, listHeight, firstRow, listRight int
+	lastMouse                                tcell.ButtonMask
 }
 
 func Run(ctx context.Context, o Options) error {
@@ -100,6 +115,7 @@ func runScreen(ctx context.Context, o Options, s tcell.Screen) error {
 	}
 	w := &workspace{Options: o, ctx: ctx, screen: s, events: make(chan func(), 16)}
 	w.pages = []*page{{title: "平台总览", command: "bupt status", build: w.home}}
+	w.startAccountView()
 	s.EnableMouse(tcell.MouseButtonEvents)
 	s.EnablePaste()
 	input := make(chan tcell.Event)
@@ -113,10 +129,19 @@ func runScreen(ctx context.Context, o Options, s tcell.Screen) error {
 	w.draw()
 	ticker := time.NewTicker(4 * time.Second)
 	defer ticker.Stop()
+	expiry := time.NewTimer(0)
+	defer expiry.Stop()
 	for !w.quit {
+		var expires <-chan time.Time
+		if until := w.bar.snapshot.NextExpiry(); !until.IsZero() {
+			expiry.Reset(time.Until(until))
+			expires = expiry.C
+		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-expires:
+			w.bar.snapshot = w.bar.snapshot.Effective(time.Now())
 		case <-ticker.C:
 			p := w.current()
 			if !p.watch || p.loading || p.problem != "" || p.submitting {
@@ -163,8 +188,9 @@ func (w *workspace) refreshStatus(initial bool) {
 	g := w.statusGeneration
 	w.refreshing = true
 	w.statusErr = ""
-	inCompute := w.current().area == "compute"
-	cachedOnly := w.current().area == "api" || len(w.pages) == 1
+	area := w.current().area
+	inCompute := area == "compute"
+	cachedOnly := !inCompute && area != "resources" && area != "work" && area != "files"
 	go func() {
 		defer cancel()
 		load := func(cached, final bool) {
@@ -237,7 +263,7 @@ func (w *workspace) back() {
 		p.generation++
 	}
 	w.pages = w.pages[:len(w.pages)-1]
-	if parent := w.current(); parent.loading {
+	if parent := w.current(); !w.resumeProtectedRead(parent) && (parent.loading || parent.stale) {
 		w.loadPage(parent)
 	}
 }
@@ -246,6 +272,7 @@ type manualRefresh struct{}
 
 func (w *workspace) loadPage(p *page) { w.fetchPage(p, false) }
 func (w *workspace) fetchPage(p *page, refresh bool) {
+	p.stale = false
 	if p.load == nil {
 		return
 	}
@@ -255,6 +282,8 @@ func (w *workspace) fetchPage(p *page, refresh bool) {
 	p.generation++
 	g := p.generation
 	p.problem = ""
+	p.blockedByLogin = false
+	p.readLoginRevision = w.bar.loginRevision
 	p.loading = false
 	if p.needsSchool && w.Cached {
 		p.problem = "缓存模式仅显示已保存的数据。用 bupt tui 查看在线内容。"
@@ -266,19 +295,26 @@ func (w *workspace) fetchPage(p *page, refresh bool) {
 	if refresh {
 		ctx = context.WithValue(ctx, manualRefresh{}, true)
 	}
+	load := p.load
 	go func() {
-		build, err := p.load(ctx)
+		build, err := load(ctx)
 		defer cancel()
 		w.post(w.ctx, func() {
 			if p.generation != g {
 				return
 			}
 			p.loading = false
-			if err != nil {
-				p.problem = err.Error()
-				return
+			if build != nil {
+				// Composite reads render their available sections and any errors in place.
+				p.build = build
 			}
-			p.build = build
+			if err != nil {
+				if build == nil {
+					p.problem = err.Error()
+				}
+				p.blockedByLogin = loginRequired(err)
+				w.resumeProtectedRead(p)
+			}
 		})
 	}()
 }
@@ -292,10 +328,13 @@ func (w *workspace) refresh() {
 		w.fetchPage(p, true)
 	} else {
 		w.refreshStatus(false)
+		if len(w.pages) == 1 || p.title == navigation.AccountTitle || p.title == prefsTitle {
+			w.verifyAccount()
+		}
 	}
 }
 func queryPage[T any](w *workspace, title, command, method string, params any, school bool, show func(T) content) *page {
-	return &page{title: title, command: command, needsSchool: school, load: func(ctx context.Context) (func() content, error) {
+	return &page{title: title, command: command, needsSchool: school, queryMethod: method, load: func(ctx context.Context) (func() content, error) {
 		var value T
 		request := params
 		if original, ok := params.(map[string]any); ok && method == "portal.read" && ctx.Value(manualRefresh{}) == true && !w.Cached {
@@ -335,16 +374,23 @@ func (w *workspace) foreground(args ...string) {
 		w.notice = err.Error()
 	} else {
 		w.notice = "操作已完成"
+		if len(args) >= 3 && args[0] == "compute" && args[1] == "storage" && args[2] == "push" {
+			w.invalidateStorage()
+		}
 	}
 	w.screen.Sync()
 	w.refreshStatus(false)
 }
 func (w *workspace) view(p *page) content {
 	var v content
-	if p.build != nil {
+	if (p.loading || p.problem != "") && p.readNavigation != nil {
+		v = p.readNavigation()
+	} else if p.build != nil {
 		v = p.build()
 	}
-	if p.filter != "" {
+	if len(v.groups) > 0 {
+		v.rows = w.groupRows(p, v.groups)
+	} else if p.filter != "" {
 		query := strings.ToLower(p.filter)
 		filtered := make([]row, 0, len(v.rows))
 		for _, r := range v.rows {
@@ -380,7 +426,7 @@ func (w *workspace) move(to int) {
 func (w *workspace) activate() {
 	p := w.current()
 	rows := w.view(p).rows
-	if p.submitting || p.loading || p.problem != "" || len(rows) == 0 {
+	if p.submitting || (p.loading || p.problem != "") && p.readNavigation == nil || len(rows) == 0 {
 		return
 	}
 	selected := rows[p.focus]
@@ -408,7 +454,7 @@ func (w *workspace) mouse(e *tcell.EventMouse) {
 		w.move(w.current().focus - 1)
 	case pressed && y == 0 && x < 4 && len(w.pages) > 1:
 		w.back()
-	case pressed && y >= w.listTop && y < w.listTop+w.listHeight:
+	case pressed && y >= w.listTop && y < w.listTop+w.listHeight && (w.listRight == 0 || x < w.listRight):
 		i := w.firstRow + y - w.listTop
 		if i < len(w.view(w.current()).rows) {
 			w.move(i)
@@ -436,6 +482,16 @@ func (w *workspace) handleKey(e *tcell.EventKey) {
 	if p.submitting && e.Rune() != 'q' {
 		return
 	}
+	if p.copyText != "" {
+		switch {
+		case e.Key() == tcell.KeyEnter || e.Rune() == 'c':
+			w.copySnippet(p.copyText)
+			return
+		case e.Rune() == 's':
+			w.saveSnippet(p.copyText)
+			return
+		}
+	}
 	switch e.Key() {
 	case tcell.KeyUp:
 		w.move(p.focus - 1)
@@ -449,10 +505,16 @@ func (w *workspace) handleKey(e *tcell.EventKey) {
 		w.move(0)
 	case tcell.KeyEnd:
 		w.move(len(w.view(p).rows) - 1)
-	case tcell.KeyEnter, tcell.KeyRight:
+	case tcell.KeyRight:
+		if !w.disclose(true) {
+			w.activate()
+		}
+	case tcell.KeyEnter:
 		w.activate()
 	case tcell.KeyEscape, tcell.KeyBackspace, tcell.KeyBackspace2, tcell.KeyLeft:
-		w.back()
+		if !w.disclose(false) {
+			w.back()
+		}
 	case tcell.KeyRune:
 		switch e.Rune() {
 		case 'q':
@@ -462,6 +524,9 @@ func (w *workspace) handleKey(e *tcell.EventKey) {
 		case 'k':
 			w.move(p.focus - 1)
 		case '/':
+			if p.expanded != nil && p.filter == "" {
+				p.filterAnchor = p.key
+			}
 			w.filtering = true
 		case 'r':
 			w.refresh()
@@ -489,6 +554,9 @@ func (w *workspace) handleText(e *tcell.EventKey) {
 			}
 		} else {
 			w.filtering = false
+			if p.expanded != nil && p.filter == "" {
+				p.key, p.filterAnchor = p.filterAnchor, ""
+			}
 		}
 		return
 	case tcell.KeyEscape:
@@ -497,7 +565,8 @@ func (w *workspace) handleText(e *tcell.EventKey) {
 		} else {
 			w.filtering = false
 			p.filter = ""
-			p.key = ""
+			p.key = p.filterAnchor
+			p.filterAnchor = ""
 		}
 		return
 	case tcell.KeyBackspace, tcell.KeyBackspace2:
@@ -522,28 +591,34 @@ func (w *workspace) handleText(e *tcell.EventKey) {
 }
 func (w *workspace) showHelp() {
 	p := w.current()
-	if p.title == "操作指南" {
+	if p.title == "本页帮助" {
 		return
 	}
-	facts := []string{"↑ ↓ 或 j k 选择，Enter 打开，Esc 返回上一层。", "/ 筛选列表，PgUp / PgDn 翻页，r 刷新，q 退出。"}
-	var rows []row
-	if p.command != "" {
-		command := p.command
-		if items := w.view(p).rows; len(items) > 0 && items[p.focus].command != "" {
-			command = items[p.focus].command
-		}
-		rows = append(rows, link("cli", "当前操作的命令", command, command, func() { w.textPage("等效命令", command, command) }))
+	instructions := "↑↓ 选择，Enter 打开，Esc 返回。\n/ 筛选，r 刷新，q 退出。"
+	if p.copyText != "" {
+		instructions = "↑↓ 阅读，Enter 或 c 复制全文。\ns 另存为新文件，Esc 返回。"
+	} else if p.area == "api" {
+		instructions += "\n模型输入框内 Enter 换行，Ctrl+S 保存。\n试用编辑器内 Ctrl+D 发送一次。"
 	}
-	if area, ok := navigation.Find(p.area); ok {
-		for _, name := range area.Commands {
-			rows = append(rows, link(name, "bupt "+name, "查看用法和常用选项", "bupt help "+name, func() {
-				if w.Explain != nil {
-					w.textPage("bupt "+name, "bupt help "+name, w.Explain(name))
-				}
-			}))
-		}
+	var selected string
+	if rows := w.view(p).rows; len(rows) > 0 {
+		selected = rows[p.focus].command
 	}
-	w.push(&page{title: "操作指南", command: "bupt help --all", build: func() content { return content{facts: facts, rows: rows} }})
+	w.local("本页帮助", "bupt help tutorial", func() content {
+		v := w.textContent(instructions)
+		v.facts = []string{p.title}
+		add := func(key, label, command string) {
+			if command != "" {
+				v.rows = append(v.rows, link(key, label, command, command, func() { w.explainCommand(command) }))
+			}
+		}
+		add("cli", "选中行的 CLI 用法", selected)
+		if p.command != selected {
+			add("page", "本页相关的 CLI 用法", p.command)
+		}
+		v.rows = append(v.rows, link("tutorial", "查看完整教程", "", "bupt help tutorial", w.tutorials))
+		return v
+	})
 }
 func clean(s string) string {
 	return strings.Map(func(r rune) rune {

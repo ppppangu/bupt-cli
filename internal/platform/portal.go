@@ -432,12 +432,7 @@ func (c *Client) PortalPage(ctx context.Context, a domain.PortalAccount, q domai
 		var data struct{ PublicBaseURL string }
 		err = c.portalRequest(ctx, "GET", "/api/config/gateway", nil, &data)
 		if err == nil {
-			u, e := url.Parse(data.PublicBaseURL)
-			if e != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
-				return p, domain.E("PORTAL_PROTOCOL", "门户未返回有效的 HTTPS 模型网关地址。")
-			}
-			base := strings.TrimRight(u.String(), "/")
-			p.Data = map[string]any{"base_url": base, "protocol": "OpenAI compatible", "network": "校园网或学校 VPN", "curl": "curl " + "'" + strings.ReplaceAll(base+"/chat/completions", "'", "'\"'\"'") + "'" + " -H \"Authorization: Bearer $BUPT_API_KEY\" -H 'Content-Type: application/json' -d '{\"model\":\"<MODEL_ID>\",\"messages\":[{\"role\":\"user\",\"content\":\"你好\"}]}'", "python": "import os\nfrom openai import OpenAI\nclient = OpenAI(base_url=" + strconv.Quote(base) + ", api_key=os.environ['BUPT_API_KEY'])\nprint(client.chat.completions.create(model=os.environ['BUPT_MODEL'], messages=[{'role':'user', 'content':'你好'}]).choices[0].message.content)"}
+			p.Data, err = ModelGuideData(data.PublicBaseURL, c.profile.PortalURL)
 		}
 	case "leaderboard", "preference", "agreement", "news", "news.show":
 		endpoints := map[string]string{"leaderboard": "/api/leaderboard", "preference": "/api/me/leaderboard-display", "agreement": "/api/agreement"}
@@ -623,4 +618,29 @@ func publicPortalValue(v any) any {
 	default:
 		return x
 	}
+}
+
+// ModelGuideData normalizes live and cached guides using the same trusted
+// public destination as a managed trial, before applying any WebVPN route.
+func ModelGuideData(base, portal string) (map[string]any, error) {
+	u, err := publicModelGateway(base, portal)
+	if err != nil {
+		return nil, err
+	}
+	req, err := (domain.PortalModel{ID: "MODEL_ID", Kind: "chat"}).TrialRequest(domain.TrialInput{Texts: []string{"你好"}})
+	if err != nil {
+		return nil, err
+	}
+	data := map[string]any{"base_url": u.String(), "protocol": "OpenAI compatible", "network": "使用门户公布的公网接入地址"}
+	for _, format := range []string{"curl", "python"} {
+		code, err := req.Code(format, u.String())
+		if err != nil {
+			return nil, err
+		}
+		if format == "python" {
+			code = strings.Replace(code, `"model": "MODEL_ID"`, `"model": os.environ["BUPT_MODEL"]`, 1)
+		}
+		data[format] = code
+	}
+	return data, nil
 }

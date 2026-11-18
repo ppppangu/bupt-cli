@@ -62,7 +62,7 @@ func TestInteractiveLoginContinuesCaptchaWithOnePasswordPrompt(t *testing.T) {
 			opts.ReadSecret = func(string) (string, error) { passwordPrompts++; return password, nil }
 			opts.OpenImage = func(_ context.Context, filename string) error {
 				viewerCalls++
-				wantDir := filepath.Join(opts.ConfigOptions.HomeDir, ".local", "state", "bupt", "captchas")
+				wantDir := filepath.Join(opts.ConfigOptions.HomeDir, ".bupt", "state", "captchas")
 				if filepath.Dir(filename) != wantDir {
 					t.Fatalf("CAPTCHA saved outside state directory: %s", filename)
 				}

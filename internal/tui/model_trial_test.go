@@ -142,7 +142,7 @@ func TestOfflineTrialCanEditButCannotSend(t *testing.T) {
 	trialKey(w, tcell.KeyCtrlS)
 	click(t, w, "code")
 	click(t, w, "json")
-	if w.current().title != "json" {
+	if w.current().title != "请求 JSON" || !json.Valid([]byte(w.current().copyText)) {
 		t.Fatal("offline preview missing")
 	}
 }

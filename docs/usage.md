@@ -8,16 +8,26 @@
 
 | 我想做什么 | 命令 | TUI 入口 |
 | --- | --- | --- |
-| 查看账号、认证状态和服务摘要 | `bupt status`、`bupt account` | 平台总览 → 账号与平台 |
+| 查看账号、认证状态和服务摘要 | `bupt status`、`bupt account` | 平台总览 → 账号状态与配置 |
 | 查所有模型的调用 ID、能力、上下文、输入输出价格和健康状态 | `bupt api model`、`bupt api model show ID` | 大模型 API 服务 → 模型 |
 | 查余额、最近调用、Token 趋势和按模型用量 | `bupt api usage --days 30` | 大模型 API 服务 → 余额与用量 |
 | 查询、新建、停用和导出密钥 | `bupt api key` | 大模型 API 服务 → API Key；模型详情可直接创建限定模型的 Key |
-| 获取 SDK 地址、调用示例或榜单 | `bupt api guide`、`bupt api leaderboard` | 大模型 API 服务 → 接入指南或排行榜 |
-| 选算力资源、比较规格和额度 | `bupt compute catalog`、`bupt compute quota` | 裸算力服务 → 资源目录与配额 |
-| 看哪台机器占着额度、何时到期 | `bupt compute instance`、`bupt compute instance show ID` | 裸算力服务 → 我的实例 → 选中实例 |
-| 查调度、托管运行、存储和项目 | `bupt compute job`、`bupt compute run`、`bupt compute storage`、`bupt compute project` | 裸算力服务 → 作业与记录、存储与文件或项目 |
+| 获取 SDK 地址、调用示例或榜单 | `bupt api guide`、`bupt api leaderboard` | 大模型 API 服务 → 接入示例或排行榜 |
+| 选算力资源、比较规格和额度 | `bupt compute catalog`、`bupt compute quota` | 裸算力服务 → 资源与申请 |
+| 看哪台机器占着额度、何时到期 | `bupt compute instance`、`bupt compute instance show ID` | 裸算力服务 → 我的工作 → 我的实例 |
+| 查调度、托管运行、存储和项目 | `bupt compute job`、`bupt compute run`、`bupt compute storage`、`bupt compute project` | 裸算力服务 → 我的工作、存储与数据或项目与费用 |
 
-方向键选择，Enter 打开，Esc 返回，`/` 筛选，`r` 刷新当前页，`q` 退出。底部给出选中动作的等效 CLI。每个业务的「全部管理操作」直接使用 CLI 的命令、参数和校验规则，可在表单中逐项填写。脚本使用 `--json`、`--jsonl`、`-q` 和 `--non-interactive`。已有 `up`、`ssh`、`down` 等短命令仍可使用。
+首页的「教程说明」提供使用路径与命令索引，也可运行 `bupt help tutorial` 阅读。用 ↑、↓ 选择，Enter 打开，Esc 返回。在裸算力分组上，→ 展开，← 折叠。`/` 筛选，`?` 阅读当前页帮助，`q` 退出。有对应 CLI 命令时会显示在底部。脚本沿用 `--json`、`--jsonl`、`-q` 和 `--non-interactive`。
+
+### 顶栏与账号
+
+顶栏默认显示 WebVPN、算力平台、剩余积分和本人运行中的实例数。在「账号状态与配置」可以勾选姓名或学工号、调整可选字段、恢复默认。运行实例数按学校报告的本人运行状态统计。横线表示尚无可确认的数值，真实零值显示为 0。网络中断或权限核验失败时，以对应的状态文字提示。
+
+另一个终端完成 `bupt login` 或 `bupt logout` 后，已打开的界面会接收同一控制器的状态更新。开启自动核验的窗口共享低频学校检查。关闭自动核验时仍能接收本机操作产生的通知。`bupt tui --cached` 用于离线浏览。
+
+### 接入与统计
+
+「接入示例」展示学校公布的公网 Base URL。选定模型和格式，按 Enter 展开。再按 `c` 或 Enter 请求终端复制全文，也可按 `s` 保存到新文件。可编辑输入并带入试用页，实际模型调用由「发送一次」触发。「余额与用量」先展示周期汇总，再展开每日输入／输出 Token 和各模型分布。排行榜分别展示模型热度、用户用量和本人位置。
 
 ### 模型资源和凭据
 
@@ -388,12 +398,14 @@ CI 不存学校密码，也不自动绕过刷脸。学校会话失效时由所�
 
 | 内容 | 本地默认路径 |
 | --- | --- |
-| 非 Secret 配置 | `~/.config/bupt/config.toml` |
-| 状态库、RPC socket | `~/.local/state/bupt/state.db`、`agent.sock` |
-| 加密凭据、主密钥、专用身份 | `~/.local/share/bupt/` |
-| 主密钥 | `~/.local/share/bupt/master.key` |
+| 非 Secret 配置 | `~/.bupt/config.toml` |
+| 状态库、RPC socket | `~/.bupt/state/state.db`、`agent.sock` |
+| 加密凭据、主密钥、专用身份 | `~/.bupt/data/` |
+| 主密钥 | `~/.bupt/data/master.key` |
+| 本机界面偏好 | `~/.bupt/tui.toml` |
+| 默认 profile 的可读账号状态 | `~/.bupt/state/bupt/status.json` |
 
-遵循 `XDG_CONFIG_HOME`、`XDG_STATE_HOME`、`XDG_DATA_HOME`。远程安装使用 `/etc/bupt/` 和 `/var/lib/bupt/`，系统服务为 `bupt-agent.service`。Unix socket 与持久化目录仅供所属账户访问；学校密码、Cookie 和 Token 保存在加密 vault 中，SSH 私钥是单独的受保护文件。
+显式设置的 `XDG_CONFIG_HOME`、`XDG_STATE_HOME`、`XDG_DATA_HOME` 分别覆盖对应目录。远程安装使用 `/etc/bupt/` 和 `/var/lib/bupt/`，系统服务为 `bupt-agent.service`。Unix socket 与持久化目录仅供所属账户访问；学校密码、Cookie 和 Token 保存在加密 vault 中，SSH 私钥是单独的受保护文件。
 
 备份应包含配置、完整状态目录、数据目录和匹配的主密钥；丢失主密钥无法解密已有凭据。复制 bbolt 状态库前先停止该控制器，避免不一致副本。不要只备份密文却遗失主密钥，也不要提交真实状态文件到仓库。升级时替换二进制、保留这些目录并重启对应服务；安装器替换重要配置时记录备份位置。
 

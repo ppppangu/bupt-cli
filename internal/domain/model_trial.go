@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"math"
 	"slices"
+	"strconv"
 	"strings"
+
+	"bupt.local/cli/internal/shellquote"
 )
 
 const TrialItemLimit = 16
@@ -74,6 +77,52 @@ func TrialFor(m PortalModel) (ModelTrial, error) {
 		t.Sample = TrialInput{Query: "在哪里借书？", Documents: []string{"食堂早上七点供应早餐。", "图书馆服务台办理图书借阅。", "操场周末开放。"}}
 	}
 	return t, nil
+}
+
+// ModelArgs represents the editable input as argv, including empty drafts.
+func (in TrialInput) ModelArgs(model, key string, send bool, options ...string) []string {
+	verb := "example"
+	if send {
+		verb = "try"
+	}
+	args := []string{"api", "model", verb}
+	args = append(args, options...)
+	if send && key != "" {
+		args = append(args, "--key", key)
+	}
+	return append(in.appendFlags(args), "--", model)
+}
+
+func (in TrialInput) appendFlags(args []string) []string {
+	for _, s := range in.Texts {
+		args = append(args, "--text", s)
+	}
+	if in.Query != "" {
+		args = append(args, "--query", in.Query)
+	}
+	for _, s := range in.Documents {
+		args = append(args, "--document", s)
+	}
+	if in.MaxTokens > 0 {
+		args = append(args, "--max-tokens", strconv.Itoa(in.MaxTokens))
+	}
+	if in.TopN > 0 {
+		args = append(args, "--top", strconv.Itoa(in.TopN))
+	}
+	return args
+}
+
+// ExampleCode builds the same validated request used by a live trial.
+func (m PortalModel) ExampleCode(in TrialInput, format, base string) (string, error) {
+	request, err := m.TrialRequest(in)
+	if err != nil {
+		return "", err
+	}
+	if format != "bupt" {
+		return request.Code(format, base)
+	}
+	argv := in.appendFlags([]string{"api", "model", "try"})
+	return shellquote.Command("bupt", argv...) + ` --key "${BUPT_KEY_ID:?请设置选中模型的 Key ID}" -- ` + shellquote.Arg(m.ID), nil
 }
 
 type TrialRequest struct {
@@ -148,24 +197,41 @@ func (r TrialRequest) Code(format, base string) (string, error) {
 	if e != nil {
 		return "", e
 	}
-	quote := func(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'" }
 	literal := func(s string) string { b, _ := json.Marshal(s); return string(b) }
 	endpoint := strings.TrimRight(base, "/") + r.Path
 	switch format {
 	case "json":
 		return string(body), nil
 	case "curl":
-		target := quote(endpoint)
+		prefix := ""
+		target := shellquote.Literal(endpoint)
 		if base == "" {
+			prefix = ": \"${BUPT_BASE_URL:?请设置 BUPT_BASE_URL}\"\n"
 			target = "\"${BUPT_BASE_URL%/}" + r.Path + "\""
 		}
-		return "curl -sS " + target + " \\\n  -H \"Authorization: Bearer $BUPT_API_KEY\" \\\n  -H 'Content-Type: application/json' \\\n  --data-binary " + quote(string(body)), nil
+		return prefix + "curl -q --silent --show-error --globoff --proto '=https' --url " + target + " \\\n  -H \"Authorization: Bearer ${BUPT_API_KEY:?请设置 BUPT_API_KEY}\" \\\n  -H 'Content-Type: application/json' \\\n  --data-binary " + shellquote.Literal(string(body)), nil
 	case "python":
 		target := literal(endpoint)
 		if base == "" {
 			target = "os.environ['BUPT_BASE_URL'].rstrip('/') + " + literal(r.Path)
 		}
-		return "import json, os\nfrom urllib.request import Request, urlopen\n\npayload = " + string(body) + "\nreq = Request(" + target + ", data=json.dumps(payload).encode(),\n    headers={'Content-Type': 'application/json', 'Authorization': 'Bearer ' + os.environ['BUPT_API_KEY']})\nwith urlopen(req, timeout=90) as response:\n    print(json.dumps(json.load(response), ensure_ascii=False, indent=2))", nil
+		return `import json
+import os
+from urllib.request import HTTPRedirectHandler, Request, build_opener
+
+class NoRedirect(HTTPRedirectHandler):
+    def redirect_request(self, *args):
+        return None
+
+` + "payload = " + string(body) + "\nurl = " + target + `
+if not url.startswith('https://'):
+    raise ValueError('Base URL 需要 HTTPS')
+req = Request(url, data=json.dumps(payload).encode(), headers={
+    'Content-Type': 'application/json',
+    'Authorization': 'Bearer ' + os.environ['BUPT_API_KEY'],
+})
+with build_opener(NoRedirect).open(req, timeout=90) as response:
+    print(json.dumps(json.load(response), ensure_ascii=False, indent=2))`, nil
 	default:
 		return "", E("INVALID_FORMAT", "示例格式可选 curl、python 或 json。")
 	}

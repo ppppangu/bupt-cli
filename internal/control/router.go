@@ -12,7 +12,7 @@ import (
 	"bupt.local/cli/internal/platform"
 )
 
-func (c *Controller) Handle(ctx context.Context, r domain.RPCRequest, p Params) (any, error) {
+func (c *Controller) Handle(ctx context.Context, r domain.RPCRequest, p Params) (result any, err error) {
 	profile := r.Profile
 	if profile == "" {
 		profile = c.Configuration().Selected
@@ -24,6 +24,25 @@ func (c *Controller) Handle(ctx context.Context, r domain.RPCRequest, p Params) 
 	}
 	if e := c.Authorize(r.ClientID, r.Method, profile); e != nil {
 		return nil, e
+	}
+	if r.Method == "account.snapshot" || r.Method == "account.refresh" {
+		f, e := c.account(profile)
+		if e != nil {
+			return nil, e
+		}
+		if r.Method == "account.refresh" {
+			return c.refreshAccount(ctx, f)
+		}
+		return f.current()
+	}
+	// A gateway denial on a live operation also invalidates idle subscribers.
+	if !p.Bool("cached") && !p.Bool("dry_run") {
+		ticket := c.accountTicket(profile)
+		defer func() {
+			if err != nil {
+				ticket.failure(err, false)
+			}
+		}()
 	}
 	if p.Bool("dry_run") && isMutation(r.Method) && !strings.HasPrefix(r.Method, "instance.") && r.Method != "up" && r.Method != "down" && r.Method != "job.run" {
 		return map[string]any{"dry_run": true, "operation": r.Method, "profile": profile}, nil
@@ -494,6 +513,9 @@ func limit(p Params, def int) int {
 	return int(n)
 }
 func (c *Controller) auth(ctx context.Context, profile, method string, p Params) (any, error) {
+	if method == "auth.logout" {
+		defer c.lockLogin(profile)()
+	}
 	a, e := c.api(profile)
 	if e != nil {
 		return nil, e
@@ -563,7 +585,6 @@ func (c *Controller) auth(ctx context.Context, profile, method string, p Params)
 		}
 		return a.AuthStatus(ctx), nil
 	case "auth.logout":
-		defer c.lockLogin(profile)()
 		if !p.Bool("force") {
 			runs, _ := c.Store.ListRuns(profile)
 			for _, run := range runs {
@@ -572,6 +593,7 @@ func (c *Controller) auth(ctx context.Context, profile, method string, p Params)
 				}
 			}
 		}
+		c.accountLogout(profile)
 		logoutErr := a.Logout(ctx)
 		if c.Vault != nil {
 			ns := c.portalNamespace(profile)

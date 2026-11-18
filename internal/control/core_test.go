@@ -484,3 +484,14 @@ func TestAlternateSessionProbeRequiresControllerOwner(t *testing.T) {
 		t.Fatal(e)
 	}
 }
+
+func TestProjectDetailPrefersEffectiveMembership(t *testing.T) {
+	roles := []domain.ProjectMembership{{GroupID: "7", Role: "admin", State: "disabled"}, {GroupID: "8", Role: "admin", State: "active"}, {GroupID: "7", Role: "member", State: "active"}, {GroupID: "7", Role: "manager", State: "active"}}
+	m, ok := projectMembership(roles, "7")
+	if !ok || m.Role != "manager" {
+		t.Fatal(m, ok)
+	}
+	if _, ok := projectMembership(roles, "9"); ok {
+		t.Fatal("unrelated project selected")
+	}
+}

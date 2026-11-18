@@ -30,6 +30,8 @@ bupt tui
 | 查看平台登录和资源摘要 | `bupt status` |
 | 退出当前配置的学校会话 | `bupt logout` |
 
+初次使用可在首页打开「教程说明」，或运行 `bupt help tutorial`。桌面上多个 TUI 共用控制器的账号状态，在「账号状态与配置」可调整顶栏。个人配置和状态默认位于 `~/.bupt/`。
+
 课堂演示可以直接打开 `bupt tui api` 或 `bupt tui compute`。方向键选择，Enter 打开，Esc 返回，`q` 退出。编写脚本时可用 `bupt api model --json` 取得结构化结果。实例启停、SSH、文件和后台作业的例子见[使用手册](docs/usage.md)。
 
 ### 在 TUI 里输入并发送

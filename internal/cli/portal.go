@@ -76,7 +76,7 @@ func (a *app) apiCommand() *cobra.Command {
 	pref.AddCommand(a.portalMutation("set MODE", "设置 anonymous、partial 或 real", "preference.set"))
 	leaderboard := a.portalQuery("leaderboard", "查看门户排行榜", "leaderboard")
 	leaderboard.AddCommand(pref)
-	g.AddCommand(models, keys, a.portalQuery("admin", "查看学校门户授予的后台权限", "admin"), a.portalQuery("usage", "查询余额、调用次数和按模型统计的用量", "usage"), a.portalQuery("guide", "取得网关地址及 SDK、curl 接入示例", "guide"), leaderboard)
+	g.AddCommand(models, keys, a.portalQuery("admin", "查看学校门户授予的后台权限", "admin"), a.portalQuery("usage", "查询余额、调用次数和按模型统计的用量", "usage"), a.portalQuery("guide", "取得公网网关地址及 Python、curl 接入示例", "guide"), leaderboard)
 	return g
 }
 func (a *app) portalCommonCommands() []*cobra.Command {

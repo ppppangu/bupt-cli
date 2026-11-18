@@ -67,7 +67,7 @@ func TestPresetRoundTripAndExplicitTemplateOverride(t *testing.T) {
 		return domain.Run{ID: "run-1", State: "ready"}, nil
 	}}
 	opts, out, errout := testOptions(t, b)
-	configFile := filepath.Join(opts.ConfigOptions.HomeDir, ".config", "bupt", "config.toml")
+	configFile := filepath.Join(opts.ConfigOptions.HomeDir, ".bupt", "config.toml")
 	opts.ConfigOptions.ConfigFile = configFile
 	if e := os.MkdirAll(filepath.Dir(configFile), 0700); e != nil {
 		t.Fatal(e)

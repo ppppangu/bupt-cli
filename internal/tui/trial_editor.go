@@ -79,7 +79,7 @@ func (w *workspace) trialEditKey(key *tcell.EventKey) {
 		w.composer = nil
 	case tcell.KeyCtrlS, tcell.KeyCtrlD:
 		if k == tcell.KeyCtrlD && e.send == nil {
-			e.message = "缓存模式可用 Ctrl+S 保存输入"
+			e.message = "按 Ctrl+S 保存目前的输入"
 			return
 		}
 		w.composer = nil

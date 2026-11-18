@@ -12,6 +12,7 @@ import (
 )
 
 type loginFlow struct {
+	account      accountTicket             // bound before opening the configured login adapter; never persisted
 	NextService  string                    `json:"next_service,omitempty"`
 	Service      string                    `json:"service,omitempty"`
 	SSOMethod    string                    `json:"sso_method,omitempty"`
@@ -96,11 +97,17 @@ func (c *Controller) StartLogin(ctx context.Context, profile string, p Params) (
 	if c.Vault.Get("platform/"+profile+"/pending-service", &pending) == nil && pending == "compute" {
 		flow.NextService = "compute"
 	}
+	flow.account = c.accountTicket(profile)
 	a, e := c.loginAdapter(profile, flow.Service)
 	if e != nil {
 		return domain.AuthChallenge{}, e
 	}
 	status := a.AuthStatus(ctx)
+	if status.Gateway == "expired" {
+		flow.account.observe(domain.AccountObservation{VPN: "expired"}, true)
+	} else if status.Gateway == "authenticated" && status.Platform == "expired" && flow.Service == "portal" {
+		flow.account.observe(domain.AccountObservation{VPN: "authenticated", Platform: "expired"}, true)
+	}
 	if status.RequiresAction == "IDENTITY_MISMATCH" {
 		return domain.AuthChallenge{}, domain.E("IDENTITY_MISMATCH", "platform user differs from expected_uid")
 	}
@@ -122,7 +129,7 @@ func (c *Controller) StartLogin(ctx context.Context, profile string, p Params) (
 		return annotateChallenge(challenge, "webvpn"), nil
 	}
 	if status.Platform == "authenticated" {
-		if err := c.recordPortalLogin(profile, a); err != nil {
+		if err := c.recordPortalLogin(profile, a, flow.account); err != nil {
 			return domain.AuthChallenge{}, err
 		}
 		if flow.NextService == "compute" {
@@ -137,6 +144,9 @@ func (c *Controller) StartLogin(ctx context.Context, profile string, p Params) (
 	return c.startSSO(ctx, profile, a, flow)
 }
 func (c *Controller) startSSO(ctx context.Context, profile string, a domain.PlatformAPI, flow loginFlow) (domain.AuthChallenge, error) {
+	if c.Configuration().Profiles[profile].GatewayURL != "" {
+		flow.account.observe(domain.AccountObservation{VPN: "authenticated"}, true)
+	}
 	// Invalidate an earlier form before CAS can change its backing session.
 	if e := c.saveLoginFlow(profile, "university_sso", flow); e != nil {
 		return domain.AuthChallenge{}, e
@@ -178,7 +188,7 @@ func (c *Controller) completeLogin(ctx context.Context, profile string, a domain
 	if _, e := a.WhoAmI(ctx); e != nil {
 		return domain.AuthChallenge{}, e
 	}
-	if err := c.recordPortalLogin(profile, a); err != nil {
+	if err := c.recordPortalLogin(profile, a, flow.account); err != nil {
 		return domain.AuthChallenge{}, err
 	}
 	if flow.NextService == "compute" {
@@ -200,6 +210,7 @@ func (c *Controller) PollLogin(ctx context.Context, profile string) (domain.Auth
 	if e := c.Vault.Get(loginFlowKey(profile), &flow); e != nil {
 		return domain.AuthChallenge{}, domain.E("NO_LOGIN_FLOW", "start with bupt auth login")
 	}
+	flow.account = c.accountTicket(profile)
 	a, e := c.loginAdapter(profile, flow.Service)
 	if e != nil {
 		return domain.AuthChallenge{}, e
@@ -254,6 +265,7 @@ func (c *Controller) SubmitLoginPassword(ctx context.Context, profile string, p 
 	if form.CaptchaID != "" && captcha == "" {
 		return domain.AuthChallenge{}, domain.E("SSO_CAPTCHA_REQUIRED", "请填写统一认证图形验证码。")
 	}
+	flow.account = c.accountTicket(profile)
 	api, err := c.loginAdapter(profile, flow.Service)
 	if err != nil {
 		return domain.AuthChallenge{}, err
@@ -292,8 +304,10 @@ func (c *Controller) loginAdapter(profile, service string) (domain.PlatformAPI, 
 	return a, nil
 }
 
-func (c *Controller) recordPortalLogin(profile string, a domain.PlatformAPI) error {
-	peer, ok := a.(*platform.Client)
+func (c *Controller) recordPortalLogin(profile string, a domain.PlatformAPI, ticket accountTicket) error {
+	peer, ok := a.(interface {
+		VerifiedPortalAccount() (domain.PortalAccount, bool)
+	})
 	if !ok {
 		return nil
 	}
@@ -314,7 +328,11 @@ func (c *Controller) recordPortalLogin(profile string, a domain.PlatformAPI) err
 	i.Summary.Balance = account.Balance
 	i.Summary.CheckedAt = time.Now().UTC()
 	i.ChangedAt = i.Summary.CheckedAt
-	return c.Vault.Put(ns+"index", i)
+	err := c.Vault.Put(ns+"index", i)
+	if err == nil {
+		ticket.observePortal(account, true)
+	}
+	return err
 }
 func (c *Controller) finishComputeLogin(ctx context.Context, profile string, flow loginFlow) (domain.AuthChallenge, error) {
 	flow.Service = "compute"

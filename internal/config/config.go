@@ -78,10 +78,11 @@ func Load(o Options) (*Config, error) {
 			return nil, err
 		}
 	}
+	buptDir := filepath.Join(home, ".bupt")
 	paths := Paths{
-		ConfigDir: pick(o.ConfigDir, filepath.Join(pick(env["XDG_CONFIG_HOME"], filepath.Join(home, ".config")), "bupt")),
-		DataDir:   pick(o.DataDir, filepath.Join(pick(env["XDG_DATA_HOME"], filepath.Join(home, ".local", "share")), "bupt")),
-		StateDir:  pick(o.StateDir, filepath.Join(pick(env["XDG_STATE_HOME"], filepath.Join(home, ".local", "state")), "bupt")),
+		ConfigDir: appDirectory(o.ConfigDir, env["XDG_CONFIG_HOME"], buptDir),
+		DataDir:   appDirectory(o.DataDir, env["XDG_DATA_HOME"], filepath.Join(buptDir, "data")),
+		StateDir:  appDirectory(o.StateDir, env["XDG_STATE_HOME"], filepath.Join(buptDir, "state")),
 	}
 	paths.ConfigDir = expandHome(paths.ConfigDir, home)
 	paths.DataDir = expandHome(paths.DataDir, home)
@@ -709,6 +710,17 @@ func processEnv() map[string]string {
 		m[k] = v
 	}
 	return m
+}
+
+// Each explicit or XDG directory overrides only its own part of the personal layout.
+func appDirectory(explicit, xdgHome, personal string) string {
+	if explicit != "" {
+		return explicit
+	}
+	if xdgHome != "" {
+		return filepath.Join(xdgHome, "bupt")
+	}
+	return personal
 }
 func pick(a, b string) string {
 	if a != "" {

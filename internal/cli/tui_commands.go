@@ -26,6 +26,10 @@ func commandForm(c *cobra.Command) tui.CommandForm {
 		}
 	})
 	f.Terminal = strings.HasPrefix(strings.Join(path, " "), "compute ssh") || len(path) > 1 && (path[1] == "exec" || path[1] == "console" || path[1] == "forward" || path[1] == "sftp" || path[1] == "cp" || path[1] == "storage" && len(path) > 2 && (path[2] == "push" || path[2] == "pull"))
+	switch strings.Join(path, " ") {
+	case "compute run attach", "compute run wait", "compute task wait", "compute instance wait", "compute wait":
+		f.Terminal = true
+	}
 	f.Export = len(path) == 3 && path[0] == "api" && path[1] == "key" && path[2] == "export"
 	// Browsing a page never executes its default command. All mutating leaves
 	// preview first, including actions introduced in future command groups.
@@ -34,16 +38,17 @@ func commandForm(c *cobra.Command) tui.CommandForm {
 	case "example", "ls", "list", "show", "inspect", "status", "features", "quota", "model", "key", "usage", "guide", "leaderboard", "display", "news", "account", "agreement", "catalog", "estimate", "stores", "events", "logs", "template", "cluster", "dataset", "project", "request", "job", "admin", "user", "partition", "storage", "task", "audit", "instance", "run", "history", "hpc":
 		f.Query = true
 	}
-	if strings.HasPrefix(strings.Join(path, " "), "compute run submit") || strings.HasPrefix(strings.Join(path, " "), "compute run run") {
+	if strings.Join(path, " ") == "compute quota request" || strings.HasPrefix(strings.Join(path, " "), "compute run submit") || strings.HasPrefix(strings.Join(path, " "), "compute run run") {
 		f.Query = false
 	}
 	return f
 }
 func (a *app) tuiCommands(cmd *cobra.Command) map[string]tui.CommandForm {
 	out := map[string]tui.CommandForm{}
-	for _, n := range []string{"api", "compute"} {
-		c, _, _ := cmd.Root().Find([]string{n})
-		out[n] = commandForm(c)
+	for _, c := range cmd.Root().Commands() {
+		if !c.Hidden && c.Name() != "help" {
+			out[c.Name()] = commandForm(c)
+		}
 	}
 	return out
 }

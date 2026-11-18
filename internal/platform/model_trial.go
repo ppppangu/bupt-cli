@@ -16,21 +16,29 @@ import (
 )
 
 // The portal advertises the data plane; RPC callers never supply an upstream URL.
-func (c *Client) trialTarget(base string, req domain.TrialRequest) (string, error) {
-	u, e := url.Parse(base)
+func publicModelGateway(base, portal string) (*url.URL, error) {
+	u, e := url.Parse(strings.TrimSuffix(base, "/"))
 	if e != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.ForceQuery || u.RawQuery != "" || u.Fragment != "" || u.RawPath != "" || strings.Contains(u.Path, "\\") || path.Clean(u.Path) != u.Path {
-		return "", domain.E("MODEL_GATEWAY_UNTRUSTED", "模型网关地址不符合当前配置的 HTTPS 来源。")
+		return nil, domain.E("MODEL_GATEWAY_UNTRUSTED", "模型网关地址不符合当前配置的 HTTPS 来源。")
 	}
 	official := strings.EqualFold(u.Hostname(), "myai.bupt.edu.cn") || strings.EqualFold(u.Hostname(), "ai.bupt.edu.cn")
 	if official {
 		if u.Port() != "" && u.Port() != "443" || u.Path != "/llm-gw/v1" {
-			return "", domain.E("MODEL_GATEWAY_UNTRUSTED", "学校网关的端口或服务路径与已核验的配置不一致。")
+			return nil, domain.E("MODEL_GATEWAY_UNTRUSTED", "学校网关的端口或服务路径与已核验的配置不一致。")
 		}
 	} else {
-		configured, err := url.Parse(c.profile.PortalURL)
+		configured, err := url.Parse(portal)
 		if err != nil || configured.Scheme != "https" || configured.User != nil || !strings.EqualFold(u.Host, configured.Host) {
-			return "", domain.E("MODEL_GATEWAY_UNTRUSTED", "网关不属于学校模型服务或当前配置可信的门户来源。")
+			return nil, domain.E("MODEL_GATEWAY_UNTRUSTED", "网关不属于学校模型服务或当前配置可信的门户来源。")
 		}
+	}
+	return u, nil
+}
+
+func (c *Client) trialTarget(base string, req domain.TrialRequest) (string, error) {
+	u, err := publicModelGateway(base, c.profile.PortalURL)
+	if err != nil {
+		return "", err
 	}
 	switch req.Path {
 	case "/chat/completions", "/embeddings", "/rerank":

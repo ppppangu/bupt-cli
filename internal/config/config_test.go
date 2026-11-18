@@ -441,3 +441,39 @@ func TestMalformedSecretDoesNotLeakInParseError(t *testing.T) {
 		t.Fatal(e)
 	}
 }
+
+func TestPersonalPathsAndIndependentOverrides(t *testing.T) {
+	base := t.TempDir()
+	personal := filepath.Join(base, ".bupt")
+	xdgConfig := filepath.Join(base, "settings")
+	xdgState := filepath.Join(base, "runtime")
+	xdgData := filepath.Join(base, "storage")
+	xdg := map[string]string{"XDG_CONFIG_HOME": xdgConfig, "XDG_STATE_HOME": xdgState, "XDG_DATA_HOME": xdgData}
+	for _, tc := range []struct {
+		name                         string
+		opts                         Options
+		configDir, dataDir, stateDir string
+	}{
+		{"personal", Options{Env: map[string]string{}}, personal, filepath.Join(personal, "data"), filepath.Join(personal, "state")},
+		{"all XDG", Options{Env: xdg}, filepath.Join(xdgConfig, "bupt"), filepath.Join(xdgData, "bupt"), filepath.Join(xdgState, "bupt")},
+		{"state XDG only", Options{Env: map[string]string{"XDG_STATE_HOME": xdgState}}, personal, filepath.Join(personal, "data"), filepath.Join(xdgState, "bupt")},
+		{"explicit paths", Options{Env: xdg, ConfigDir: "~/cfg", DataDir: "~/data", StateDir: "~/state"}, filepath.Join(base, "cfg"), filepath.Join(base, "data"), filepath.Join(base, "state")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := tc.opts
+			opts.HomeDir, opts.NoProject = base, true
+			cfg, e := Load(opts)
+			if e != nil {
+				t.Fatal(e)
+			}
+			want := Paths{ConfigDir: tc.configDir, DataDir: tc.dataDir, StateDir: tc.stateDir, ConfigFile: filepath.Join(tc.configDir, "config.toml"), Socket: filepath.Join(tc.stateDir, "agent.sock")}
+			if cfg.Paths != want {
+				t.Fatalf("paths = %+v, want %+v", cfg.Paths, want)
+			}
+			p, e := cfg.SelectedProfile()
+			if e != nil || p.ControllerSocket != want.Socket {
+				t.Fatalf("profile socket = %q (%v), want %q", p.ControllerSocket, e, want.Socket)
+			}
+		})
+	}
+}

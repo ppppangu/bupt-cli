@@ -34,6 +34,7 @@ func (c *Controller) Status(ctx context.Context, profile string, p Params) (doma
 		}
 	}
 	if !p.Bool("cached") {
+		ticket := c.accountTicket(profile)
 		api, e := c.api(profile)
 		if e != nil {
 			return result, e
@@ -61,6 +62,9 @@ func (c *Controller) Status(ctx context.Context, profile string, p Params) (doma
 			result.Platform = auth.Platform
 			result.AuthReason = auth.RequiresAction
 		}
+		if result.Gateway == "expired" {
+			ticket.observe(domain.AccountObservation{VPN: "expired"}, false)
+		}
 		if c.Vault != nil {
 			_ = c.Vault.Put(authKey, observedAuth{result.Gateway, result.Platform, result.AuthReason, result.CheckedAt})
 		}
@@ -74,6 +78,7 @@ func (c *Controller) Status(ctx context.Context, profile string, p Params) (doma
 				result.Source = "live"
 				result.SnapshotAvailable = true
 				_ = c.Store.Put("snapshots", profile, fresh)
+				ticket.instances(fresh)
 			}
 		}
 	}

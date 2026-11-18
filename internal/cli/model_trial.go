@@ -1,12 +1,13 @@
 package cli
 
 import (
-	"bupt.local/cli/internal/domain"
 	"fmt"
-	"github.com/google/uuid"
-	"github.com/spf13/cobra"
 	"strings"
 	"unicode"
+
+	"bupt.local/cli/internal/domain"
+	"github.com/google/uuid"
+	"github.com/spf13/cobra"
 )
 
 func (a *app) modelTrialCommand(send bool) *cobra.Command {
@@ -17,7 +18,7 @@ func (a *app) modelTrialCommand(send bool) *cobra.Command {
 		cmd.Flags().String("key", "", "由控制器保管且已授权此模型的 Key ID")
 		cmd.Flags().Bool("sample", false, "使用该模型的示例输入")
 	} else {
-		cmd.Flags().String("format", "curl", "curl、python 或 json")
+		cmd.Flags().String("format", "curl", "curl、python、json 或 bupt")
 	}
 	cmd.Flags().Bool("cached", false, "用缓存目录生成示例")
 	texts := cmd.Flags().StringArray("text", nil, "对话内容或向量文本；向量文本可重复指定")
@@ -104,7 +105,7 @@ func (a *app) modelTrialCommand(send bool) *cobra.Command {
 			return a.emit(map[string]any{"model": model.ID, "kind": request.Kind, "method": "POST", "base_url": base, "path": request.Path, "body": request.Body, "dry_run": true})
 		}
 		format, _ := cmd.Flags().GetString("format")
-		snippet, e := request.Code(format, base)
+		snippet, e := model.ExampleCode(input, format, base)
 		if e != nil {
 			return e
 		}
