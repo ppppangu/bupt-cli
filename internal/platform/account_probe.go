@@ -102,6 +102,7 @@ func (c *Client) ProbeAccountStatus(ctx context.Context) (domain.AccountObservat
 	}
 	result.Platform, result.Reason = "authenticated", "identity_verified"
 	result.CampusID, result.Name, result.Balance = campusSubject(sid), doc.User.Name, doc.Balance
+	result.ConsentRequired = *doc.ConsentRequired
 	return result, nil
 }
 

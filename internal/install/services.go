@@ -15,7 +15,7 @@ import (
 	"bupt.local/cli/internal/config"
 )
 
-func (h *handler) installUserService(ctx context.Context, cfg *config.Config, keyPath, name string, start bool, errOut io.Writer) (serviceRecord, string, error) {
+func (h *handler) userService(cfg *config.Config, keyPath, name string) (serviceRecord, []byte) {
 	record := serviceRecord{Name: name, Executable: h.executable, Config: cfg.Paths.ConfigFile}
 	var contents []byte
 	if h.goos == "darwin" {
@@ -32,6 +32,11 @@ func (h *handler) installUserService(ctx context.Context, cfg *config.Config, ke
 		record.Path = filepath.Join(base, "systemd", "user", name+".service")
 		contents = userUnit(h.executable, agentArgs(cfg, keyPath))
 	}
+	return record, contents
+}
+
+func (h *handler) installUserService(ctx context.Context, cfg *config.Config, keyPath, name string, start bool, errOut io.Writer) (serviceRecord, string, error) {
+	record, contents := h.userService(cfg, keyPath, name)
 	backup, err := h.replaceFile(record.Path, contents, 0600)
 	if err != nil {
 		return record, backup, err

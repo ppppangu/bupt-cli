@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"io"
 	"maps"
 	"os"
 	"os/signal"
@@ -106,5 +107,12 @@ func (a *app) openTUI(cmd *cobra.Command, cached bool, area string) error {
 		opts.Hooks.NewClient = func(*config.Config, string) (Backend, error) { return b, nil }
 		return captureCommand(ctx, opts, args)
 	}
-	return tui.Run(ctx, tui.Options{ReloadPresets: reloadPresets, Commands: a.tuiCommands(cmd), Capture: capture, InitialArea: area, Explain: explain, Config: a.cfg, Backend: b, Foreground: foreground, Cached: cached, NoColor: a.noColor || strings.TrimSpace(os.Getenv("NO_COLOR")) != "", Timeout: a.timeout})
+	var startWorkspace func(context.Context, string) error
+	if hook := a.options.Hooks.Local; hook != nil {
+		startWorkspace = func(ctx context.Context, action string) error {
+			_, err := hook(ctx, session.Load(), "workspace.start", map[string]any{"action": action}, nil, io.Discard, io.Discard)
+			return err
+		}
+	}
+	return tui.Run(ctx, tui.Options{StartWorkspace: startWorkspace, ReloadPresets: reloadPresets, Commands: a.tuiCommands(cmd), Capture: capture, InitialArea: area, Explain: explain, Config: a.cfg, Backend: b, Foreground: foreground, Cached: cached, NoColor: a.noColor || strings.TrimSpace(os.Getenv("NO_COLOR")) != "", Timeout: a.timeout})
 }

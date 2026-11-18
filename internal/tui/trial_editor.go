@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"strings"
 	"unicode"
 	"unicode/utf8"
 
@@ -14,6 +13,7 @@ type trialEditor struct {
 	title     string
 	text      []rune
 	pos, size int
+	done      bool
 	message   string
 	save      func(string)
 	send      func()
@@ -39,10 +39,10 @@ func (e *trialEditor) insert(r rune) {
 	e.size += n
 	e.message = ""
 }
-func (e *trialEditor) remove(i int) {
-	e.size -= utf8.RuneLen(e.text[i])
-	e.text = append(e.text[:i], e.text[i+1:]...)
-	e.message = ""
+func (e *trialEditor) remove(start, end int) {
+	e.size -= len(string(e.text[start:end]))
+	e.text = append(e.text[:start], e.text[end:]...)
+	e.pos = start
 }
 func (e *trialEditor) lineStart(i int) int {
 	for i > 0 && e.text[i-1] != '\n' {
@@ -56,10 +56,73 @@ func (e *trialEditor) lineEnd(i int) int {
 	}
 	return i
 }
+
+// Lines refer to rune offsets in the draft. Both keyboard movement and
+// painting use these cell-width wraps, including wide characters.
+type trialLine struct{ start, end int }
+
+func (e *trialEditor) lines(width int) []trialLine {
+	var lines []trialLine
+	start, pos, cells := 0, 0, 0
+	g := uniseg.NewGraphemes(string(e.text))
+	for g.Next() {
+		s := g.Str()
+		if s == "\n" {
+			lines = append(lines, trialLine{start, pos})
+			pos++
+			start, cells = pos, 0
+			continue
+		}
+		if cells > 0 && cells+g.Width() > width {
+			lines = append(lines, trialLine{start, pos})
+			start, cells = pos, 0
+		}
+		cells += g.Width()
+		pos += utf8.RuneCountInString(s)
+	}
+	lines = append(lines, trialLine{start, pos})
+	if cells >= width {
+		lines = append(lines, trialLine{pos, pos})
+	}
+	return lines
+}
+
+func (e *trialEditor) caret(lines []trialLine) (x, y int) {
+	for y+1 < len(lines) && e.pos >= lines[y+1].start {
+		y++
+	}
+	return uniseg.StringWidth(string(e.text[lines[y].start:e.pos])), y
+}
+
+func (e *trialEditor) vertical(dir, width int) {
+	lines := e.lines(width)
+	x, y := e.caret(lines)
+	y += dir
+	if y >= len(lines) {
+		e.done = true
+		return
+	}
+	if y < 0 {
+		return
+	}
+	line := lines[y]
+	e.pos = line.start
+	g := uniseg.NewGraphemes(string(e.text[line.start:line.end]))
+	for g.Next() && g.Width() <= x {
+		x -= g.Width()
+		e.pos += utf8.RuneCountInString(g.Str())
+	}
+	if y+1 < len(lines) && e.pos == lines[y+1].start {
+		e.pos = graphemeStep(e.text, e.pos, -1)
+	}
+}
 func (w *workspace) trialEditKey(key *tcell.EventKey) {
 	e := w.composer
 	k := key.Key()
 	if w.paste {
+		if e.done {
+			return
+		}
 		switch k {
 		case tcell.KeyRune:
 			if !unicode.IsControl(key.Rune()) {
@@ -72,21 +135,35 @@ func (w *workspace) trialEditKey(key *tcell.EventKey) {
 		}
 		return
 	}
+	finish := func() {
+		w.composer = nil
+		e.save(string(e.text))
+	}
+	if e.done {
+		switch k {
+		case tcell.KeyEnter, tcell.KeyCtrlJ:
+			finish()
+			return
+		case tcell.KeyTab, tcell.KeyUp, tcell.KeyLeft:
+			e.done = false
+			return
+		case tcell.KeyCtrlC, tcell.KeyEscape, tcell.KeyCtrlS, tcell.KeyCtrlD:
+		default:
+			return
+		}
+	}
 	switch k {
 	case tcell.KeyCtrlC:
 		w.quit = true
-	case tcell.KeyEscape:
-		w.composer = nil
-	case tcell.KeyCtrlS, tcell.KeyCtrlD:
-		if k == tcell.KeyCtrlD && e.send == nil {
-			e.message = "按 Ctrl+S 保存目前的输入"
+	case tcell.KeyEscape, tcell.KeyCtrlS:
+		finish()
+	case tcell.KeyCtrlD:
+		if e.send == nil {
+			e.message = "请先完成编辑，返回表单查看可用操作。"
 			return
 		}
-		w.composer = nil
-		e.save(string(e.text))
-		if k == tcell.KeyCtrlD {
-			e.send()
-		}
+		finish()
+		e.send()
 	case tcell.KeyEnter, tcell.KeyCtrlJ:
 		e.insert('\n')
 	case tcell.KeyRune:
@@ -94,38 +171,26 @@ func (w *workspace) trialEditKey(key *tcell.EventKey) {
 			e.insert(key.Rune())
 		}
 	case tcell.KeyTab:
-		e.insert(' ')
+		e.done = true
 	case tcell.KeyBackspace, tcell.KeyBackspace2:
-		if e.pos > 0 {
-			e.pos--
-			e.remove(e.pos)
-		}
+		e.remove(graphemeStep(e.text, e.pos, -1), e.pos)
 	case tcell.KeyDelete:
-		if e.pos < len(e.text) {
-			e.remove(e.pos)
-		}
+		e.remove(e.pos, graphemeStep(e.text, e.pos, 1))
 	case tcell.KeyLeft:
-		if e.pos > 0 {
-			e.pos--
-		}
+		e.pos = graphemeStep(e.text, e.pos, -1)
 	case tcell.KeyRight:
-		if e.pos < len(e.text) {
-			e.pos++
-		}
+		e.pos = graphemeStep(e.text, e.pos, 1)
 	case tcell.KeyHome, tcell.KeyCtrlA:
 		e.pos = e.lineStart(e.pos)
 	case tcell.KeyEnd, tcell.KeyCtrlE:
 		e.pos = e.lineEnd(e.pos)
-	case tcell.KeyUp:
-		start := e.lineStart(e.pos)
-		if start > 0 {
-			e.pos = min(start-1, e.lineStart(start-1)+e.pos-start)
+	case tcell.KeyUp, tcell.KeyDown:
+		width, _ := w.screen.Size()
+		dir := 1
+		if k == tcell.KeyUp {
+			dir = -1
 		}
-	case tcell.KeyDown:
-		next := e.lineEnd(e.pos) + 1
-		if next <= len(e.text) {
-			e.pos = min(e.lineEnd(next), next+e.pos-e.lineStart(e.pos))
-		}
+		e.vertical(dir, max(1, width-4))
 	case tcell.KeyCtrlU:
 		e.text = nil
 		e.pos = 0
@@ -139,50 +204,29 @@ func (w *workspace) drawTrialEditor(width, height int, c palette) {
 	limit := width - 4
 	put(s, 2, 0, limit, w.current().title+"  ›  "+e.title, c.title)
 	bar(s, 1, width, c.muted, '─')
-	var lines []string
-	var line strings.Builder
-	cells, offset, cy, cx := 0, 0, 0, 0
-	flush := func() { lines = append(lines, line.String()); line.Reset(); cells = 0 }
-	g := uniseg.NewGraphemes(string(e.text))
-	for g.Next() {
-		token := g.Str()
-		size := g.Width()
-		if token != "\n" && cells+size > limit {
-			flush()
-		}
-		n := utf8.RuneCountInString(token)
-		if e.pos >= offset && e.pos < offset+n {
-			cy, cx = len(lines), cells
-		}
-		if token == "\n" {
-			flush()
-		} else {
-			line.WriteString(token)
-			cells += size
-		}
-		offset += n
-	}
-	if e.pos == offset {
-		if cells >= limit {
-			flush()
-		}
-		cy, cx = len(lines), cells
-	}
-	flush()
-	available := height - 5
+	lines := e.lines(limit)
+	cx, cy := e.caret(lines)
+	available := height - 6
 	top := max(0, cy-available+1)
 	for i := top; i < len(lines) && i < top+available; i++ {
-		put(s, 2, 2+i-top, limit, lines[i], c.base)
+		line := lines[i]
+		put(s, 2, 2+i-top, limit, string(e.text[line.start:line.end]), c.base)
 	}
-	if e.message != "" {
-		put(s, 2, height-3, limit, e.message, c.warning)
+	put(s, 2, height-4, limit, e.message, c.warning)
+	style, action := c.base, "  完成编辑"
+	hint := "Enter 换行 · 末行 ↓ 完成"
+	if e.done {
+		style, action = c.selected, "› 完成编辑"
+		hint = "Enter 保存返回 · ↑ 编辑"
+	} else {
+		s.ShowCursor(2+min(cx, limit-1), 2+cy-top)
 	}
-	actions := "Ctrl+S 保存"
+	put(s, 1, height-3, width-2, action, style)
+	put(s, 1, height-2, width-2, hint, c.accent)
+	shortcuts := "Esc 存草稿 · Ctrl+S 保存"
 	if e.send != nil {
-		actions = "Ctrl+D 发送 · " + actions
+		shortcuts = "Esc 存草稿 · Ctrl+D 发送"
 	}
-	put(s, 1, height-2, width-2, actions, c.accent)
-	put(s, 1, height-1, width-2, "Enter 换行 · Esc 取消", c.muted)
-	s.ShowCursor(2+min(cx, limit-1), 2+cy-top)
+	put(s, 1, height-1, width-2, shortcuts, c.muted)
 	s.Show()
 }

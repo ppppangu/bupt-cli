@@ -4,10 +4,13 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"sync"
+	"syscall"
 	"time"
 
 	"bupt.local/cli/internal/config"
@@ -42,7 +45,13 @@ func (c *Client) open(ctx context.Context) (io.ReadWriteCloser, error) {
 		d := net.Dialer{}
 		n, e := d.DialContext(ctx, "unix", path)
 		if e != nil {
-			return nil, domain.E("AGENT_NOT_RUNNING", "local controller is unavailable; run bupt init or bupt agent run")
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			if errors.Is(e, os.ErrNotExist) || errors.Is(e, syscall.ECONNREFUSED) {
+				return nil, domain.E("AGENT_NOT_RUNNING", "本地控制器尚未运行。")
+			}
+			return nil, domain.E("CONTROLLER_CONNECT", fmt.Sprintf("无法连接本地控制器。%v", e))
 		}
 		return n, nil
 	}

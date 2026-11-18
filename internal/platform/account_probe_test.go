@@ -55,7 +55,7 @@ func TestAccountProbeVerifiesLayersWithoutMutatingJarOrVault(t *testing.T) {
 			if cookie == nil || cookie.Value != "probe-only" {
 				t.Fatal("probe cookie rotation lost")
 			}
-			return accountResponse(r, 200, `{"user":{"sid":"cas_20260001","name":"Student"},"balance":0,"consentRequired":false}`), nil
+			return accountResponse(r, 200, `{"user":{"sid":"cas_20260001","name":"Student"},"balance":0,"consentRequired":true}`), nil
 		}
 	})
 	u, _ := url.Parse("https://vpn.example")
@@ -72,7 +72,7 @@ func TestAccountProbeVerifiesLayersWithoutMutatingJarOrVault(t *testing.T) {
 	writes := v.writes.Load()
 	identity := c.identity
 	result, err := c.ProbeAccountStatus(t.Context())
-	if err != nil || result.VPN != "authenticated" || result.Platform != "authenticated" || result.Name != "Student" || result.CampusID != "20260001" || result.Balance == nil || *result.Balance != 0 {
+	if err != nil || result.VPN != "authenticated" || result.Platform != "authenticated" || !result.ConsentRequired || result.Name != "Student" || result.CampusID != "20260001" || result.Balance == nil || *result.Balance != 0 {
 		t.Fatal(result, err)
 	}
 	if calls != 2 || string(probeMainJarBytes(c)) != before || v.writes.Load() != writes || !reflect.DeepEqual(c.identity, identity) || peer.portalObserved.SID != "" {

@@ -32,17 +32,32 @@ func percent(v *float64) string {
 	return strconv.FormatFloat(*v, 'f', 2, 64) + "%"
 }
 func metricLine(width int, name, amount string) string {
-	amount = fit(amount, max(6, width/2))
-	name = fit(name, max(1, width-uniseg.StringWidth(amount)-2))
+	if uniseg.StringWidth(name)+2+uniseg.StringWidth(amount) > width {
+		amount = fit(amount, max(6, width/2))
+		name = fit(name, max(1, width-uniseg.StringWidth(amount)-2))
+	}
 	return name + strings.Repeat(" ", max(1, width-uniseg.StringWidth(amount)-uniseg.StringWidth(name))) + amount
 }
 
-// The selected row exposes the complete identifier and value even when the
-// terminal can only fit an abbreviated label or number.
+// Data records can open a complete label and value when the table abbreviates them.
 func (w *workspace) metricRow(key, name, amount, cmd string) row {
-	return link(key, metricLine(w.metricWidth(), name, amount), "", cmd, func() { w.textPage(name, cmd, name+"\n"+amount) })
+	return navLink(key, metricLine(w.metricWidth(), name, amount), "", cmd, func() { w.textPage(name, cmd, name+"\n"+amount) })
 }
 func (w *workspace) metricWidth() int { cols, _ := w.screen.Size(); return max(18, cols-6) }
+
+// Summary values are readable in place, including exact counts on narrow terminals.
+func (w *workspace) staticMetric(key, name, amount string) []row {
+	width := w.metricWidth()
+	if uniseg.StringWidth(name)+2+uniseg.StringWidth(amount) <= width {
+		return []row{{key: key, title: metricLine(width, name, amount)}}
+	}
+	rows := w.textContent(name + "  " + amount).rows
+	for i := range rows {
+		rows[i].key = fmt.Sprintf("%s/%d", key, i)
+	}
+	rows[0].key = key
+	return rows
+}
 
 func (w *workspace) leaderboardPage() {
 	const cmd = "bupt api leaderboard"
@@ -54,23 +69,35 @@ func (w *workspace) leaderboardPage() {
 		if d.Days > 0 {
 			v.facts = append(v.facts, fmt.Sprintf("近 %d 天", d.Days))
 		}
-		mine := "我的位置  暂无数据"
+		current, other := "模型热度榜", "用户用量榜"
+		if tab == "users" {
+			current, other = other, current
+		}
+		change := link("tab", current+"  ·  切换到"+other, "", cmd, func() {
+			if tab == "models" {
+				tab = "users"
+			} else {
+				tab = "models"
+			}
+		})
+		change.verb = "切到" + other
+		v.rows = append(v.rows, change)
+		mine := "暂无数据"
 		if m := d.Me; m != nil {
 			switch {
 			case m.Ranked:
-				mine = fmt.Sprintf("我的位置  第 %d 名 · %s Token", m.Rank, countText(m.Tokens))
+				mine = fmt.Sprintf("第 %d 名 · %s Token", m.Rank, countText(m.Tokens))
 			case m.Reason == "beyond_top_100":
-				mine = "我的位置  本期在前 100 名以外"
+				mine = "前 100 名以外"
 			default:
-				mine = "我的位置  本期未上榜"
+				mine = "本期未上榜"
 			}
 		}
-		v.rows = append(v.rows, link("me", mine, "", cmd, func() { w.textPage("我的位置", cmd, mine) }))
+		v.rows = append(v.rows, w.staticMetric("me", "我的位置", mine)...)
 		if d.Unlocked {
-			v.rows = append(v.rows, link("preference", "我的榜单展示方式 ›", "", cmd+" display", w.leaderboardPreference))
+			v.rows = append(v.rows, navLink("preference", "我的榜单展示方式", "", cmd+" display", w.leaderboardPreference))
 		}
 		if tab == "models" {
-			v.rows = append(v.rows, link("tab", "模型热度榜  ·  切换到用户榜 ›", "", cmd, func() { tab = "users" }))
 			v.rows = append(v.rows, row{key: "heading", title: metricLine(width, "名次  模型", "调用量占比")})
 			for i, r := range d.Models {
 				v.rows = append(v.rows, w.metricRow(fmt.Sprintf("model/%d", i), fmt.Sprintf("%2d    %s", r.Rank, r.Model), percent(r.Share), cmd))
@@ -79,7 +106,6 @@ func (w *workspace) leaderboardPage() {
 				v.rows = append(v.rows, row{key: "empty", title: "暂无模型排行。"})
 			}
 		} else {
-			v.rows = append(v.rows, link("tab", "用户用量榜  ·  切换到模型榜 ›", "", cmd, func() { tab = "models" }))
 			v.rows = append(v.rows, row{key: "heading", title: metricLine(width, "名次  用户", "Token")})
 			for i, r := range d.Users {
 				v.rows = append(v.rows, w.metricRow(fmt.Sprintf("user/%d", i), fmt.Sprintf("%2d    %s", r.Rank, r.Label), countText(r.Tokens), cmd))
@@ -213,7 +239,7 @@ func trendLines(u domain.PortalUsage, width int) (string, string, int) {
 	return draw(a), draw(b), span
 }
 func (w *workspace) usagePage(days int) {
-	p := &page{title: "余额与用量"}
+	p := &page{title: "余额与用量", queryMethod: "portal.read"}
 	var selectPeriod func(int)
 	selectPeriod = func(period int) {
 		cmd := fmt.Sprintf("bupt api usage --days %d", period)
@@ -222,34 +248,34 @@ func (w *workspace) usagePage(days int) {
 		if period == 7 {
 			other = 30
 		}
-		changePeriod := link("period", fmt.Sprintf("切换至近 %d 天 ›", other), "", fmt.Sprintf("bupt api usage --days %d", other), func() { selectPeriod(other); w.fetchPage(p, false) })
+		changePeriod := link("period", fmt.Sprintf("统计周期  近 %d 天 · 切换至近 %d 天", period, other), "", fmt.Sprintf("bupt api usage --days %d", other), func() { selectPeriod(other); w.fetchPage(p, false) })
+		changePeriod.verb = fmt.Sprintf("切换至 %d 天", other)
 		p.readNavigation = func() content {
-			return content{fullWidth: true, facts: []string{fmt.Sprintf("近 %d 天", period)}, rows: []row{changePeriod}}
+			return content{fullWidth: true, rows: []row{changePeriod}}
 		}
 		load := queryPage(w, p.title, cmd, "portal.read", map[string]any{"section": "usage", "days": period, "cached": w.Cached}, false, func(reply domain.PortalContent[domain.PortalUsage]) content {
 			u := reply.Data
-			v := content{fullWidth: true, facts: []string{fmt.Sprintf("近 %d 天", period)}}
-			v.facts = append(v.facts, portalNotes(reply.PortalObservation)...)
+			v := content{fullWidth: true, facts: portalNotes(reply.PortalObservation), rows: []row{changePeriod}}
 			balance := "—"
 			if reply.Account != nil {
 				balance = ntext(reply.Account.Balance)
 			}
-			v.rows = append(v.rows, w.metricRow("balance", "账户余额", balance+" 点", cmd), changePeriod)
+			v.rows = append(v.rows, w.staticMetric("balance", "账户余额", balance+" 点")...)
 			if u.Available != nil && !*u.Available {
 				v.rows = append(v.rows, row{key: "unavailable", title: "本期用量暂不可用。"})
 				return v
 			}
 			width := w.metricWidth()
 			for _, k := range []struct{ id, title, amount string }{{"calls", "调用次数", countText(u.Calls)}, {"success", "成功率", percent(u.SuccessRate)}, {"tokens", "总 Token", countText(u.Tokens)}, {"input-total", "输入 Token", countText(periodSum(u.Input, period))}, {"output-total", "输出 Token", countText(periodSum(u.Output, period))}} {
-				v.rows = append(v.rows, w.metricRow(k.id, k.title, k.amount, cmd))
+				v.rows = append(v.rows, w.staticMetric(k.id, k.title, k.amount)...)
 			}
 			input, output, span := trendLines(u, max(1, width-5))
 			if span > 0 {
-				v.rows = append(v.rows, row{key: "trend", title: fmt.Sprintf("每日趋势 · 每格 %d 日 · ? 缺测", span)}, row{key: "in", title: "入  " + input}, row{key: "out", title: "出  " + output}, link("days", "查看每日输入与输出 ›", "", cmd, func() { w.usageDays(u, cmd) }))
+				v.rows = append(v.rows, row{key: "trend", title: fmt.Sprintf("每日趋势 · 每格 %d 日 · ? 缺测", span)}, row{key: "in", title: "入  " + input}, row{key: "out", title: "出  " + output}, navLink("days", "查看每日输入与输出", "", cmd, func() { w.usageDays(u, cmd) }))
 			} else {
 				v.rows = append(v.rows, row{key: "trend", title: "暂无每日用量。"})
 			}
-			v.rows = append(v.rows, link("models", "按模型查看 Token 与占比 ›", "", cmd, func() { w.usageModels(u.Models, cmd) }))
+			v.rows = append(v.rows, navLink("models", "查看各模型用量占比", "", cmd, func() { w.usageModels(u.Models, cmd) }))
 			return v
 		})
 		p.load = load.load
@@ -275,7 +301,7 @@ func (w *workspace) usageDays(u domain.PortalUsage, cmd string) {
 				widths[i] = max(widths[i], uniseg.StringWidth(cell))
 			}
 		}
-		wide := width >= 45 && widths[0]+widths[1]+widths[2]+widths[3]+6 <= width
+		wide := widths[0]+widths[1]+widths[2]+widths[3]+6 <= width
 		for i, line := range lines {
 			key := fmt.Sprintf("day/%d", i)
 			if wide {
@@ -290,9 +316,12 @@ func (w *workspace) usageDays(u domain.PortalUsage, cmd string) {
 				}
 				v.rows = append(v.rows, row{key: key, title: text.String()})
 			} else if i > 0 {
-				v.rows = append(v.rows, row{key: key, title: line[0]})
+				for j, r := range w.textContent(line[0]).rows {
+					r.key = fmt.Sprintf("%s/date/%d", key, j)
+					v.rows = append(v.rows, r)
+				}
 				for col, header := range []string{"输入", "输出", "合计"} {
-					v.rows = append(v.rows, w.metricRow(key+"/"+header, "  "+header, line[col+1], cmd))
+					v.rows = append(v.rows, w.staticMetric(key+"/"+header, header, line[col+1])...)
 				}
 			}
 		}
@@ -326,7 +355,7 @@ func (w *workspace) usageModels(records []domain.ModelConsumption, cmd string) {
 				share = percent(&p)
 			}
 			measure := countText(m.Value) + " · " + share
-			v.rows = append(v.rows, link(fmt.Sprintf("model/%d", i), metricLine(width, m.Name, measure), "", cmd, func() {
+			v.rows = append(v.rows, navLink(fmt.Sprintf("model/%d", i), metricLine(width, m.Name, measure), "", cmd, func() {
 				w.textPage(m.Name, cmd, "模型  "+m.Name+"\nToken  "+countText(m.Value)+"\n消耗占比  "+share)
 			}))
 		}

@@ -41,6 +41,10 @@ func (w *workspace) groupRows(p *page, groups []navGroup) []row {
 			p.expanded[key] = !p.expanded[key]
 		})
 		header.group = key
+		header.verb = "展开"
+		if open {
+			header.verb = "收起"
+		}
 		for _, child := range children {
 			header.preview = append(header.preview, strings.TrimSpace(child.title)+"  "+child.detail)
 		}
@@ -59,9 +63,7 @@ func (w *workspace) disclose(right bool) bool {
 	}
 	v := w.view(p)
 	if !right && p.filter != "" {
-		p.key = p.filterAnchor
-		p.filter = ""
-		p.filterAnchor = ""
+		w.clearFilter(p)
 		return true
 	}
 	if len(v.rows) == 0 {
@@ -82,29 +84,42 @@ func (w *workspace) disclose(right bool) bool {
 		}
 		return true
 	}
+	if r.key != r.group {
+		p.key = r.group
+		return true
+	}
 	if !p.expanded[r.group] {
 		return false
 	}
 	delete(p.expanded, r.group)
-	p.key = r.group
 	return true
 }
 
 func (w *workspace) computeHome() {
 	p := &page{title: "裸算力服务", area: "compute", command: "bupt compute", expanded: map[string]bool{"group/work": true}}
-	p.build = w.computeGroups
+	p.key = "instances"
+	p.build = func() content {
+		if !p.interacted && p.key == "instances" && w.firstInstance() {
+			p.key = "new"
+		}
+		return w.computeGroups()
+	}
 	w.push(p)
 	if !w.Cached && w.statusGeneration != 0 && (!w.hasReport || w.report.Source != "live") {
 		w.refreshStatus(false)
 	}
 }
 
+func (w *workspace) firstInstance() bool {
+	return !w.Cached && w.report.Source == "live" && len(w.report.Instances) == 0
+}
+
 func (w *workspace) computeGroups() content {
 	section := func(key, title, detail, cmd string, fn func() content) row {
-		return link(key, title, detail, cmd, func() { w.local(title, cmd, fn) })
+		return navLink(key, title, detail, cmd, func() { w.local(title, cmd, fn) })
 	}
 	list := func(key, title, detail, cmd string) row {
-		return link(key, title, detail, "bupt compute "+cmd, func() { w.computeList(key, title, cmd, 1) })
+		return navLink(key, title, detail, "bupt compute "+cmd, func() { w.computeList(key, title, cmd, 1) })
 	}
 	optional := func(g *navGroup, feature string, item row) {
 		enabled, known := w.report.ComputeFeatures[feature]
@@ -121,19 +136,26 @@ func (w *workspace) computeGroups() content {
 		instanceHint = fmt.Sprintf("%d 个 · %s", len(w.report.Instances), instanceHint)
 	}
 	work := navGroup{key: "work", title: "我的工作", summary: "实例、托管运行和作业"}
-	work.items = []row{
-		section("instances", "我的实例", instanceHint, "bupt compute instance", w.instances),
-		section("runs", "运行与记录", "后台作业、托管期限、回执和控制器事件", "bupt compute run", w.work),
+	work.items = []row{section("instances", "我的实例", instanceHint, "bupt compute instance", w.instances)}
+	if !w.Cached {
+		create := navLink("new", "创建实例", "选择模板，核对资源和时限", "bupt compute catalog", w.chooseTemplate)
+		if w.firstInstance() {
+			create.title = "创建第一台实例"
+			work.items = append([]row{create}, work.items...)
+		} else {
+			work.items = append(work.items, create)
+		}
 	}
+	work.items = append(work.items, section("runs", "运行与记录", "查看实验进度、作业输出或操作结果", "bupt compute run", w.work))
 	optional(&work, "hpc", section("scheduler", "学校调度", "作业历史、队列和模板", "bupt compute job", func() content {
 		return content{rows: []row{
 			list("job", "调度作业", "状态与日志", "job"), list("job.request", "提交记录", "查看任务请求", "job request"), list("job.template", "作业模板", "查看模板和参数", "job template"), list("cluster", "计算集群", "集群与分区", "cluster"),
 		}}
 	}))
 	resources := navGroup{key: "resources", title: "资源与申请", summary: "选资源、查配额、跟进申请", items: []row{
-		link("catalog", "资源目录", "比较模板、估价和创建实例", "bupt compute catalog", w.catalog),
-		link("presets", "资源预设", "复用常用资源组合", "bupt compute preset", w.presets),
-		link("quota", "我的配额", "查看用量和上限、申请变更", "bupt compute quota", w.quotas),
+		navLink("catalog", "资源目录", "比较模板、估价和创建实例", "bupt compute catalog", w.catalog),
+		navLink("presets", "资源预设", "复用常用资源组合", "bupt compute preset", w.presets),
+		navLink("quota", "我的配额", "查看用量和上限、申请变更", "bupt compute quota", w.quotas),
 		list("request", "平台申请", "申请与审批状态", "request"),
 	}}
 	optional(&resources, "remoteApp", section("remote", "远程算力", "商城资源、实例和订单", "bupt compute remote", func() content {
@@ -172,7 +194,7 @@ func (w *workspace) billingMenu() content {
 				continue
 			}
 		}
-		v.rows = append(v.rows, link(item.section, item.title, "", "bupt compute "+item.command, func() { w.computeList(item.section, item.title, item.command, 1) }))
+		v.rows = append(v.rows, navLink(item.section, item.title, "", "bupt compute "+item.command, func() { w.computeList(item.section, item.title, item.command, 1) }))
 	}
 	return v
 }

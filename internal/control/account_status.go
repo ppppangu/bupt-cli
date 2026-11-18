@@ -203,19 +203,6 @@ func (f *accountFeed) ticketLocked() accountTicket {
 	return accountTicket{f, f.generation, f.scope, f.issued}
 }
 
-func campusNumber(s string) string {
-	n := strings.TrimPrefix(s, "cas_")
-	if n == "" {
-		return ""
-	}
-	for _, ch := range n {
-		if ch < '0' || ch > '9' {
-			return ""
-		}
-	}
-	return n
-}
-
 // Reduce a partial observation. A gateway denial dominates the projected
 // platform state, and identity-bound fields live only with a verified subject.
 func reduceAccount(old domain.AccountStatus, o domain.AccountObservation, now time.Time) domain.AccountStatus {
@@ -225,11 +212,12 @@ func reduceAccount(old domain.AccountStatus, o domain.AccountObservation, now ti
 	}
 	if o.Platform != "" {
 		v.Platform = o.Platform
-		id := campusNumber(o.CampusID)
+		id := domain.CampusNumber(o.CampusID)
 		if id == "" || v.CampusID != id {
 			v.Running = nil
 		}
 		v.CampusID, v.Name, v.Balance = id, o.Name, o.Balance
+		v.ConsentRequired = o.ConsentRequired
 	}
 	switch v.VPN {
 	case "authenticated":
@@ -245,6 +233,7 @@ func reduceAccount(old domain.AccountStatus, o domain.AccountObservation, now ti
 	}
 	if v.Platform != "authenticated" {
 		v.Name, v.CampusID, v.Balance, v.Running = "", "", nil, nil
+		v.ConsentRequired = false
 	}
 	if v.VPN == "authenticated" || v.Platform == "authenticated" {
 		// A partial check cannot extend the lifetime of an unobserved layer.
@@ -312,7 +301,24 @@ func (t accountTicket) observePortal(a domain.PortalAccount, interactive bool) {
 	if t.feed.direct {
 		vpn = "not_configured"
 	}
-	t.observe(domain.AccountObservation{VPN: vpn, Platform: "authenticated", CampusID: a.SID, Name: a.Name, Balance: a.Balance}, interactive)
+	t.observe(domain.AccountObservation{VPN: vpn, Platform: "authenticated", CampusID: a.SID, Name: a.Name, Balance: a.Balance, ConsentRequired: a.ConsentRequired}, interactive)
+}
+
+// A completed login can renew the compute ticket while the portal remains
+// authenticated. Publish this event separately from periodic observations.
+func (t accountTicket) loginCompleted() {
+	f := t.feed
+	if f == nil {
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.closed || f.signedOut || t.scope != f.scope {
+		return
+	}
+	v := f.value
+	v.LoginRevision++
+	f.setLocked(v)
 }
 func (t accountTicket) failure(e error, portal bool) {
 	switch managedCode(e) {
@@ -335,7 +341,7 @@ func (t accountTicket) instances(s domain.Snapshot) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	v := f.value.Effective(time.Now())
-	if f.closed || f.generation != t.generation || t.sequence <= f.lastInstances || v.Platform != "authenticated" || v.CampusID == "" || v.CampusID != campusNumber(s.Identity.CampusID) || s.Identity.UID == "" {
+	if f.closed || f.generation != t.generation || t.sequence <= f.lastInstances || v.Platform != "authenticated" || v.CampusID == "" || v.CampusID != domain.CampusNumber(s.Identity.CampusID) || s.Identity.UID == "" {
 		return
 	}
 	n := 0
@@ -386,6 +392,7 @@ func (f *accountFeed) close() {
 	}
 	v.ValidUntil = time.Time{}
 	v.Balance, v.Running, v.Name, v.CampusID = nil, nil, "", ""
+	v.ConsentRequired = false
 	f.setLocked(v)
 	f.mu.Unlock()
 	f.work.Wait()

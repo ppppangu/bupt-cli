@@ -261,6 +261,11 @@ func (c *Controller) PortalWrite(ctx context.Context, profile string, p Params) 
 		}
 	}
 	idx.ChangedAt = time.Now().UTC()
+	if op.Action == "agreement.accept" {
+		// The next reader must verify the school's current terms, including
+		// when the outcome of the following write is uncertain.
+		idx.Account = nil
+	}
 	if e = c.Vault.Put(ns+"index", idx); e != nil {
 		return nil, e
 	}
@@ -280,6 +285,10 @@ func (c *Controller) PortalWrite(ctx context.Context, profile string, p Params) 
 			}
 		}
 		return nil, e
+	}
+	if op.Action == "agreement.accept" {
+		a.ConsentRequired = false
+		ticket.observePortal(a, false)
 	}
 	secretID := portalCacheKey(ns, a.SID, "secret/"+key.ID)
 	stored := portalCacheKey(ns, a.SID, "stored/"+key.ID)

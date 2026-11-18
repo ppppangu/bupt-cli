@@ -1,4 +1,4 @@
-.TH BUPT 1 "2026-11-18" "bupt" "User Commands"
+.TH BUPT 1 "2026-11-19" "bupt" "User Commands"
 .SH NAME
 bupt \- manage BUPT model APIs, compute resources, and school sessions
 .SH SYNOPSIS
@@ -38,7 +38,9 @@ SSH relay is required. Automatic peer-to-peer NAT traversal is not provided.
 Use bupt help tutorial for the offline terminal guide.
 With no arguments, bupt prints the command summary and exits.
 Run bupt tui to open the interactive platform overview.
-Use arrows, Enter and Escape to browse, / to filter, r to refresh, and q to quit.
+Use Up and Down to select actions or scroll text. Right opens a navigation
+item or expands a group. Enter invokes the focused action. Escape returns
+to the previous page. Use ? for contextual help and the corresponding CLI.
 bupt tui api and bupt tui compute open the service directly.
 The resources, work, files and access shortcuts also remain available.
 Use --cached with tui to browse controller records and saved catalogues.
@@ -56,9 +58,11 @@ context, prices and observed health. Use api usage for period totals and balance
 Use api key to list, create, enable, disable, export or delete a scoped key.
 Only an explicit export releases the secret held by the selected controller.
 Use api guide for the current gateway address and SDK examples.
-In the model detail screen choose the live trial to enter a question, embedding
-texts or rerank candidates. Enter inserts a newline, Ctrl-S saves the field and
-Ctrl-D submits one request. api model example MODEL_ID previews the request.
+In the trial screen choose a question, text embeddings, or document ranking.
+A trial opened from a model detail uses that model. Enter inserts a newline.
+Down on the last line selects the editing action. Press Enter to return to the draft.
+Ctrl-S saves the field and Ctrl-D sends one request with an eligible key.
+api model example MODEL_ID previews the request.
 api model try MODEL_ID --key KEY_ID sends the supplied input using a scoped key.
 .TP
 .B compute

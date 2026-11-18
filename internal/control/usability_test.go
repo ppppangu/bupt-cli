@@ -105,7 +105,7 @@ func TestRestartReleasedInstanceByLogicalNameDoesNotCreateAnother(t *testing.T) 
 	}); e != nil {
 		t.Fatal(e)
 	}
-	next, e := c.prepareManagedRun(context.Background(), "test", "up", lifecycleParams(map[string]any{"name": first.Name, "max_runtime": "15m", "no_ssh": true}), false)
+	next, e := c.prepareManagedRun(context.Background(), "test", "up", lifecycleParams(map[string]any{"name": first.Name, "max_runtime": "15m", "no_ssh": true}), false, nil)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -117,7 +117,7 @@ func TestRestartReleasedInstanceByLogicalNameDoesNotCreateAnother(t *testing.T) 
 func TestJobNameDoesNotReplaceInstanceAlias(t *testing.T) {
 	c, a, _ := lifecycleController(t)
 	first := fixtureActiveRun(t, c, a, false)
-	next, e := c.prepareManagedRun(context.Background(), "test", "up", lifecycleParams(map[string]any{"target": first.Name, "name": "training-job", "command": []string{"true"}, "max_runtime": "1h", "no_ssh": true}), true)
+	next, e := c.prepareManagedRun(context.Background(), "test", "up", lifecycleParams(map[string]any{"target": first.Name, "name": "training-job", "command": []string{"true"}, "max_runtime": "1h", "no_ssh": true}), true, nil)
 	if e != nil || next.Name != first.Name || next.JobName != "training-job" {
 		t.Fatal(next, e)
 	}
@@ -126,7 +126,7 @@ func TestJobNameDoesNotReplaceInstanceAlias(t *testing.T) {
 func TestJobCanInheritActiveDeadlineWithoutFreshRuntimeFlag(t *testing.T) {
 	c, a, _ := lifecycleController(t)
 	first := fixtureActiveRun(t, c, a, false)
-	next, e := c.prepareManagedRun(context.Background(), "test", "up", lifecycleParams(map[string]any{"target": first.Name, "command": []string{"true"}, "inherit_policy": true, "no_ssh": true}), true)
+	next, e := c.prepareManagedRun(context.Background(), "test", "up", lifecycleParams(map[string]any{"target": first.Name, "command": []string{"true"}, "inherit_policy": true, "no_ssh": true}), true, nil)
 	if e != nil || !next.Deadline.Equal(first.Deadline) || next.Policy != first.Policy {
 		t.Fatal(next, e)
 	}

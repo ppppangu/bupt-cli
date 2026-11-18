@@ -15,6 +15,52 @@ type testPortal struct {
 	reads, changes int
 }
 
+type termsPortal struct {
+	testPortal
+	required bool
+}
+
+func (f *termsPortal) PortalAccount(context.Context) (domain.PortalAccount, error) {
+	return domain.PortalAccount{SID: "cas_20260001", ConsentRequired: f.required}, nil
+}
+
+func (f *termsPortal) PortalChange(ctx context.Context, op domain.PortalChange) (domain.PortalKey, string, error) {
+	f.required = false
+	return f.testPortal.PortalChange(ctx, op)
+}
+
+func TestAgreementObservationFollowsSchoolAcknowledgment(t *testing.T) {
+	c, _ := coreController(t)
+	f := &termsPortal{required: true}
+	c.opts.Factory = func(domain.Profile, domain.SecretStore) (domain.PlatformAPI, error) { return f, nil }
+	if _, err := c.PortalRead(t.Context(), "bupt", params(map[string]any{"section": "account"})); err != nil {
+		t.Fatal(err)
+	}
+	account, err := c.account("bupt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := account.current()
+	if err != nil || !before.ConsentRequired || before.Effective(before.ValidUntil).ConsentRequired {
+		t.Fatal(before, err)
+	}
+	accept := params(map[string]any{"action": "agreement.accept", "target": "version-one", "confirm": "version-one", "idempotency_key": "acknowledge"})
+	if _, err = c.PortalWrite(t.Context(), "bupt", accept); err != nil {
+		t.Fatal(err)
+	}
+	after, err := account.current()
+	if err != nil || after.ConsentRequired || after.Platform != "authenticated" {
+		t.Fatal(after, err)
+	}
+	// A newer version may have appeared. The first read after acceptance
+	// must not reuse the old /api/me observation.
+	f.required = true
+	page, err := c.PortalRead(t.Context(), "bupt", params(map[string]any{"section": "key"}))
+	if err != nil || page.Account == nil || !page.Account.ConsentRequired || f.changes != 1 {
+		t.Fatal(page, err, f.changes)
+	}
+}
+
 func (f *testPortal) PortalAccount(context.Context) (domain.PortalAccount, error) {
 	return domain.PortalAccount{SID: "campus-001"}, nil
 }

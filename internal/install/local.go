@@ -32,12 +32,14 @@ type device struct {
 	IdentityFile string `json:"identity_file"`
 }
 type serviceRecord struct {
-	Manager    string `json:"manager"`
-	Name       string `json:"name"`
-	Path       string `json:"path,omitempty"`
-	PID        int    `json:"pid,omitempty"`
-	Executable string `json:"executable"`
-	Config     string `json:"config"`
+	Arguments    []string `json:"arguments,omitempty"`
+	Manager      string   `json:"manager"`
+	Name         string   `json:"name"`
+	Path         string   `json:"path,omitempty"`
+	PID          int      `json:"pid,omitempty"`
+	Executable   string   `json:"executable"`
+	Config       string   `json:"config"`
+	SetupPending bool     `json:"setup_pending,omitempty"`
 }
 
 func (h *handler) setup(ctx context.Context, cfg *config.Config, method string, p map[string]any, in io.Reader, out, errOut io.Writer) (any, error) {
@@ -92,6 +94,7 @@ func (h *handler) setup(ctx context.Context, cfg *config.Config, method string, 
 		return result, nil
 	}
 	install := paramBool(p, "install", true)
+	firstUse := method == "workspace.start"
 	start := paramBool(p, "start", true)
 	foreground := paramBool(p, "foreground", false)
 	if foreground {
@@ -117,6 +120,11 @@ func (h *handler) setup(ctx context.Context, cfg *config.Config, method string, 
 		}
 	}
 	if info, e := os.Lstat(keyPath); errors.Is(e, os.ErrNotExist) {
+		if firstUse {
+			if _, e := os.Lstat(filepath.Join(cfg.Paths.DataDir, "credentials.db")); !errors.Is(e, os.ErrNotExist) {
+				return nil, domain.E("MASTER_KEY_REQUIRED", "已有加密凭据库，请恢复原主密钥后重试")
+			}
+		}
 		if err = state.CreateMasterKey(keyPath); err != nil {
 			return nil, err
 		}
@@ -150,7 +158,7 @@ func (h *handler) setup(ctx context.Context, cfg *config.Config, method string, 
 		return nil, err
 	}
 	backups := []string{}
-	backup, err := h.saveProfile(cfg, profile)
+	backup, err := h.saveProfile(cfg, profile, firstUse)
 	if err != nil {
 		return nil, err
 	}
@@ -160,6 +168,9 @@ func (h *handler) setup(ctx context.Context, cfg *config.Config, method string, 
 	updated.Profiles[cfg.Selected] = profile
 	args := agentArgs(&updated, keyPath)
 	result := map[string]any{"mode": "local", "config": cfg.Paths.ConfigFile, "data_dir": cfg.Paths.DataDir, "state_dir": cfg.Paths.StateDir, "master_key_file": keyPath, "identity_file": d.IdentityFile, "client_id": d.ID, "started": false, "installed": false, "backups": backups, "foreground_command": append([]string{h.executable}, args...)}
+	if firstUse {
+		result["public_key"] = d.PublicKey
+	}
 	if foreground {
 		if !start {
 			return result, nil
@@ -189,6 +200,7 @@ func (h *handler) setup(ctx context.Context, cfg *config.Config, method string, 
 				return nil, e
 			}
 			record.Manager = "process"
+			record.Arguments = args
 			record.PID = pid
 			result["pid"] = pid
 			result["log"] = filepath.Join(cfg.Paths.StateDir, "agent.log")
@@ -196,7 +208,8 @@ func (h *handler) setup(ctx context.Context, cfg *config.Config, method string, 
 	}
 	if record.Manager != "" {
 		data, _ := json.MarshalIndent(record, "", "  ")
-		backup, err = h.replaceFile(filepath.Join(cfg.Paths.StateDir, "service.json"), append(data, '\n'), 0600)
+		recordPath := filepath.Join(cfg.Paths.StateDir, "service.json")
+		backup, err = h.replaceFile(recordPath, append(data, '\n'), 0600)
 		if err != nil {
 			return nil, err
 		}
@@ -301,10 +314,13 @@ func profileMap(p domain.Profile) map[string]any {
 	return map[string]any{"platform_url": p.PlatformURL, "gateway_url": p.GatewayURL, "username": p.Username, "expected_uid": string(p.ExpectedUID), "controller": p.Controller, "controller_user": p.ControllerUser, "controller_identity_file": p.ControllerIdentityFile, "controller_host_key": p.ControllerHostKey, "controller_socket": p.ControllerSocket, "http_proxy": p.HTTPProxy, "relay": map[string]any{"address": p.Relay.Address, "user": p.Relay.User, "identity_file": p.Relay.IdentityFile, "known_hosts_file": p.Relay.KnownHostsFile, "host_key": p.Relay.HostKey, "instance_address": p.Relay.InstanceAddress, "port_min": p.Relay.PortMin, "port_max": p.Relay.PortMax}}
 }
 
-func (h *handler) saveProfile(cfg *config.Config, p domain.Profile) (string, error) {
+func (h *handler) saveProfile(cfg *config.Config, p domain.Profile, preserve bool) (string, error) {
 	doc := map[string]any{}
 	data, err := readRegular(cfg.Paths.ConfigFile, 1<<20)
 	if err == nil {
+		if preserve {
+			return "", nil
+		}
 		if _, err = toml.Decode(string(data), &doc); err != nil {
 			return "", domain.E("INVALID_CONFIG", "cannot parse existing configuration")
 		}
@@ -340,6 +356,9 @@ func (h *handler) saveProfile(cfg *config.Config, p domain.Profile) (string, err
 	var b bytes.Buffer
 	if err = toml.NewEncoder(&b).Encode(doc); err != nil {
 		return "", err
+	}
+	if preserve {
+		return "", writeNew(cfg.Paths.ConfigFile, b.Bytes(), 0600)
 	}
 	return h.replaceFile(cfg.Paths.ConfigFile, b.Bytes(), 0600)
 }

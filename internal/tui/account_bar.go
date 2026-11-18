@@ -2,7 +2,6 @@ package tui
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -20,13 +19,13 @@ type accountSubscriber interface {
 // All mutations of this view run on the UI loop. The subscriptions only enqueue
 // notifications, so an incoming change never rebuilds a draft or moves focus.
 type accountView struct {
-	snapshot                  domain.AccountStatus
-	prefs                     tuiprefs.Settings
-	stop                      context.CancelFunc
-	generation                uint64
-	loginRevision             uint64
-	verifying                 bool
-	prefProblem, watchProblem string
+	snapshot                       domain.AccountStatus
+	prefs                          tuiprefs.Settings
+	stop                           context.CancelFunc
+	generation                     uint64
+	loginRevision, consentRevision uint64
+	verifying                      bool
+	prefProblem, watchProblem      string
 }
 
 func (w *workspace) startAccountView() {
@@ -94,14 +93,13 @@ func (w *workspace) startAccountWatch() {
 			if ctx.Err() != nil {
 				return
 			}
-			message := "控制器连接已断开"
-			if err != nil {
-				message = whenError(err)
-			}
 			w.post(ctx, func() {
 				if gen == w.bar.generation {
 					w.bar.snapshot = domain.AccountStatus{}
-					w.bar.watchProblem = message
+					w.bar.watchProblem = "控制器连接已断开"
+					if err != nil {
+						w.bar.watchProblem = w.controllerProblem(err)
+					}
 				}
 			})
 			if delivered {
@@ -126,16 +124,40 @@ func (w *workspace) acceptAccount(s domain.AccountStatus) {
 	}
 	w.bar.snapshot = s
 	w.bar.watchProblem = ""
+	w.controllerAvailable()
+	if s.Epoch != prev.Epoch || w.connection.pending {
+		w.checkPendingSetup()
+	}
 	// Retry only a currently visible read which failed for lack of a session.
 	// A successful login in another terminal must not trigger model calls.
-	if s.Platform == "authenticated" && prev.Platform != "authenticated" && !w.Cached {
+	loggedIn := s.Platform == "authenticated" && (prev.Platform != "authenticated" || s.LoginRevision > prev.LoginRevision)
+	accepted := s.Platform == "authenticated" && prev.ConsentRequired && !s.ConsentRequired
+	if accepted {
+		w.bar.consentRevision++
+	}
+	if loggedIn && !w.Cached {
 		w.bar.loginRevision++
+		if w.current().loginMenu {
+			w.back()
+		}
+		if w.current().area == w.statusArea && schoolLoginCode(w.statusCode) && !w.refreshing {
+			w.refreshStatus(false)
+		}
+	}
+	if loggedIn || accepted {
 		w.resumeProtectedRead(w.current())
+	}
+	p := w.current()
+	if prev.Epoch != s.Epoch && connectionError(p.problemCode) && p.load != nil && p.queryMethod != "" && !p.loading && !p.submitting {
+		w.fetchPage(p, true)
 	}
 }
 
 func (w *workspace) resumeProtectedRead(p *page) bool {
-	if !p.blockedByLogin || p.readLoginRevision == w.bar.loginRevision || p != w.current() || p.loading || p.submitting || w.bar.snapshot.Effective(time.Now()).Platform != "authenticated" {
+	s := w.bar.snapshot.Effective(time.Now())
+	renewed := w.bar.loginRevision != p.readLoginRevision
+	canResume := p.blockedByLogin && renewed || p.problemCode == "AGREEMENT_REQUIRED" && !s.ConsentRequired && (renewed || p.readConsentRevision != w.bar.consentRevision)
+	if !canResume || w.Cached || p.queryMethod == "" || p != w.current() || p.loading || p.submitting || s.Platform != "authenticated" {
 		return false
 	}
 	w.fetchPage(p, true)
@@ -143,13 +165,16 @@ func (w *workspace) resumeProtectedRead(p *page) bool {
 }
 
 func loginRequired(err error) bool {
-	var de *domain.Error
-	return errors.As(err, &de) && (de.Code == "AUTH_REQUIRED" || de.Code == "AUTH_EXPIRED" || de.Code == "GATEWAY_AUTH_EXPIRED")
+	return schoolLoginCode(errorCode(err))
 }
 
-func firstLoginError(errs ...error) error {
+func schoolLoginCode(code string) bool {
+	return code == "AUTH_REQUIRED" || code == "AUTH_EXPIRED" || code == "GATEWAY_AUTH_EXPIRED"
+}
+
+func firstAccessError(errs ...error) error {
 	for _, err := range errs {
-		if loginRequired(err) {
+		if code := errorCode(err); schoolLoginCode(code) || code == "AGREEMENT_REQUIRED" || connectionError(code) {
 			return err
 		}
 	}

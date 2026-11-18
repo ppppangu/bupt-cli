@@ -3,6 +3,8 @@ package tui
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
+	"math"
 	"slices"
 	"strconv"
 	"strings"
@@ -13,9 +15,9 @@ import (
 
 func (w *workspace) resources() content {
 	v := content{}
-	v.rows = append(v.rows, link("quota", "我的配额", "已用量、上限和单位", "bupt quota", w.quotas),
-		link("spec", "资源池与模板", "比较资源池、GPU、CPU 和内存", "bupt resources", w.catalog),
-		link("preset", "我的预设", fmt.Sprintf("%d 个 · 默认 %s", len(w.Config.Presets), label(w.Config.DefaultPreset)), "bupt preset ls", w.presets))
+	v.rows = append(v.rows, navLink("quota", "我的配额", "已用量、上限和单位", "bupt quota", w.quotas),
+		navLink("spec", "资源池与模板", "比较资源池、GPU、CPU 和内存", "bupt resources", w.catalog),
+		navLink("preset", "我的预设", fmt.Sprintf("%d 个 · 默认 %s", len(w.Config.Presets), label(w.Config.DefaultPreset)), "bupt preset ls", w.presets))
 	return v
 }
 func (w *workspace) quotas() {
@@ -52,67 +54,55 @@ func (w *workspace) quotaRequests() {
 			if scope != "" {
 				title += " · " + scope
 			}
-			r := w.contextAction(title, detail+" · ID "+id, []string{"compute", "quota", "request"}, id)
-			r.key = key
-			v.rows = append(v.rows, r)
+			v.rows = append(v.rows, navLink(key, title, detail, cmdline("compute", "quota", "request", id), func() {
+				w.quotaForm(key, title, quota)
+			}))
 		}
 		return v
 	}))
 }
-func (w *workspace) catalog() {
-	p := queryPage(w, "资源池与模板", "bupt resources", "resources.overview", map[string]any{"cached": w.Cached}, false, func(result domain.ResourceOverview) content {
-		v := content{empty: "此账号暂无可见模板。"}
-		source := "尚无记录"
-		if result.CatalogSource == "cached" {
-			source = "缓存"
-		} else if result.CatalogSource == "live" {
-			source = "实时"
-		}
-		if result.CatalogAt != nil {
-			source += " " + moment(*result.CatalogAt)
-		}
-		v.facts = []string{"模板目录 · " + source}
-		if len(result.Warnings) > 0 {
-			v.facts = append(v.facts, strings.Join(result.Warnings, " · "))
-		}
+func (w *workspace) catalog()        { w.templateList(false) }
+func (w *workspace) chooseTemplate() { w.templateList(true) }
+
+func (w *workspace) templateList(create bool) {
+	title := "资源目录"
+	if create {
+		title = "选择实例模板"
+	}
+	p := queryPage(w, title, "bupt compute catalog", "resources.overview", map[string]any{"cached": w.Cached}, false, func(result domain.ResourceOverview) content {
+		v := content{empty: "此账号暂无可见模板。", facts: slices.Clone(result.Warnings)}
+		online := !w.Cached && result.CatalogSource == "live"
 		if result.CatalogSource == "unavailable" {
-			v.empty = "尚无模板目录。登录后可读取学校数据。"
+			v.empty = "还没有可用的模板目录。"
+		} else if !online {
+			v.facts = append(v.facts, "已保存的模板目录 · 完整规格和创建需要在线读取")
 		}
 		for _, pool := range result.Pools {
-			v.rows = append(v.rows, link(pool.ID, pool.Name, fmt.Sprintf("%d 个可见模板", len(pool.Templates)), "bupt spec ls", func() {
-				w.poolPage(pool, result.CatalogSource)
-			}))
+			if len(pool.Templates) != 0 {
+				v.rows = append(v.rows, row{key: "pool/" + pool.ID, title: pool.Name})
+			}
+			for _, t := range pool.Templates {
+				name := strings.TrimSpace(t.Name + " " + t.Version)
+				summary := resourceSummary(t.Resources)
+				cmd := cmdline("compute", "catalog", "show", string(t.ID))
+				r := navLink("spec/"+string(t.ID), name, summary, cmd, func() {
+					switch {
+					case !online:
+						w.textPage(name, cmd, strings.Join([]string{pool.Name, name, summary, "模板 ID " + string(t.ID)}, "\n"))
+					case create:
+						w.createFromTemplate(t, pool.Name)
+					default:
+						w.specPage(domain.Spec{ID: t.ID, Name: t.Name, Version: t.Version})
+					}
+				})
+				if create && online {
+					r.verb = "填写申请"
+				}
+				v.rows = append(v.rows, r)
+			}
 		}
 		return v
 	})
-	w.push(p)
-}
-func (w *workspace) poolPage(initial domain.ResourcePool, source string) {
-	build := func(pool domain.ResourcePool, online bool) content {
-		list := content{empty: "当前目录中没有此资源池的模板。"}
-		for _, t := range pool.Templates {
-			title := strings.TrimSpace(t.Name + " " + t.Version)
-			summary := resourceSummary(t.Resources)
-			cmd := cmdline("spec", "show", string(t.ID))
-			list.rows = append(list.rows, link(string(t.ID), title, summary, cmd, func() {
-				if !online {
-					w.textPage(title, cmd, title+"\n"+summary+"\n模板 ID "+string(t.ID)+"\n缓存目录 · 完整规格需在线读取")
-					return
-				}
-				w.specPage(domain.Spec{ID: t.ID, Name: t.Name, Version: t.Version})
-			}))
-		}
-		return list
-	}
-	p := queryPage(w, initial.Name, "bupt spec ls", "resources.overview", map[string]any{"cached": w.Cached}, false, func(result domain.ResourceOverview) content {
-		for _, pool := range result.Pools {
-			if pool.ID == initial.ID {
-				return build(pool, !w.Cached && result.CatalogSource == "live")
-			}
-		}
-		return content{empty: "当前目录中没有此资源池。"}
-	})
-	p.build = func() content { return build(initial, !w.Cached && source == "live") }
 	w.push(p)
 }
 func object(v any) map[string]any {
@@ -167,10 +157,14 @@ func constraintRows(v any) []row {
 }
 func (w *workspace) specPage(s domain.Spec) {
 	cmd := cmdline("spec", "show", string(s.ID))
+	selectedID := s.ID
 	p := queryPage(w, s.Name, cmd, "spec.show", map[string]any{"target": s.ID}, true, func(s domain.Spec) content {
+		if s.ID != selectedID {
+			return content{empty: "模板已变更，请返回资源目录重新选择。"}
+		}
 		v := content{facts: []string{strings.TrimSpace(s.Name+" "+s.Version) + "   ·   " + value(s.Options["poolDisplayName"]), resourceSummary(object(s.Options["resourceSummary"]))}}
-		v.rows = []row{link("create", "用此模板创建…", "下一步填写名称和资源", cmdline("instance", "create", "NAME", "--spec-id", string(s.ID)), func() { w.createForm(s, nil) }),
-			link("estimate", "估算模板默认价格", "读取平台估价", cmdline("estimate", "--spec-id", string(s.ID)), func() { w.estimate(s.ID, nil) })}
+		v.rows = []row{navLink("create", "用此模板创建…", "下一步填写名称和资源", cmdline("instance", "create", "NAME", "--spec-id", string(s.ID)), func() { w.createForm(s, nil) }),
+			link("estimate", "估算模板默认价格", "读取平台估价", cmdline("estimate", "--spec-id", string(s.ID)), func() { w.estimate(&draft{spec: s}) })}
 		v.rows = append(v.rows,
 			w.contextAction("自定义资源估价", "按所选 CPU、GPU 和内存查询价格", []string{"compute", "catalog", "estimate"}, "--spec-id="+string(s.ID)),
 			w.contextAction("保存模板预设", "为常用配置命名", []string{"compute", "preset", "set"}, "--spec-id="+string(s.ID)),
@@ -181,7 +175,7 @@ func (w *workspace) specPage(s domain.Spec) {
 		}
 		v.rows = append(v.rows, info("模板 ID", string(s.ID)))
 		if s.Description != "" {
-			v.rows = append(v.rows, link("desc", "说明", s.Description, cmd, func() { w.textPage("模板说明", cmd, s.Description) }))
+			v.rows = append(v.rows, navLink("desc", "说明", s.Description, cmd, func() { w.textPage("模板说明", cmd, s.Description) }))
 		}
 		return v
 	})
@@ -194,22 +188,40 @@ func seconds(v any) string {
 	}
 	return d.String()
 }
-func (w *workspace) estimate(id domain.ID, preset *domain.Preset) {
-	params := map[string]any{"spec_id": id}
-	cmd := cmdline("estimate", "--spec-id", string(id))
-	if preset != nil {
-		params["preset"] = preset.Name
-		params["preset_snapshot"] = preset
-		cmd = cmdline("estimate", "--preset", preset.Name)
+func (w *workspace) estimate(d *draft) {
+	params := map[string]any{"spec_id": d.spec.ID}
+	args := []string{"estimate", "--spec-id", string(d.spec.ID)}
+	if d.preset != nil {
+		params["preset"] = d.preset.Name
+		params["preset_snapshot"] = *d.preset
+		args = []string{"estimate", "--preset", d.preset.Name}
 	}
-	w.push(queryPage(w, "费用估算", cmd, "spec.estimate", params, true, func(result map[string]any) content {
-		v := content{facts: []string{"平台返回的估价，单位以字段为准。"}, empty: "平台未返回价格。"}
-		for _, k := range orderedKeys(result) {
-			name := k
+	if len(d.resources) > 0 {
+		params["resources"] = maps.Clone(d.resources)
+		for _, k := range orderedKeys(d.resources) {
+			args = append(args, "--"+k, d.resources[k])
+		}
+	}
+	d.price = ""
+	w.push(queryPage(w, "学校估价", cmdline(args...), "spec.estimate", params, true, func(raw json.RawMessage) content {
+		result, err := readComputeJSON(raw)
+		if err != nil || object(result) == nil {
+			return content{empty: "学校尚未返回可读的估价。"}
+		}
+		data := object(result)
+		v := content{empty: "学校尚未返回估价。"}
+		for _, k := range orderedKeys(data) {
+			name, val := k, value(data[k])
 			if k == "points_per_day" {
 				name = "积分 / 天"
+				if val == "" {
+					val = "待学校确认"
+				}
+				if n, err := strconv.ParseFloat(val, 64); err == nil && n >= 0 && !math.IsInf(n, 0) {
+					d.price = val
+				}
 			}
-			v.rows = append(v.rows, info(name, value(result[k])))
+			v.rows = append(v.rows, info(name, val))
 		}
 		return v
 	}))
@@ -241,7 +253,7 @@ func (w *workspace) presets() {
 			if name == w.Config.DefaultPreset {
 				title += " · 默认"
 			}
-			v.rows = append(v.rows, link(name, title, policyText(p.Policy), cmdline("preset", "show", name), func() {
+			v.rows = append(v.rows, navLink(name, title, policyText(p.Policy), cmdline("preset", "show", name), func() {
 				w.local(name, cmdline("preset", "show", name), func() content {
 					p, exists := w.Config.Presets[name]
 					if !exists {
@@ -249,8 +261,8 @@ func (w *workspace) presets() {
 					}
 					c := content{facts: []string{"模板 " + string(p.SpecID), policyText(p.Policy)}}
 					if !w.Cached {
-						c.rows = append(c.rows, link("create", "按预设创建…", "预览后提交", cmdline("instance", "create", "NAME", "--preset", name), func() { w.createForm(domain.Spec{ID: p.SpecID}, &p) }),
-							link("estimate", "估算费用", "读取预设资源的价格", cmdline("estimate", "--preset", name), func() { w.estimate(p.SpecID, &p) }))
+						c.rows = append(c.rows, navLink("create", "按预设创建…", "预览后提交", cmdline("instance", "create", "NAME", "--preset", name), func() { w.createForm(domain.Spec{ID: p.SpecID}, &p) }),
+							link("estimate", "估算费用", "读取预设资源的价格", cmdline("estimate", "--preset", name), func() { w.estimate(&draft{spec: domain.Spec{ID: p.SpecID}, preset: &p}) }))
 						c.rows = append(c.rows, w.contextAction("编辑预设", "调整资源与托管策略", []string{"compute", "preset", "set"}, name))
 						if w.Config.DefaultPreset == name {
 							c.rows = append(c.rows, w.contextAction("取消默认预设", "新建实例时不再自动使用此预设", []string{"compute", "preset", "use"}, "-"))

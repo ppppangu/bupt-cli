@@ -452,7 +452,7 @@ func TestCreateAuthFailureIsResumableAndNoDuplicateCreate(t *testing.T) {
 	c, a, _ := lifecycleController(t)
 	p := lifecycleParams(map[string]any{"name": "auth-cycle", "spec_id": "9", "max_runtime": "2h", "no_ssh": true, "no_wait": true})
 	c.intentMu.Lock()
-	r, e := c.prepareManagedRun(context.Background(), "test", "up", p, false)
+	r, e := c.prepareManagedRun(context.Background(), "test", "up", p, false, nil)
 	c.intentMu.Unlock()
 	if e != nil {
 		t.Fatal(e)

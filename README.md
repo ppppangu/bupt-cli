@@ -9,14 +9,12 @@
 ```sh
 sh ./install.sh
 export PATH="$HOME/.local/bin:$PATH"
-bupt init
-bupt login
 bupt tui
 ```
 
 同一份 ZIP 适用于 Apple 芯片 Mac、Intel Mac 及 64 位 Linux（x86 或 ARM）。Windows 用户请在 WSL2 的 Linux 终端安装和使用。安装包自带程序，每位使用者在自己的设备上初始化和登录。[安装说明与 WSL2 用法](packaging/使用说明.txt)
 
-`bupt init` 启动当前用户的本地控制器。校外网络认证过期时，`bupt login` 先显示 WebVPN 二维码，再完成统一身份认证。支持统一认证口令的账号可用 `bupt login --sso-password`。
+首次打开 TUI，从首页初始化个人工作区，然后选择「登录学校账号」。喜欢命令行的用户可依次运行 `bupt init` 和 `bupt login`。校外网络认证过期时先扫 WebVPN 二维码，接下来可选择统一身份扫码或账号密码。命令行的密码入口是 `bupt login --sso-password`。
 
 ## 常用操作
 
@@ -32,11 +30,11 @@ bupt tui
 
 初次使用可在首页打开「教程说明」，或运行 `bupt help tutorial`。桌面上多个 TUI 共用控制器的账号状态，在「账号状态与配置」可调整顶栏。个人配置和状态默认位于 `~/.bupt/`。
 
-课堂演示可以直接打开 `bupt tui api` 或 `bupt tui compute`。方向键选择，Enter 打开，Esc 返回，`q` 退出。编写脚本时可用 `bupt api model --json` 取得结构化结果。实例启停、SSH、文件和后台作业的例子见[使用手册](docs/usage.md)。
+课堂演示可用 `bupt tui api` 或 `bupt tui compute`。↑↓ 选择或滚动阅读，→ 展开分组或打开详情，Enter 执行选中项显示的动作，Esc 返回，`q` 退出。脚本可用 `bupt api model --json` 取得结构化结果。[实例、SSH、文件和作业用法](docs/usage.md)
 
 ### 在 TUI 里输入并发送
 
-打开 `bupt tui api`，选择「试用模型 → 模型 ID」。输入框从空白开始。对话模型直接输入问题，向量模型输入一段或多段文本，重排模型填写问题和候选段落。输入时 Enter 换行，Ctrl+D 保存并发送一次，Ctrl+S 只保存。也可以选「填入示例」，修改后按「发送一次」。结果页按 Esc 可回到刚才的输入。
+打开 `bupt tui api`，选「试用模型 → 问问题」。在「你的问题」按 Enter 输入。写完后在末行按 ↓ 再按 Enter 完成编辑，回到表单选择「发送一次」。第一次需要 Key 时可就地创建，完成后接着发送刚才的问题。也可以选择比较文本语义或按相关性排序，并在任务中更换模型。
 
 试用使用当前控制器已保管、已启用并授权此模型的 Key。仅一把符合条件时会自动选中，多把时可自行选择。学校按实际调用计量，浏览和编辑只读取管理数据。[命令行示例与结果格式](docs/usage.md#模型试用)
 

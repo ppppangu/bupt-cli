@@ -53,6 +53,29 @@ func payloadResources(t *testing.T, p map[string]any, gid string) map[string]str
 	return out
 }
 
+func TestCreatePreviewReportsResolvedResourceBundleOnly(t *testing.T) {
+	c, _, source := resourceContractFixture(t)
+	result, err := c.ManagedOperation(context.Background(), "bupt", "create", params(map[string]any{
+		"name": "teaching-pool-test", "spec_id": source.SpecID, "max_runtime": "30m", "dry_run": true,
+		"resources": map[string]string{"gpu": "0.2:A100:8192"},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	preview := result.(map[string]any)
+	fields := payloadResources(t, map[string]any{"resourceConstraints": preview["resource_constraints"]}, "9007199254740995")
+	if fields["CPU"] != "4" || fields["Memory"] != "12288" || fields["GPU"] != "0.2:A100:8192" {
+		t.Fatal(fields)
+	}
+	if len(preview) != 3 || preview["run"] == nil || preview["dry_run"] != true {
+		t.Fatal("unexpected preview fields")
+	}
+	runs, err := c.Store.ListRuns("bupt")
+	if err != nil || len(runs) != 0 {
+		t.Fatal("preview persisted a run", err)
+	}
+}
+
 func TestPlatformMiBConversionHasNoByteScaleOrRounding(t *testing.T) {
 	for _, tc := range []struct {
 		kind  string

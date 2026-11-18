@@ -578,16 +578,10 @@ func (c *Client) VerifiedPortalAccount() (domain.PortalAccount, bool) {
 // The portal namespaces CAS accounts as cas_<student number>. Temp accounts
 // and nonnumeric identifiers keep their distinct identities.
 func campusSubject(s string) string {
-	number, ok := strings.CutPrefix(s, "cas_")
-	if !ok || number == "" {
-		return s
+	if number := domain.CampusNumber(s); number != "" {
+		return number
 	}
-	for _, ch := range number {
-		if ch < '0' || ch > '9' {
-			return s
-		}
-	}
-	return number
+	return s
 }
 
 func (c *Client) PortalLogin() (domain.PlatformAPI, error) { return c.PortalClient() }

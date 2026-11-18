@@ -23,15 +23,14 @@ macOS 默认 zsh 可放在 ~/.zshrc，Linux 或 WSL 常用的交互 bash 可放�
 
 首次登录
 
-    bupt init
-    bupt login
     bupt tui
 
-init 为当前用户启动本地控制器。校外网络认证过期时，先扫码通过 WebVPN，再完成学校统一身份认证。
+在首页按提示初始化个人工作区，再选「登录学校账号」。命令行也可依次运行 bupt init 和 bupt login。
+校外网络认证过期时，先扫码通过 WebVPN，再完成学校统一身份认证。
 支持统一认证密码的账号也可以运行 bupt login --sso-password，按提示在终端中输入学工号和密码。
 
-Linux 或 WSL2 如果提示 systemctl --user 无法连接，请在一个终端运行 bupt init --foreground
-并保持该窗口打开，然后在第二个 Linux 终端运行 bupt login 和 bupt tui。
+Linux 或 WSL2 上，如果用户级 systemd 不可用，可在 TUI 内选择「作为本机进程启动」。
+系统重启后，可回到同一工作区再次启动。命令行用户也可运行 bupt init --install=false。
 
 常用查询
 
@@ -43,14 +42,15 @@ Linux 或 WSL2 如果提示 systemctl --user 无法连接，请在一个终端�
     bupt status              查看平台总览
     bupt logout              退出当前配置的学校登录会话
 
-在「大模型 API 服务 → 试用模型 → 模型 ID」中可输入自己的问题或文本。
-Enter 换行，Ctrl+S 保存，Ctrl+D 发送一次。模型结果直接显示在终端。
+在「大模型 API 服务 → 试用模型 → 问问题」输入自己的问题。
+Enter 换行。在末行按 ↓ 再按 Enter 完成编辑，回到表单选择「发送一次」。
+第一次使用可就地创建所选模型的 Key，返回后保留刚才的输入。
 
 首页「教程说明」可以离线阅读。命令行使用 bupt help tutorial。
 「账号状态与配置」可设置顶栏字段和自动核验，多窗口会同步登录和退出状态。
 个人配置、状态与凭据默认位于 ~/.bupt/。
 
-单独输入 bupt 会打印帮助。全屏界面使用方向键选择，Enter 打开，Esc 返回，q 退出。
+单独输入 bupt 会打印帮助。全屏界面用 ↑↓ 选择或阅读，→ 展开或查看，Enter 执行选中动作，Esc 返回，q 退出。
 启动或创建实例会占用学校额度，请先在界面预览规格、时限和清理策略。
 使用本地控制器时，电脑休眠会暂停它向学校提交管理操作。
 

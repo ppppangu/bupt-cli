@@ -4,6 +4,9 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"bupt.local/cli/internal/domain"
+	"github.com/gdamore/tcell/v2"
 )
 
 func findPortalRow(v content, id string) (row, bool) {
@@ -13,6 +16,77 @@ func findPortalRow(v content, id string) (row, bool) {
 		}
 	}
 	return row{}, false
+}
+
+func TestAgreementRecoveryReturnsToItsReadAfterExplicitConfirmation(t *testing.T) {
+	const versionID = "agreement-2"
+	accepted := false
+	modelReads := 0
+	f := &fixtureBackend{reply: func(_ context.Context, method string, p map[string]any) (any, error) {
+		switch method {
+		case "portal.read":
+			switch p["section"] {
+			case "model":
+				modelReads++
+				if !accepted {
+					return nil, domain.E("AGREEMENT_REQUIRED", "请先确认协议")
+				}
+				if p["refresh"] != true {
+					t.Error("consent did not refresh the original model list")
+				}
+				return domain.PortalPage{Section: "model", Models: []domain.PortalModel{{ID: "course", Kind: "chat"}}}, nil
+			case "agreement":
+				if p["refresh"] != true {
+					t.Error("recovery reused an old agreement")
+				}
+				return domain.PortalPage{Account: &domain.PortalAccount{ConsentRequired: !accepted}, Data: map[string]any{
+					"id": versionID, "version": "2", "title": "学校协议", "body": "阅读本版本正文。",
+				}}, nil
+			}
+		case "portal.change":
+			if p["action"] != "agreement.accept" || p["target"] != versionID || p["confirm"] != versionID || accepted {
+				t.Errorf("unexpected write %#v", p)
+			}
+			accepted = true
+			return map[string]any{"ok": true}, nil
+		}
+		t.Errorf("unexpected %s %#v", method, p)
+		return nil, nil
+	}}
+	w := fixtureWorkspace(t, f)
+	w.portalPage("model", "选模型", "bupt api model", nil)
+	origin := w.current()
+	waitFor(t, w, func() bool { return !origin.loading })
+	click(t, w, "agreement-required")
+	document := w.current()
+	waitFor(t, w, func() bool { return !document.loading })
+	w.draw()
+	if document.selected(w.view(document)) != nil {
+		t.Fatal("opening the document focused acceptance instead of its text")
+	}
+	trialKey(w, tcell.KeyRight)
+	if w.current() != document {
+		t.Fatal("reading opened a confirmation")
+	}
+	click(t, w, "accept")
+	confirm := w.current()
+	for i, r := range w.view(confirm).rows {
+		if r.key == "submit" {
+			w.move(i)
+		}
+	}
+	trialKey(w, tcell.KeyRight)
+	if len(f.observed()) != 2 || confirm.submitting {
+		t.Fatal("right submitted consent")
+	}
+	trialKey(w, tcell.KeyEnter)
+	waitFor(t, w, func() bool { return w.current() == origin && !origin.loading })
+	if origin.problem != "" || !accepted || modelReads != 2 {
+		t.Fatal("original read did not recover", origin.problem, modelReads)
+	}
+	if _, ok := findPortalRow(w.view(origin), "course"); !ok {
+		t.Fatal("wrong destination after accepting")
+	}
 }
 func TestDocumentReaderAndNewsCursor(t *testing.T) {
 	headTitle := "甲"

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"bupt.local/cli/internal/domain"
+	"bupt.local/cli/internal/shellquote"
 )
 
 type exampleChoice struct{ id, label string }
@@ -44,7 +45,15 @@ func (w *workspace) saveSnippet(text string) {
 	})
 }
 func (w *workspace) snippetPage(title, cmd, body string) {
-	w.push(&page{title: title, command: cmd, copyText: body, build: func() content { return w.textContent(body) }})
+	w.push(&page{title: title, command: cmd, copyText: body, build: func() content {
+		v := w.textContent(body)
+		copy := link("copy", "复制全文", "", cmd, func() { w.copySnippet(body) })
+		copy.verb = "复制全文"
+		save := link("save", "另存为新文件", "", "", func() { w.saveSnippet(body) })
+		save.verb = "选择路径"
+		v.rows = append(v.rows, copy, save)
+		return v
+	}})
 }
 
 // Only the playground can submit a draft. Switching models here retains edits
@@ -64,7 +73,7 @@ func (w *workspace) readTrialPage(ctx context.Context, section string) (domain.P
 
 func (w *workspace) integrationExamples() {
 	browser := &exampleBrowser{format: snippetFormats[0], drafts: make(map[string]*trialForm)}
-	p := &page{title: "接入示例", command: "bupt api guide"}
+	p := &page{title: "接入示例", command: "bupt api guide", queryMethod: "portal.read"}
 	p.load = func(ctx context.Context) (func() content, error) {
 		guide, guideErr := w.readTrialPage(ctx, "guide")
 		catalog, catalogErr := w.readTrialPage(ctx, "model")
@@ -77,25 +86,30 @@ func (w *workspace) integrationExamples() {
 		}
 		return func() content {
 			v := content{}
-			if base != "" {
-				v.facts = append(v.facts, "Base URL  "+base)
-				v.rows = append(v.rows, link("base", "公网 Base URL", base, "bupt api guide -q", func() { w.snippetPage("Base URL", "bupt api guide -q", base) }))
-			} else {
+			if base == "" {
 				v.facts = append(v.facts, "尚未取得 Base URL。可在 BUPT_BASE_URL 中设置门户公布的地址。")
 			}
 			if guideErr != nil {
 				v.facts = append(v.facts, whenError(guideErr))
 			}
+			var draft *trialForm
 			switch {
 			case catalogErr != nil:
 				v.facts = append(v.facts, whenError(catalogErr))
 			case len(models) == 0:
 				v.facts = append(v.facts, "当前目录没有可生成示例的模型。")
 			default:
-				w.exampleRows(&v, browser, models, base)
+				draft = browser.draft(models)
+				w.exampleOptions(&v, browser, models, draft)
+			}
+			if base != "" {
+				v.rows = append(v.rows, navLink("base", "公网地址（Base URL）", base, "bupt api guide -q", func() { w.snippetPage("Base URL", "bupt api guide -q", base) }))
+			}
+			if draft != nil {
+				w.exampleOutput(&v, draft, browser.format, base)
 			}
 			return v
-		}, firstLoginError(guideErr, catalogErr)
+		}, firstAccessError(guideErr, catalogErr)
 	}
 	w.push(p)
 }
@@ -117,44 +131,82 @@ func (b *exampleBrowser) draft(models []domain.PortalModel) *trialForm {
 	return f
 }
 
-func (w *workspace) exampleRows(v *content, b *exampleBrowser, models []domain.PortalModel, base string) {
-	f := b.draft(models)
-	cmd := cmdline(f.args(false, "--format", b.format.id)...)
-	v.rows = append(v.rows, link("model", "模型", f.model.ID, "", func() {
+func (w *workspace) exampleOptions(v *content, b *exampleBrowser, models []domain.PortalModel, f *trialForm) {
+	v.facts = append(v.facts, "在自己的程序里调用模型。运行请求后按学校用量计费。")
+	input := f.input.Query
+	if len(f.input.Texts) > 0 {
+		input = f.input.Texts[0]
+		if len(f.input.Texts) > 1 {
+			input = fmt.Sprintf("%d 段文本 · %s", len(f.input.Texts), input)
+		}
+	}
+	if len(f.input.Documents) > 0 {
+		input = fmt.Sprintf("%d 个候选段落 · %s", len(f.input.Documents), input)
+	}
+	v.rows = append(v.rows, navLink("model", "选择模型", f.model.ID, "", func() {
 		choices := make([]exampleChoice, len(models))
 		for i, m := range models {
 			choices[i] = exampleChoice{m.ID, m.ID}
 		}
 		w.chooseExample("选择模型", choices, b.model, func(c exampleChoice) { b.model = c.id })
-	}), link("format", "示例格式", b.format.label, "", func() {
+	}), navLink("format", "示例格式", b.format.label, "", func() {
 		w.chooseExample("选择示例格式", snippetFormats, b.format.id, func(c exampleChoice) { b.format = c })
-	}), link("preview", "展开示例全文", b.format.label+" · "+f.model.ID, cmd, func() {
-		code, err := f.model.ExampleCode(f.input, b.format.id, base)
+	}), navLink("input", "编辑示例输入", input, "", func() {
+		w.local("编辑示例输入", "", func() content {
+			cv := content{}
+			w.trialInputRows(&cv, f, nil)
+			w.trialLimitRow(&cv, f)
+			return cv
+		})
+	}))
+	if b.format.id != "json" {
+		external := b.format.id != "bupt"
+		key := "BUPT_KEY_ID"
+		if external {
+			key = "BUPT_API_KEY"
+		}
+		v.rows = append(v.rows, navLink("setup", "准备调用密钥", "设置 "+key, "bupt api key", func() {
+			w.exampleKeySetup(f.model.ID, key, external)
+		}))
+	}
+}
+
+func (w *workspace) exampleOutput(v *content, f *trialForm, format exampleChoice, base string) {
+	cmd := cmdline(f.args(false, "--format", format.id)...)
+	v.rows = append(v.rows, navLink("preview", "查看并复制代码", format.label+" · "+f.model.ID, cmd, func() {
+		code, err := f.model.ExampleCode(f.input, format.id, base)
 		if err != nil {
 			w.notice = whenError(err)
 			return
 		}
-		w.snippetPage(b.format.label, cmd, code)
-	}))
-	switch b.format.id {
-	case "curl", "python":
-		v.rows = append(v.rows, link("setup", "运行准备", "设置 BUPT_API_KEY，直接使用公网网关", "bupt api key", func() { w.snippetPage("配置当前终端的 Key", "bupt api key", keySetup(true)) }))
-	case "bupt":
-		v.rows = append(v.rows, link("setup", "运行准备", "选择控制器保管的 Key ID", "bupt api key", func() { w.snippetPage("配置当前终端的 Key ID", "bupt api key", keySetup(false)) }))
-	}
-	v.rows = append(v.rows, link("input", "编辑示例输入", f.template.Title, "", func() {
-		w.local("编辑示例输入", "", func() content {
-			cv := content{}
-			w.trialInputRows(&cv, f, nil)
-			return cv
-		})
+		w.snippetPage(format.label, cmd, code)
 	}))
 	if !w.Cached {
-		v.rows = append(v.rows, link("trial", "带入试用模型", "沿用当前输入，选好 Key 后可发送", "bupt help api model try --all", func() {
+		v.rows = append(v.rows, navLink("trial", "在 TUI 中试用", "沿用当前模型和输入", "bupt help api model try --all", func() {
 			w.openTrialForm(&trialForm{model: f.model, template: f.template, input: copyTrial(f.input)})
 		}))
 	}
-	v.facts = append(v.facts, "实际发送请求后，学校按所选模型的用量计费。")
+}
+
+func (w *workspace) exampleKeySetup(model, variable string, external bool) {
+	created := ""
+	w.local("准备调用密钥", "bupt api key", func() content {
+		v := content{facts: []string{"选择一把已启用、允许 " + model + " 的 Key。"}}
+		if created != "" {
+			v.facts = []string{"新 Key 已授权此模型，配置命令已选用 " + created + "。"}
+		} else if external {
+			v.facts = append(v.facts, "已有完整密钥时，将它设置为程序的 BUPT_API_KEY。")
+		}
+		v.rows = append(v.rows, navLink("instructions", "使用 bupt 保管的 Key", "复制终端命令以设置 "+variable, "bupt api key", func() {
+			w.snippetPage("设置 "+variable, "bupt api key", keySetup(external, created))
+		}))
+		if created == "" && !w.Cached {
+			v.rows = append(v.rows, navLink("new", "为此模型创建 Key", model, cmdline("api", "key", "create", "NAME", "--model", model), func() {
+				w.keyFormReturning([]string{model}, w.current(), func(result map[string]any) { created, _ = result["id"].(string) })
+			}))
+		}
+		return v
+	})
 }
 
 func (w *workspace) chooseExample(title string, choices []exampleChoice, selected string, selectChoice func(exampleChoice)) {
@@ -172,11 +224,14 @@ func (w *workspace) chooseExample(title string, choices []exampleChoice, selecte
 	w.move(slices.IndexFunc(choices, func(c exampleChoice) bool { return c.id == selected }))
 }
 
-func keySetup(exportKey bool) string {
+func keySetup(exportKey bool, id string) string {
 	text := `bupt api key
 printf 'Key ID > '
 IFS= read -r BUPT_KEY_ID
 export BUPT_KEY_ID`
+	if id != "" {
+		text = "export BUPT_KEY_ID=" + shellquote.Literal(id)
+	}
 	if exportKey {
 		text += `
 BUPT_API_KEY=$(bupt api key export --output - -- "$BUPT_KEY_ID") && export BUPT_API_KEY`

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"os"
@@ -31,6 +32,35 @@ func localFixture(t *testing.T) (*Client, net.Listener) {
 	t.Cleanup(func() { l.Close() })
 	p := domain.Profile{Name: "bupt", Controller: "local", ControllerSocket: path}
 	return &Client{Config: &config.Config{}, Profile: p}, l
+}
+
+func TestLocalControllerUnavailableRequiresMissingSocket(t *testing.T) {
+	d, err := os.MkdirTemp("/tmp", "bupt-connect-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(d)
+	client := &Client{Config: &config.Config{}, Profile: domain.Profile{Controller: "local", ControllerSocket: filepath.Join(d, "missing.sock")}}
+	check := func(path, code string) {
+		t.Helper()
+		client.Profile.ControllerSocket = path
+		_, err := client.open(t.Context())
+		var de *domain.Error
+		if !errors.As(err, &de) || de.Code != code {
+			t.Fatalf("unavailable controller: got %v, want %s", err, code)
+		}
+	}
+	check(client.Profile.ControllerSocket, "AGENT_NOT_RUNNING")
+	file := filepath.Join(d, "regular")
+	if err := os.WriteFile(file, []byte("data"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	check(filepath.Join(file, "child"), "CONTROLLER_CONNECT")
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := client.open(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
 }
 func TestStreamHandshakeCancellation(t *testing.T) {
 	c, l := localFixture(t)

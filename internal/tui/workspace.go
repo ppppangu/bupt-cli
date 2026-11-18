@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"maps"
-	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -24,6 +23,7 @@ type Backend interface {
 	Stream(context.Context, string, any, io.Reader, io.Writer) (map[string]any, error)
 }
 type Options struct {
+	StartWorkspace  func(context.Context, string) error
 	ReloadPresets   func() (*config.Config, error)
 	Commands        map[string]CommandForm
 	Capture         func(context.Context, []string) (string, error)
@@ -36,12 +36,15 @@ type Options struct {
 	Timeout         time.Duration
 }
 type row struct {
+	forward, recovery           bool
+	verb                        string
 	group                       string
 	preview                     []string
 	key, title, detail, command string
 	open                        func()
 }
 type content struct {
+	document  bool
 	split     bool
 	groups    []navGroup
 	fullWidth bool
@@ -50,10 +53,19 @@ type content struct {
 	empty     string
 }
 type page struct {
-	queryMethod          string
-	stale                bool
-	expanded             map[string]bool
-	filterAnchor         string
+	agreementDocument bool
+	problemCode       string
+	loginMenu         bool
+	queryMethod       string
+	stale             bool
+	expanded          map[string]bool
+	filterAnchor      string
+	filterStart       struct {
+		focus, scroll int
+		reading       bool
+	}
+	filterPos            int
+	interacted, reading  bool
 	copyText             string
 	watch                bool
 	title, command, area string
@@ -67,33 +79,37 @@ type page struct {
 	loading, submitting  bool
 	blockedByLogin       bool
 	readLoginRevision    uint64
+	readConsentRevision  uint64
 	generation           int
 	cancel               context.CancelFunc
 }
 type prompt struct {
+	pos     int
 	title   string
 	value   []rune
 	done    func(string) error
 	problem string
 }
 type workspace struct {
-	bar      accountView
-	composer *trialEditor
-	fatal    error
+	statusArea, statusCode string
+	connection             controllerRecovery
+	bar                    accountView
+	composer               *trialEditor
+	fatal                  error
 	Options
-	ctx                                      context.Context
-	screen                                   tcell.Screen
-	events                                   chan func()
-	pages                                    []*page
-	report                                   domain.StatusReport
-	hasReport, refreshing                    bool
-	statusCancel                             context.CancelFunc
-	statusGeneration                         int
-	statusErr, notice                        string
-	input                                    *prompt
-	filtering, quit, paste                   bool
-	listTop, listHeight, firstRow, listRight int
-	lastMouse                                tcell.ButtonMask
+	ctx                                                context.Context
+	screen                                             tcell.Screen
+	events                                             chan func()
+	pages                                              []*page
+	report                                             domain.StatusReport
+	hasReport, refreshing                              bool
+	statusCancel                                       context.CancelFunc
+	statusGeneration                                   int
+	statusErr, notice                                  string
+	input                                              *prompt
+	filtering, quit, paste                             bool
+	listTop, listHeight, firstRow, listLeft, listRight int
+	lastMouse                                          tcell.ButtonMask
 }
 
 func Run(ctx context.Context, o Options) error {
@@ -186,6 +202,7 @@ func (w *workspace) refreshStatus(initial bool) {
 	w.statusCancel = cancel
 	w.statusGeneration++
 	g := w.statusGeneration
+	readLogin, readEpoch := w.bar.loginRevision, w.bar.snapshot.Epoch
 	w.refreshing = true
 	w.statusErr = ""
 	area := w.current().area
@@ -209,12 +226,32 @@ func (w *workspace) refreshStatus(initial bool) {
 				if w.statusGeneration != g {
 					return
 				}
+				// A late denial from the old session must not replace a login
+				// or controller reconnection observed while this request ran.
+				code := errorCode(err)
+				renewed := !cached && readLogin != w.bar.loginRevision && (schoolLoginCode(code) || computeLoginCode(report) != "")
+				if final && (renewed || w.reconnectedSince(readEpoch, code)) {
+					w.refreshing = false
+					if area == w.current().area {
+						w.refreshStatus(false)
+					}
+					return
+				}
 				if err == nil {
+					w.controllerAvailable()
 					w.report = report
 					w.hasReport = true
 					w.statusErr = ""
+					w.statusArea, w.statusCode = area, ""
+					if !cached {
+						w.statusCode = computeLoginCode(report)
+						if w.statusCode != "" {
+							w.statusErr = "管理算力资源需要确认学校身份。已准备的 SSH 连接仍可使用。"
+						}
+					}
 				} else if final {
-					w.statusErr = err.Error()
+					w.statusErr = w.controllerProblem(err)
+					w.statusArea, w.statusCode = area, errorCode(err)
 				}
 				if final {
 					w.refreshing = false
@@ -282,8 +319,10 @@ func (w *workspace) fetchPage(p *page, refresh bool) {
 	p.generation++
 	g := p.generation
 	p.problem = ""
+	p.problemCode = ""
 	p.blockedByLogin = false
 	p.readLoginRevision = w.bar.loginRevision
+	p.readConsentRevision = w.bar.consentRevision
 	p.loading = false
 	if p.needsSchool && w.Cached {
 		p.problem = "缓存模式仅显示已保存的数据。用 bupt tui 查看在线内容。"
@@ -296,6 +335,7 @@ func (w *workspace) fetchPage(p *page, refresh bool) {
 		ctx = context.WithValue(ctx, manualRefresh{}, true)
 	}
 	load := p.load
+	readEpoch := w.bar.snapshot.Epoch
 	go func() {
 		build, err := load(ctx)
 		defer cancel()
@@ -309,8 +349,20 @@ func (w *workspace) fetchPage(p *page, refresh bool) {
 				p.build = build
 			}
 			if err != nil {
+				p.problemCode = errorCode(err)
+				if p.queryMethod != "" && w.reconnectedSince(readEpoch, p.problemCode) {
+					if p == w.current() {
+						w.fetchPage(p, true)
+					} else {
+						p.stale = true
+					}
+					return
+				}
+				if connectionError(p.problemCode) {
+					w.controllerProblem(err)
+				}
 				if build == nil {
-					p.problem = err.Error()
+					p.problem = readProblem(err)
 				}
 				p.blockedByLogin = loginRequired(err)
 				w.resumeProtectedRead(p)
@@ -349,26 +401,26 @@ func queryPage[T any](w *workspace, title, command, method string, params any, s
 	}}
 }
 func (w *workspace) edit(title, value string, done func(string) error) {
-	w.input = &prompt{title: title, value: []rune(value), done: done}
+	w.input = &prompt{title: title, value: []rune(value), pos: len([]rune(value)), done: done}
 }
-func (w *workspace) foreground(args ...string) {
+func (w *workspace) foreground(args ...string) bool {
 	if w.Cached {
 		w.notice = "当前为缓存浏览模式"
-		return
+		return false
 	}
 	if w.Foreground == nil {
 		w.notice = "此终端无法打开交互操作"
-		return
+		return false
 	}
 	if err := w.screen.Suspend(); err != nil {
 		w.notice = err.Error()
-		return
+		return false
 	}
 	err := w.Foreground(w.ctx, args)
 	if resume := w.screen.Resume(); resume != nil {
 		w.fatal = resume
 		w.quit = true
-		return
+		return false
 	}
 	if err != nil {
 		w.notice = err.Error()
@@ -380,6 +432,7 @@ func (w *workspace) foreground(args ...string) {
 	}
 	w.screen.Sync()
 	w.refreshStatus(false)
+	return err == nil
 }
 func (w *workspace) view(p *page) content {
 	var v content
@@ -390,7 +443,10 @@ func (w *workspace) view(p *page) content {
 	}
 	if len(v.groups) > 0 {
 		v.rows = w.groupRows(p, v.groups)
-	} else if p.filter != "" {
+	}
+	v = w.recoveryContent(p, v)
+	v = w.completeFields(p, v)
+	if len(v.groups) == 0 && p.filter != "" {
 		query := strings.ToLower(p.filter)
 		filtered := make([]row, 0, len(v.rows))
 		for _, r := range v.rows {
@@ -401,222 +457,75 @@ func (w *workspace) view(p *page) content {
 		v.rows = filtered
 		v.empty = "未找到匹配项，按 / 修改筛选。"
 	}
-	if p.key != "" {
-		if i := slices.IndexFunc(v.rows, func(r row) bool { return r.key == p.key }); i >= 0 {
-			p.focus = i
-		}
+	if len(v.rows) == 0 {
+		// An initial load can temporarily hide a preselected object.
+		p.focus, p.scroll = 0, 0
+		return v
 	}
 	p.focus = max(0, min(p.focus, len(v.rows)-1))
-	if len(v.rows) > 0 {
-		p.key = v.rows[p.focus].key
-	} else {
+	if p.key != "" {
+		for i, r := range v.rows {
+			if r.key == p.key && r.open != nil {
+				p.focus, p.reading = i, false
+				return v
+			}
+		}
 		p.key = ""
+	}
+	if p.reading || v.document && v.rows[0].open == nil {
+		p.reading = true
+		return v
+	}
+	i := actionFrom(v.rows, p.focus, 1)
+	if i < 0 {
+		i = actionFrom(v.rows, p.focus-1, -1)
+	}
+	if i >= 0 {
+		p.selectRow(v.rows, i)
 	}
 	return v
 }
-func (w *workspace) move(to int) {
-	p := w.current()
-	rows := w.view(p).rows
-	if len(rows) == 0 {
-		return
-	}
-	p.focus = max(0, min(to, len(rows)-1))
-	p.key = rows[p.focus].key
-}
-func (w *workspace) activate() {
-	p := w.current()
-	rows := w.view(p).rows
-	if p.submitting || (p.loading || p.problem != "") && p.readNavigation == nil || len(rows) == 0 {
-		return
-	}
-	selected := rows[p.focus]
-	if selected.open != nil {
-		selected.open()
-	} else if selected.detail != "" {
-		w.textPage(selected.title, p.command, selected.detail)
-	}
-}
-func (w *workspace) mouse(e *tcell.EventMouse) {
-	if w.composer != nil {
-		return
-	}
-	x, y := e.Position()
-	buttons := e.Buttons()
-	pressed := buttons&tcell.Button1 != 0 && w.lastMouse&tcell.Button1 == 0
-	w.lastMouse = buttons
-	if w.input != nil || w.filtering {
-		return
-	}
-	switch {
-	case buttons&tcell.WheelDown != 0:
-		w.move(w.current().focus + 1)
-	case buttons&tcell.WheelUp != 0:
-		w.move(w.current().focus - 1)
-	case pressed && y == 0 && x < 4 && len(w.pages) > 1:
-		w.back()
-	case pressed && y >= w.listTop && y < w.listTop+w.listHeight && (w.listRight == 0 || x < w.listRight):
-		i := w.firstRow + y - w.listTop
-		if i < len(w.view(w.current()).rows) {
-			w.move(i)
-			w.activate()
-		}
-	}
-}
-func (w *workspace) handleKey(e *tcell.EventKey) {
-	if w.composer != nil {
-		w.trialEditKey(e)
-		return
-	}
-	if w.paste && ((w.input == nil && !w.filtering) || e.Key() != tcell.KeyRune) {
-		return
-	}
-	if e.Key() == tcell.KeyCtrlC {
-		w.quit = true
-		return
-	}
-	if w.input != nil || w.filtering {
-		w.handleText(e)
-		return
-	}
-	p := w.current()
-	if p.submitting && e.Rune() != 'q' {
-		return
-	}
-	if p.copyText != "" {
-		switch {
-		case e.Key() == tcell.KeyEnter || e.Rune() == 'c':
-			w.copySnippet(p.copyText)
-			return
-		case e.Rune() == 's':
-			w.saveSnippet(p.copyText)
-			return
-		}
-	}
-	switch e.Key() {
-	case tcell.KeyUp:
-		w.move(p.focus - 1)
-	case tcell.KeyDown:
-		w.move(p.focus + 1)
-	case tcell.KeyPgDn:
-		w.move(p.focus + max(1, w.listHeight))
-	case tcell.KeyPgUp:
-		w.move(p.focus - max(1, w.listHeight))
-	case tcell.KeyHome:
-		w.move(0)
-	case tcell.KeyEnd:
-		w.move(len(w.view(p).rows) - 1)
-	case tcell.KeyRight:
-		if !w.disclose(true) {
-			w.activate()
-		}
-	case tcell.KeyEnter:
-		w.activate()
-	case tcell.KeyEscape, tcell.KeyBackspace, tcell.KeyBackspace2, tcell.KeyLeft:
-		if !w.disclose(false) {
-			w.back()
-		}
-	case tcell.KeyRune:
-		switch e.Rune() {
-		case 'q':
-			w.quit = true
-		case 'j':
-			w.move(p.focus + 1)
-		case 'k':
-			w.move(p.focus - 1)
-		case '/':
-			if p.expanded != nil && p.filter == "" {
-				p.filterAnchor = p.key
-			}
-			w.filtering = true
-		case 'r':
-			w.refresh()
-		case '?':
-			w.showHelp()
-		}
-	}
-}
-func (w *workspace) handleText(e *tcell.EventKey) {
-	p := w.current()
-	var value []rune
-	if w.input != nil {
-		value = w.input.value
-	} else {
-		value = []rune(p.filter)
-	}
-	switch e.Key() {
-	case tcell.KeyEnter:
-		if w.input != nil {
-			input := w.input
-			w.input = nil
-			if err := input.done(string(value)); err != nil {
-				input.problem = err.Error()
-				w.input = input
-			}
-		} else {
-			w.filtering = false
-			if p.expanded != nil && p.filter == "" {
-				p.key, p.filterAnchor = p.filterAnchor, ""
-			}
-		}
-		return
-	case tcell.KeyEscape:
-		if w.input != nil {
-			w.input = nil
-		} else {
-			w.filtering = false
-			p.filter = ""
-			p.key = p.filterAnchor
-			p.filterAnchor = ""
-		}
-		return
-	case tcell.KeyBackspace, tcell.KeyBackspace2:
-		if len(value) > 0 {
-			value = value[:len(value)-1]
-		}
-	case tcell.KeyCtrlU:
-		value = nil
-	case tcell.KeyRune:
-		if len(value) < 2048 && !unicode.IsControl(e.Rune()) {
-			value = append(value, e.Rune())
-		}
-	}
-	if w.input != nil {
-		w.input.value = value
-		w.input.problem = ""
-	} else {
-		p.filter = string(value)
-		p.key = ""
-		p.focus = 0
-	}
-}
+
 func (w *workspace) showHelp() {
 	p := w.current()
 	if p.title == "本页帮助" {
 		return
 	}
-	instructions := "↑↓ 选择，Enter 打开，Esc 返回。\n/ 筛选，r 刷新，q 退出。"
+	instructions := "↑↓ 选择，Enter 执行所选项。\n→ 进入可浏览的页面或展开分组，← 返回上一级。\nEsc 清除筛选或返回，/ 筛选，r 刷新，q 退出。"
+	v := w.view(p)
 	if p.copyText != "" {
-		instructions = "↑↓ 阅读，Enter 或 c 复制全文。\ns 另存为新文件，Esc 返回。"
-	} else if p.area == "api" {
-		instructions += "\n模型输入框内 Enter 换行，Ctrl+S 保存。\n试用编辑器内 Ctrl+D 发送一次。"
+		instructions = "↑↓ 阅读，Enter 或 c 复制全文。\ns 另存为新文件。可用 Tab 跳到操作，再按 Enter 执行所选项。"
+	} else if v.document || actionFrom(v.rows, 0, 1) < 0 {
+		instructions = "↑↓ 滚动正文，PgUp/PgDn 翻页。\nTab 跳至可用操作，Enter 执行，Esc 返回。"
 	}
 	var selected string
-	if rows := w.view(p).rows; len(rows) > 0 {
-		selected = rows[p.focus].command
+	if r := p.selected(v); r != nil {
+		selected = r.command
+		instructions += "\n\n选中项　" + strings.TrimSpace(r.title)
+		if r.detail != "" {
+			instructions += "\n" + r.detail
+		}
+	}
+	cmd := selected
+	if cmd == "" {
+		cmd = p.command
+	}
+	if cmd != "" {
+		instructions += "\n\n对应命令\n" + cmd
 	}
 	w.local("本页帮助", "bupt help tutorial", func() content {
 		v := w.textContent(instructions)
 		v.facts = []string{p.title}
 		add := func(key, label, command string) {
 			if command != "" {
-				v.rows = append(v.rows, link(key, label, command, command, func() { w.explainCommand(command) }))
+				v.rows = append(v.rows, navLink(key, label, command, command, func() { w.explainCommand(command) }))
 			}
 		}
 		add("cli", "选中行的 CLI 用法", selected)
 		if p.command != selected {
 			add("page", "本页相关的 CLI 用法", p.command)
 		}
-		v.rows = append(v.rows, link("tutorial", "查看完整教程", "", "bupt help tutorial", w.tutorials))
+		v.rows = append(v.rows, navLink("tutorial", "查看完整教程", "", "bupt help tutorial", w.tutorials))
 		return v
 	})
 }

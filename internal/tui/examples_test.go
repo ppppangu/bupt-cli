@@ -35,9 +35,24 @@ func TestIntegrationExamplesSelectEditCopySaveAndTry(t *testing.T) {
 	w.integrationExamples()
 	waitFor(t, w, func() bool { return !w.current().loading })
 	first := w.current()
+	actions := w.view(first).rows
+	var sequence, addresses []string
+	for _, r := range actions {
+		sequence = append(sequence, r.key)
+		if strings.Contains(r.detail, base) {
+			addresses = append(addresses, r.key)
+		}
+	}
+	if strings.Join(sequence, ",") != "model,format,input,setup,base,preview,trial" || len(addresses) != 1 || strings.Contains(strings.Join(w.view(first).facts, " "), base) {
+		t.Fatal("guide order or duplicate public address", sequence, addresses)
+	}
 	click(t, w, "base")
-	trialKey(w, tcell.KeyEnter)
+	trialKey(w, tcell.KeyRight)
 	screen := w.screen.(tcell.SimulationScreen)
+	if got := string(screen.GetClipboardData()); got != "" {
+		t.Fatalf("browsing copied %q", got)
+	}
+	trialKey(w, tcell.KeyEnter)
 	if got := string(screen.GetClipboardData()); got != base {
 		t.Fatal(got)
 	}
@@ -71,6 +86,21 @@ func TestIntegrationExamplesSelectEditCopySaveAndTry(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.input = nil
+	for i, r := range w.view(w.current()).rows {
+		if r.key == "save" {
+			w.move(i)
+			trialKey(w, tcell.KeyRight)
+			if w.input != nil {
+				t.Fatal("right opened a file-write prompt")
+			}
+			trialKey(w, tcell.KeyEnter)
+			if w.input == nil {
+				t.Fatal("Enter on save copied instead of offering a path")
+			}
+			w.input = nil
+			break
+		}
+	}
 	if info, err := os.Stat(target); err != nil || info.Mode().Perm() != 0600 {
 		t.Fatal("example save permissions", err)
 	}
@@ -147,6 +177,51 @@ func TestOfflineExamplesRetainBaseAndReadOnlyTutorial(t *testing.T) {
 	w.showHelp()
 	if !strings.Contains(w.current().title, "帮助") {
 		t.Fatal(w.current().title)
+	}
+}
+
+func TestExampleKeyPreparationReturnsRequestedScopeAndPublicID(t *testing.T) {
+	f := &fixtureBackend{reply: func(_ context.Context, m string, p map[string]any) (any, error) {
+		switch m {
+		case "portal.read":
+			if p["section"] != "model" {
+				t.Errorf("unexpected read %#v", p)
+			}
+			return domain.PortalPage{Section: "model", Models: []domain.PortalModel{{ID: "course", Kind: "chat"}}}, nil
+		case "portal.change":
+			if p["action"] != "key.create" || p["name"] != "课程" || len(p["models"].([]any)) != 1 || p["models"].([]any)[0] != "course" {
+				t.Errorf("unexpected write %#v", p)
+			}
+			return map[string]any{"id": "course-id"}, nil
+		}
+		t.Errorf("unplanned request %s", m)
+		return nil, nil
+	}}
+	w := fixtureWorkspace(t, f)
+	w.exampleKeySetup("course", "BUPT_API_KEY", true)
+	setup := w.current()
+	click(t, w, "new")
+	waitFor(t, w, func() bool { return !w.current().loading })
+	click(t, w, "name")
+	w.input.value = []rune("课程")
+	trialKey(w, tcell.KeyEnter)
+	click(t, w, "preview")
+	confirm := w.current()
+	for i, r := range w.view(confirm).rows {
+		if r.key == "submit" {
+			w.move(i)
+		}
+	}
+	trialKey(w, tcell.KeyRight)
+	if confirm.submitting || len(f.observed()) != 1 {
+		t.Fatal("browsing created a key")
+	}
+	trialKey(w, tcell.KeyEnter)
+	waitFor(t, w, func() bool { return w.current() == setup })
+	click(t, w, "instructions")
+	code := w.current().copyText
+	if !strings.Contains(code, "course-id") || !strings.Contains(code, "BUPT_API_KEY") || strings.Contains(code, "read -r") || len(f.observed()) != 2 {
+		t.Fatal("setup did not reuse the confirmed Key ID", code, f.observed())
 	}
 }
 

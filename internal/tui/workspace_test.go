@@ -94,13 +94,11 @@ func TestNavigationPreviewsThenSubmitsOnceByStableID(t *testing.T) {
 		switch method {
 		case "up":
 			if p["dry_run"] == true {
-				return map[string]any{"dry_run": true, "run": domain.Run{InstanceID: "101", Policy: domain.RunPolicy{Cleanup: "release"}}}, nil
+				return map[string]any{"dry_run": true, "run": domain.Run{InstanceID: "101", Deadline: time.Now().Add(20 * time.Minute), Policy: domain.RunPolicy{Cleanup: "release"}}}, nil
 			}
 			return domain.Run{ID: "run-receipt"}, nil
-		case "job.get":
-			return domain.Run{ID: "run-receipt", Name: "gpu-dev", State: "preparing"}, nil
 		case "status.get":
-			return domain.StatusReport{Source: "live", Platform: "authenticated"}, nil
+			return domain.StatusReport{Source: "live", Platform: "authenticated", Runs: []domain.Run{{ID: "run-receipt", Name: "gpu-dev", State: "preparing"}}}, nil
 		}
 		return nil, errors.New("unexpected method " + method)
 	}}
@@ -279,6 +277,7 @@ func TestTwoServicesExposeModelDetailsAndContextualKeyCreation(t *testing.T) {
 func TestAccountLogoutOpensReviewAndIsHiddenWhenCached(t *testing.T) {
 	f := &fixtureBackend{}
 	w := fixtureWorkspace(t, f)
+	w.acceptAccount(positiveFrame(w.Config.Selected))
 	click(t, w, "access")
 	click(t, w, "logout")
 	if w.current().title != "退出登录" || w.current().command != "bupt logout" || w.view(w.current()).rows[0].key != "back" || len(f.observed()) != 0 {

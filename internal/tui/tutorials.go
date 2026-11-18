@@ -12,19 +12,19 @@ func (w *workspace) tutorials() {
 		v := content{}
 		for _, l := range navigation.Lessons {
 			cmd := "bupt help tutorial " + l.ID
-			v.rows = append(v.rows, link(l.ID, l.Title, "", cmd, func() { w.textPage(l.Title, cmd, l.Text) }))
+			v.rows = append(v.rows, navLink(l.ID, l.Title, "", cmd, func() { w.textPage(l.Title, cmd, l.Text) }))
 		}
-		v.rows = append(v.rows, link("reference", "CLI 命令参考", "按命令浏览用法和参数", "bupt help --all", w.commandReference))
+		v.rows = append(v.rows, navLink("reference", "CLI 命令参考", "按命令浏览用法和参数", "bupt help --all", w.commandReference))
 		return v
 	})
 }
 
 func (w *workspace) commandReference() {
 	w.local("CLI 命令参考", "bupt help --all", func() content {
-		v := content{rows: []row{link("all", "完整命令树和全局选项", "", "bupt help --all", func() { w.explainCommand("bupt help --all") })}}
+		v := content{rows: []row{navLink("all", "完整命令树和全局选项", "", "bupt help --all", func() { w.explainCommand("bupt help --all") })}}
 		for _, k := range orderedKeys(w.Commands) {
 			f := w.Commands[k]
-			v.rows = append(v.rows, link(f.Title, f.Title, f.Summary, "bupt help "+strings.Join(f.Path, " ")+" --all", func() { w.referenceGroup(f) }))
+			v.rows = append(v.rows, navLink(f.Title, f.Title, f.Summary, "bupt help "+strings.Join(f.Path, " ")+" --all", func() { w.referenceGroup(f) }))
 		}
 		return v
 	})
@@ -42,9 +42,9 @@ func (w *workspace) referenceGroup(f CommandForm) {
 		return
 	}
 	w.local(name, cmd, func() content {
-		v := content{rows: []row{link("usage", "用法和选项", f.Summary, cmd, usage)}}
+		v := content{rows: []row{navLink("usage", "用法和选项", f.Summary, cmd, usage)}}
 		for _, sub := range f.Children {
-			v.rows = append(v.rows, link(sub.Title, sub.Title, sub.Summary, "bupt help "+strings.Join(sub.Path, " ")+" --all", func() { w.referenceGroup(sub) }))
+			v.rows = append(v.rows, navLink(sub.Title, sub.Title, sub.Summary, "bupt help "+strings.Join(sub.Path, " ")+" --all", func() { w.referenceGroup(sub) }))
 		}
 		return v
 	})

@@ -25,6 +25,14 @@ func portalTime(raw string) string {
 }
 
 func (w *workspace) portalDocument(section, title, cmd string, extra map[string]any) {
+	w.openDocument(section, title, cmd, extra, nil)
+}
+
+func (w *workspace) reviewRequiredAgreement(origin *page) {
+	w.openDocument("agreement", "服务协议", "bupt agreement", map[string]any{"refresh": !w.Cached}, origin)
+}
+
+func (w *workspace) openDocument(section, title, cmd string, extra map[string]any, origin *page) {
 	params := map[string]any{"section": section, "cached": w.Cached}
 	for k, v := range extra {
 		params[k] = v
@@ -33,7 +41,9 @@ func (w *workspace) portalDocument(section, title, cmd string, extra map[string]
 	p = queryPage(w, title, cmd, "portal.read", params, false, func(result domain.PortalContent[domain.PortalDocument]) content {
 		d := result.Data
 		v := w.textContent(d.Body)
-		v.facts = []string{d.Title}
+		if d.Title != title {
+			v.facts = append(v.facts, d.Title)
+		}
 		if d.PublishedAt != "" {
 			v.facts = append(v.facts, portalTime(d.PublishedAt))
 		}
@@ -44,11 +54,34 @@ func (w *workspace) portalDocument(section, title, cmd string, extra map[string]
 		if w.Cached {
 			return v
 		}
-		if section == "agreement" && result.Account != nil && result.Account.ConsentRequired {
+		if section == "agreement" && result.Account != nil {
+			// On the ordinary agreement page, refresh the displayed consent. A
+			// recovery route returns to the rejected read and never replays a write.
+			target := origin
+			if target == nil {
+				target = p
+			}
+			reload := func() {
+				if w.current() == target && target.queryMethod == "portal.read" && !target.loading {
+					w.fetchPage(target, true)
+				}
+			}
+			if !result.Account.ConsentRequired {
+				if origin != nil {
+					v.rows = append(v.rows, navLink("continue", "已确认协议，返回继续", origin.title, "", func() { w.back(); reload() }))
+				}
+				return v
+			}
 			args := []string{"agreement", "accept", d.ID, "--confirm", d.ID}
-			v.rows = append(v.rows, link("accept", "接受本版本服务协议", "", cmdline(args...), func() {
-				w.confirmPortalChange("接受协议 "+d.Version, args, map[string]any{"action": "agreement.accept", "target": d.ID, "confirm": d.ID}, p, func(map[string]any) { w.fetchPage(p, true) })
-			}))
+			accept := link("accept", "接受本版本服务协议", "", cmdline(args...), func() {
+				summary := d.Title
+				if d.Version != "" {
+					summary += " · 版本 " + d.Version
+				}
+				w.confirmPortalChange("接受服务协议", args, map[string]any{"action": "agreement.accept", "target": d.ID, "confirm": d.ID}, target, func(map[string]any) { reload() }, summary)
+			})
+			accept.verb = "核对协议"
+			v.rows = append(v.rows, accept)
 		}
 		if section == "news.show" {
 			args := []string{"news", "read", d.ID}
@@ -58,6 +91,7 @@ func (w *workspace) portalDocument(section, title, cmd string, extra map[string]
 		}
 		return v
 	})
+	p.agreementDocument = section == "agreement"
 	w.push(p)
 }
 
@@ -81,7 +115,7 @@ func joinNews(before, after []domain.PortalNewsItem) []domain.PortalNewsItem {
 // Each cursor request captures its own immutable prefix. Only fetchPage's
 // generation-checked callback publishes the result to the event loop.
 func (w *workspace) newsList() {
-	p := &page{title: "平台动态", command: "bupt news"}
+	p := &page{title: "平台动态", command: "bupt news", queryMethod: "portal.read"}
 	var load func([]domain.PortalNewsItem, []string, string)
 	load = func(before []domain.PortalNewsItem, visited []string, cursor string) {
 		p.load = func(ctx context.Context) (func() content, error) {
@@ -116,7 +150,7 @@ func (w *workspace) newsList() {
 						state = "已读"
 					}
 					cmd := cmdline("news", "show", item.ID)
-					v.rows = append(v.rows, link("news/"+item.ID, item.Title, state+" · "+portalTime(item.PublishedAt)+"  "+item.Excerpt, cmd, func() { w.portalDocument("news.show", item.Title, cmd, map[string]any{"target": item.ID}) }))
+					v.rows = append(v.rows, navLink("news/"+item.ID, item.Title, state+" · "+portalTime(item.PublishedAt)+"  "+item.Excerpt, cmd, func() { w.portalDocument("news.show", item.Title, cmd, map[string]any{"target": item.ID}) }))
 				}
 				if next != "" {
 					if next == cursor || slices.Contains(visited, next) {

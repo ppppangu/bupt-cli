@@ -164,7 +164,7 @@ func TestAccountWatchCrossTerminalLoginLogoutAndRevocation(t *testing.T) {
 	rpc("auth.poll")
 	rpc("auth.poll")
 	confirmed := func(v domain.AccountStatus) bool {
-		return v.CampusID == "101" && v.Name == "Student" && v.Platform == "authenticated"
+		return v.CampusID == "101" && v.Name == "Student" && v.Platform == "authenticated" && v.LoginRevision > 0
 	}
 	want := first.until(t, confirmed)
 	other := second.until(t, confirmed)

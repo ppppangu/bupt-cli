@@ -42,7 +42,7 @@ func TestLeaderboardReadableTablesPrivacyAndRankOrdering(t *testing.T) {
 			t.Fatal(small)
 		}
 		me, _ := findPortalRow(v, "me")
-		if !strings.Contains(me.title, "100 名以外") {
+		if !strings.Contains(me.title, "100 名以外") || me.open != nil || v.rows[0].key != "tab" {
 			t.Fatal(me)
 		}
 	}
@@ -90,6 +90,15 @@ func TestUsageSeriesMissingDaysAndPeriodSwitch(t *testing.T) {
 			t.Fatal(id)
 		}
 	}
+	if v.rows[0].key != "period" {
+		t.Fatal("the period control must remain the first action")
+	}
+	for _, id := range []string{"balance", "calls", "tokens", "trend", "in", "out"} {
+		r, _ := findPortalRow(v, id)
+		if r.open != nil {
+			t.Fatalf("summary %s unexpectedly became an action", id)
+		}
+	}
 	r, _ := findPortalRow(v, "in")
 	if !strings.Contains(r.title, "?·") {
 		t.Fatal(r)
@@ -101,7 +110,7 @@ func TestUsageSeriesMissingDaysAndPeriodSwitch(t *testing.T) {
 	click(t, w, "days")
 	w.screen.(tcell.SimulationScreen).SetSize(34, 16)
 	days := w.view(w.current())
-	total, _ := findPortalRow(days, "day/2/合计")
+	total, _ := findPortalRow(days, "day/2")
 	if !strings.HasSuffix(total.title, "—") {
 		t.Fatal("missing converted to zero", total)
 	}
@@ -115,7 +124,7 @@ func TestUsageSeriesMissingDaysAndPeriodSwitch(t *testing.T) {
 	click(t, w, "period")
 	waitFor(t, w, func() bool { return !w.current().loading })
 	v = w.view(root)
-	if w.current() != root || len(v.facts) != 1 || !strings.Contains(v.facts[0], "7 天") {
+	if w.current() != root || v.rows[0].key != "period" || !strings.Contains(v.rows[0].title, "近 7 天") {
 		t.Fatal("period navigation lost page or balance", v)
 	}
 	if bal, ok := findPortalRow(v, "balance"); !ok || !strings.Contains(bal.title, "14 点") {
@@ -149,6 +158,17 @@ func TestNarrowMetricsExposeCompleteIdentifierAndNumber(t *testing.T) {
 	}
 	if !strings.Contains(body, name) || !strings.Contains(body, amount) {
 		t.Fatal(body)
+	}
+	// Summary amounts reflow in place without tiny-value/detail pages.
+	var full string
+	for _, field := range w.staticMetric("input", "输入 Token", amount) {
+		if field.open != nil || uniseg.StringWidth(field.title) > w.metricWidth() {
+			t.Fatal(field)
+		}
+		full += field.title
+	}
+	if !strings.Contains(full, amount) {
+		t.Fatal("truncated count", full)
 	}
 }
 

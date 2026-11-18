@@ -33,7 +33,7 @@ func TestComputeGroupDisclosureFilterAndMouse(t *testing.T) {
 			w.handleKey(tcell.NewEventKey(tcell.KeyRune, r, 0))
 		}
 	}
-	if got := keys(); !slices.Equal(got, []string{"group/work", "instances", "runs", "group/resources", "group/data", "group/org"}) {
+	if got := keys(); !slices.Equal(got, []string{"group/work", "instances", "new", "runs", "group/resources", "group/data", "group/org"}) {
 		t.Fatal(got)
 	}
 	idx := slices.Index(keys(), "group/data")
@@ -44,8 +44,12 @@ func TestComputeGroupDisclosureFilterAndMouse(t *testing.T) {
 		t.Fatal(p.key)
 	}
 	press(tcell.KeyLeft)
-	if p.key != "group/data" || slices.Contains(keys(), "stores") {
-		t.Fatal(keys(), p.key)
+	if p.key != "group/data" || !slices.Contains(keys(), "stores") {
+		t.Fatal("left from a child should select its expanded group", keys(), p.key)
+	}
+	press(tcell.KeyLeft)
+	if p.expanded["group/data"] {
+		t.Fatal("second left should collapse the group")
 	}
 	typ("/公共数据")
 	press(tcell.KeyEnter)
@@ -351,7 +355,7 @@ func TestRemoteQuoteKeepsLiteralOrderName(t *testing.T) {
 	submitted := make(chan []string, 1)
 	w.Capture = func(_ context.Context, args []string) (string, error) {
 		if slices.Contains(args, "--dry-run") {
-			return `{"quote":"official"}`, nil
+			return `{"quote":"official","details":{"intent":{"action":"create","target":"7","name":"--quote=name","units":1},"spec_id":"7","spec_name":"教学 GPU","unit_price":1.25,"total":1.25,"unit":"点","duration_unit":"天"}}`, nil
 		}
 		submitted <- args
 		return "ok", nil

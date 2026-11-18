@@ -175,7 +175,7 @@ func TestPlaygroundShortcutAndKeyCreationReturnToDraft(t *testing.T) {
 	waitFor(t, w, func() bool { return !w.current().loading })
 	click(t, w, "trial")
 	waitFor(t, w, func() bool { return !w.current().loading })
-	click(t, w, model.ID)
+	click(t, w, "chat")
 	p := w.current()
 	waitFor(t, w, func() bool { return !p.loading })
 	click(t, w, "prompt")
@@ -192,9 +192,91 @@ func TestPlaygroundShortcutAndKeyCreationReturnToDraft(t *testing.T) {
 	var draft, key bool
 	for _, r := range w.view(p).rows {
 		draft = draft || r.key == "prompt" && strings.Contains(r.detail, "我的草稿")
-		key = key || r.key == "key" && strings.Contains(r.detail, "new-key")
+		key = key || r.key == "key" && r.detail == "new"
 	}
 	if !draft || !key {
 		t.Fatal("new key did not return to saved input", draft, key)
+	}
+}
+
+func TestTrialPurposesSwitchModelAndKeepDraft(t *testing.T) {
+	models := []domain.PortalModel{{ID: "embedding", Kind: "embedding"}, {ID: "chat-A", Kind: "chat", Health: "ok"}, {ID: "chat-B", Kind: "chat"}}
+	b := &fixtureBackend{reply: func(_ context.Context, method string, params map[string]any) (any, error) {
+		if method != "portal.read" {
+			t.Errorf("browsing or editing submitted %s", method)
+		}
+		return domain.PortalPage{Section: params["section"].(string), Models: models, Keys: []domain.PortalKey{
+			{ID: "a", Name: "课程 A", Status: "active", Stored: true, Models: []string{"chat-A"}},
+			{ID: "b", Status: "disabled", Stored: true, Models: []string{"chat-B"}},
+			{ID: "c", Status: "active", Models: []string{"chat-B"}},
+		}}, nil
+	}}
+	w := fixtureWorkspace(t, b)
+	w.chooseTrialModel()
+	waitFor(t, w, func() bool { return !w.current().loading })
+	menu := w.view(w.current())
+	if len(menu.rows) < 2 || menu.rows[0].key != "chat" || menu.rows[1].key != "embedding" {
+		t.Fatal("default order must follow purpose", menu.rows)
+	}
+	trialKey(w, tcell.KeyEnter)
+	p := w.current()
+	waitFor(t, w, func() bool { return !p.loading })
+	click(t, w, "prompt")
+	typeTrialText(w, "你好\n第二段")
+	trialKey(w, tcell.KeyDown)
+	trialKey(w, tcell.KeyRight)
+	if w.composer == nil || !w.composer.done {
+		t.Fatal("expected the local finish-editing choice")
+	}
+	trialKey(w, tcell.KeyEnter)
+	if w.composer != nil {
+		t.Fatal("Enter on the finish choice should return to the draft")
+	}
+	if _, ok := findPortalRow(w.view(p), "send"); !ok {
+		t.Fatal("completed draft should offer explicit send with the authorized key")
+	}
+	click(t, w, "model")
+	click(t, w, "chat-B")
+	v := w.view(p)
+	question, _ := findPortalRow(v, "prompt")
+	_, send := findPortalRow(v, "send")
+	_, create := findPortalRow(v, "create-key")
+	if !strings.Contains(question.detail, "你好 ↵ 第二段") || send || !create {
+		t.Fatal("new model did not retain input or recheck Key scope", question.detail, send, create)
+	}
+	click(t, w, "prompt")
+	typeTrialText(w, "。")
+	trialKey(w, tcell.KeyCtrlD)
+	if w.composer == nil {
+		t.Fatal("editor offered the previous model's send shortcut")
+	}
+	trialKey(w, tcell.KeyEscape)
+	click(t, w, "model")
+	click(t, w, "chat-A")
+	v = w.view(p)
+	key, _ := findPortalRow(v, "key")
+	question, _ = findPortalRow(v, "prompt")
+	if !strings.HasSuffix(question.detail, "。") || key.detail != "课程 A" {
+		t.Fatal("returning from editor or model selection lost the draft or its allowed key")
+	}
+}
+
+func TestEditorMovesThroughWrappedChineseAndDeletesGraphemes(t *testing.T) {
+	w := fixtureWorkspace(t, &fixtureBackend{})
+	w.screen.(tcell.SimulationScreen).SetSize(28, 10)
+	text := strings.Repeat("中", 14) + "e\u0301"
+	var saved string
+	w.editTrialText("你的问题", text, func(v string) { saved = v }, nil)
+	trialKey(w, tcell.KeyHome)
+	trialKey(w, tcell.KeyDown)
+	if w.composer.done || w.composer.pos != 12 {
+		t.Fatal("Down skipped a visible wrapped line", w.composer.pos)
+	}
+	trialKey(w, tcell.KeyEnd)
+	trialKey(w, tcell.KeyBackspace2)
+	trialKey(w, tcell.KeyDown)
+	trialKey(w, tcell.KeyEnter)
+	if saved != strings.Repeat("中", 14) {
+		t.Fatal("expected the full grapheme to be removed", saved)
 	}
 }

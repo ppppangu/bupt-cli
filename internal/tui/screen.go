@@ -39,9 +39,6 @@ func fit(text string, width int) string {
 	return b.String() + "…"
 }
 func put(s tcell.Screen, x, y, width int, text string, style tcell.Style) {
-	if width <= 0 {
-		return
-	}
 	g := uniseg.NewGraphemes(fit(text, width))
 	for g.Next() {
 		rs := g.Runes()
@@ -57,6 +54,119 @@ func bar(s tcell.Screen, y, width int, style tcell.Style, ch rune) {
 		s.SetContent(x, y, ch, nil, style)
 	}
 }
+
+// cutCells splits without truncating a combining sequence or a wide rune.
+func cutCells(text string, width int) (string, string) {
+	g := uniseg.NewGraphemes(text)
+	used, stop := 0, 0
+	for g.Next() {
+		if used+g.Width() > width {
+			break
+		}
+		used += g.Width()
+		_, stop = g.Positions()
+	}
+	return text[:stop], text[stop:]
+}
+
+// Read-only values never consume an individual keystroke. When a small
+// terminal clips them, one reader offers their full unabridged values.
+func (w *workspace) completeFields(p *page, v content) content {
+	if v.document || len(v.groups) > 0 {
+		return v
+	}
+	cols, height := w.screen.Size()
+	margin := 2
+	if cols < 50 {
+		margin = 1
+	}
+	width := cols - 2*margin
+	listWidth := width
+	if cols >= 96 && v.split {
+		listWidth = width * 3 / 5
+	}
+	label := min(28, max(12, listWidth*2/5))
+	clipped := len(v.facts) > max(1, height-10)
+	for _, s := range v.facts {
+		if uniseg.StringWidth(s) > width {
+			clipped = true
+			break
+		}
+	}
+	for _, r := range v.rows {
+		if clipped {
+			break
+		}
+		if r.open != nil {
+			continue
+		}
+		if v.fullWidth {
+			clipped = uniseg.StringWidth(r.title) > listWidth-2
+			continue
+		}
+		size := label
+		if listWidth < 54 {
+			size = min(listWidth, max(label, 2+uniseg.StringWidth(r.title)))
+		}
+		clipped = uniseg.StringWidth(r.title) > size-2 || (r.detail != "" && uniseg.StringWidth(r.detail) > listWidth-size-1)
+	}
+	if !clipped {
+		return v
+	}
+	title := p.title + " · 完整信息"
+	fields, facts := v.rows, v.facts
+	if actionFrom(fields, 0, 1) < 0 {
+		v.document = true
+	}
+	v.rows = append(v.rows, navLink("view/full-fields", "查看完整信息", "阅读此页的完整字段", "", func() {
+		lines := append([]string(nil), facts...)
+		for _, r := range fields {
+			if r.open != nil {
+				continue
+			}
+			lines = append(lines, strings.TrimSpace(r.title+"  "+r.detail))
+		}
+		w.textPage(title, "", strings.Join(lines, "\n"))
+	}))
+	return v
+}
+
+func (w *workspace) drawHeader(p *page, margin, width int, c palette) {
+	title := "北邮算力 · " + p.title
+	parent := ""
+	if len(w.pages) > 1 {
+		title = "‹ " + p.title
+		parent = w.pages[len(w.pages)-2].title
+	}
+	profile := w.Config.Selected
+	if cfg, err := w.Config.SelectedProfile(); err == nil {
+		if cfg.Controller == "" || cfg.Controller == "local" {
+			profile += " · 本机控制器"
+		} else {
+			profile += " · 远程控制器"
+		}
+	}
+	budget := width
+	if width >= 64 && uniseg.StringWidth(title+"   "+profile) <= width {
+		n := uniseg.StringWidth(profile)
+		put(w.screen, margin+width-n, 0, n, profile, c.muted)
+		budget -= n + 3
+	}
+	if crumb := "‹ " + parent + " › " + p.title; parent != "" && uniseg.StringWidth(crumb) <= budget {
+		title = crumb
+	}
+	if uniseg.StringWidth(title) > budget {
+		first, rest := cutCells(title, budget)
+		put(w.screen, margin, 0, budget, first, c.title)
+		put(w.screen, margin, 1, width, rest, c.title)
+	} else {
+		put(w.screen, margin, 0, budget, title, c.title)
+		bar(w.screen, 1, width+2*margin, c.muted, '─')
+	}
+	status := w.bar.snapshot.Effective(time.Now())
+	put(w.screen, margin, 2, width, accountLine(status, w.bar.prefs, width), c.muted)
+}
+
 func (w *workspace) draw() {
 	s := w.screen
 	cols, height := s.Size()
@@ -64,6 +174,7 @@ func (w *workspace) draw() {
 	c := colors(w.NoColor)
 	s.Clear()
 	s.HideCursor()
+	w.listHeight = 0
 	if cols < 28 || height < 10 {
 		put(s, 0, 0, cols, "请放大终端，q 退出", c.title)
 		s.Show()
@@ -78,188 +189,222 @@ func (w *workspace) draw() {
 		margin = 1
 	}
 	width := cols - 2*margin
-	path := []string{"北邮算力"}
-	if len(w.pages) > 1 {
-		path = append(path, "总览")
-		for _, v := range w.pages[1:] {
-			path = append(path, v.title)
-		}
-	} else {
-		path = append(path, "平台总览")
-	}
-	crumb := strings.Join(path, "  ›  ")
-	if len(w.pages) > 1 {
-		crumb = "‹ " + crumb
-	}
-	if len(path) > 2 && uniseg.StringWidth(crumb) > width-12 {
-		crumb = "‹  …  ›  " + p.title
-	}
-	right := w.Config.Selected
-	if profile, e := w.Config.SelectedProfile(); e == nil {
-		if profile.Controller == "local" || profile.Controller == "" {
-			right += " · 本机控制器"
-		} else {
-			right += " · 远程控制器"
-		}
-	}
-	rightWidth := uniseg.StringWidth(right)
-	leftWidth := width
-	if cols >= 60 {
-		leftWidth -= rightWidth + 3
-		put(s, cols-margin-rightWidth, 0, rightWidth, right, c.muted)
-	}
-	put(s, margin, 0, leftWidth, crumb, c.title)
-	bar(s, 1, cols, c.muted, '─')
-	put(s, margin, 2, width, accountLine(w.bar.snapshot.Effective(time.Now()), w.bar.prefs, width), c.accent)
+	w.drawHeader(p, margin, width, c)
 	v := w.view(p)
 	y := 4
-	status := p.problem
-	if status == "" {
-		status = w.statusErr
+	bottom := height - 3
+	if height <= 15 {
+		y, bottom = 3, height-2
 	}
-	if status == "" && w.hasReport && len(w.report.Warnings) > 0 {
-		status = strings.Join(w.report.Warnings, " · ")
+	status := p.problem
+	if status == "" && w.statusPage(p) {
+		status = w.statusErr
+		if status == "" && w.hasReport {
+			status = strings.Join(w.report.Warnings, " · ")
+		}
 	}
 	if status != "" {
 		put(s, margin, y, width, status, c.warning)
 		y++
 	}
 	for _, line := range v.facts {
-		if y >= height-6 {
+		if y >= bottom-2 {
 			break
 		}
 		put(s, margin, y, width, line, c.base)
 		y++
 	}
-	if len(v.facts) > 0 && height-y > 9 {
+	if len(v.facts) > 0 && bottom-y > 7 {
 		y++
 	}
 	if p.filter != "" || w.filtering {
-		put(s, margin, y, width, "筛选  /"+p.filter, c.accent)
+		if w.filtering {
+			w.drawInputLine(margin, y, width, "筛选  /", []rune(p.filter), p.filterPos, c.accent)
+		} else {
+			put(s, margin, y, width, "筛选  /"+p.filter, c.accent)
+		}
 		y++
 	}
-	w.listTop = y
-	w.listHeight = max(0, height-4-y)
-	if p.focus < p.scroll {
-		p.scroll = p.focus
-	}
-	if w.listHeight > 0 && p.focus >= p.scroll+w.listHeight {
-		p.scroll = p.focus - w.listHeight + 1
+	w.listTop, w.listLeft, w.listHeight = y, margin, max(0, bottom-y)
+	active := p.selected(v)
+	if active != nil && w.listHeight > 0 {
+		p.scroll = min(p.scroll, p.focus)
+		p.scroll = max(p.scroll, p.focus-w.listHeight+1)
 	}
 	p.scroll = max(0, min(p.scroll, len(v.rows)-w.listHeight))
 	w.firstRow = p.scroll
 	listWidth := width
-	wide := cols >= 96 && len(v.rows) > 0 && (v.split || len(v.groups) > 0)
+	wide := cols >= 96 && active != nil && (v.split || len(v.groups) > 0)
 	if wide {
-		listWidth = (width * 3) / 5
+		listWidth = width * 3 / 5
 	}
 	w.listRight = margin + listWidth
-	labelWidth := min(26, max(12, listWidth/3))
+	labelWidth := min(28, max(12, listWidth*2/5))
+	selectionHint := ""
 	for i := p.scroll; i < len(v.rows) && i < p.scroll+w.listHeight; i++ {
-		r := v.rows[i]
-		style := c.base
-		detail := c.muted
-		mark := "  "
-		if i == p.focus {
-			style = c.selected
-			detail = c.selected
-			mark = "› "
-			bar(s, y, w.listRight, style, ' ')
+		r := &v.rows[i]
+		style, detailStyle, mark := c.base, c.muted, "  "
+		selected := r == active
+		if selected {
+			style, detailStyle, mark = c.selected, c.selected, "› "
+			for x := margin; x < w.listRight; x++ {
+				s.SetContent(x, y, ' ', nil, c.selected)
+			}
+		}
+		name := mark + r.title
+		if v.document && r.open == nil {
+			name = r.title
 		}
 		if v.fullWidth {
-			put(s, margin, y, width, mark+r.title, style)
-			y++
-			continue
+			put(s, margin, y, listWidth, name, style)
+		} else {
+			label := labelWidth
+			// Narrow terminals retain the object name. Secondary detail uses the
+			// remaining space; the selected row can use the hint line as well.
+			if listWidth < 54 {
+				label = min(listWidth, max(label, uniseg.StringWidth(name)))
+			}
+			put(s, margin, y, label, name, style)
+			room := listWidth - label - 1
+			if room > 0 {
+				put(s, margin+label+1, y, room, r.detail, detailStyle)
+			}
+			if selected && uniseg.StringWidth(name) > label {
+				selectionHint = strings.TrimSpace(r.title)
+				if uniseg.StringWidth(selectionHint) > width {
+					_, remaining := cutCells(name, max(1, label-1))
+					selectionHint = "…" + remaining
+				}
+			} else if selected && uniseg.StringWidth(r.detail) > room {
+				selectionHint = r.detail
+			}
 		}
-		put(s, margin, y, labelWidth, mark+r.title, style)
-		put(s, margin+labelWidth+1, y, listWidth-labelWidth-1, r.detail, detail)
 		y++
 	}
 	if wide {
-		r := v.rows[p.focus]
 		left := w.listRight + 2
-		remaining := cols - margin - left
+		room := cols - margin - left
 		for y := w.listTop; y < w.listTop+w.listHeight; y++ {
 			s.SetContent(w.listRight, y, '│', nil, c.muted)
 		}
-		put(s, left, w.listTop, remaining, strings.TrimSpace(r.title), c.title)
-		lines := r.preview
+		put(s, left, w.listTop, room, "选中项摘要", c.muted)
+		if w.listHeight >= 2 {
+			put(s, left, w.listTop+1, room, strings.TrimSpace(active.title), c.title)
+		}
+		lines := active.preview
 		if len(lines) == 0 {
-			lines = []string{r.detail}
+			lines = []string{active.detail}
 		}
 		for i, line := range lines {
 			if i+2 >= w.listHeight {
 				break
 			}
-			put(s, left, w.listTop+2+i, remaining, line, c.base)
+			put(s, left, w.listTop+2+i, room, line, c.base)
 		}
 	}
-	if len(v.rows) == 0 {
+	if len(v.rows) == 0 && w.listHeight > 0 {
 		summary := v.empty
 		switch {
-		case p.loading:
+		case p.loading || !w.hasReport && p.build != nil && w.refreshing:
 			summary = "正在读取…"
 		case p.problem != "":
 			summary = "按 r 重试，Esc 返回"
-		case !w.hasReport && p.build != nil && w.refreshing:
-			summary = "正在读取…"
 		case summary == "":
 			summary = "暂无记录"
 		}
-		put(s, margin, min(y, height-4), width, summary, c.muted)
+		put(s, margin, w.listTop, width, summary, c.muted)
 	}
-	bar(s, height-3, cols, c.muted, '─')
-	cmd := p.command
-	if len(v.rows) > 0 && v.rows[p.focus].command != "" {
-		cmd = v.rows[p.focus].command
+	if bottom == height-3 {
+		bar(s, bottom, cols, c.muted, '─')
 	}
-	if p.loading {
-		put(s, margin, height-2, width, "正在读取…", c.accent)
-	} else if p.submitting {
-		put(s, margin, height-2, width, "正在提交…", c.accent)
-	} else if w.notice != "" {
-		put(s, margin, height-2, width, w.notice, c.warning)
-	} else if cmd != "" {
-		put(s, margin, height-2, width, "$ "+cmd, c.muted)
+	hint, hintStyle := selectionHint, c.muted
+	switch {
+	case p.submitting:
+		hint, hintStyle = "正在提交…", c.accent
+	case p.loading:
+		hint, hintStyle = "正在读取…", c.accent
+	case w.notice != "":
+		hint, hintStyle = w.notice, c.warning
+	case hint == "" && len(v.rows) > w.listHeight:
+		hint = fmt.Sprintf("显示 %d–%d / %d", p.scroll+1, min(p.scroll+w.listHeight, len(v.rows)), len(v.rows))
 	}
-	footer := "↑↓ 选择   Enter 打开   Esc 返回   / 筛选   r 刷新   ? 帮助   q 退出"
-	if width < 65 {
-		footer = "↑↓  Enter 打开  Esc 返回  / 筛选  ?  q"
-	}
-	if len(v.groups) > 0 && width >= 65 {
-		footer = "↑↓ 选择   → 展开   ← 收起   ? 帮助   Enter 打开   / 筛选   q 退出"
-	}
-	if w.filtering {
-		footer = "输入筛选词   Enter 完成   Esc 清除   Ctrl-U 清空"
-	}
-	if width < 42 && !w.filtering {
-		footer = "↑↓  Enter  Esc  ?  q"
-	}
-	if p.copyText != "" && !w.filtering {
-		footer = "↑↓ 阅读   Enter/c 复制全文   s 另存   Esc 返回"
-		if width < 50 {
-			footer = "c 复制   s 另存   Esc 返回"
-		}
-	}
-	if len(v.rows) > w.listHeight && !w.filtering {
-		footer = fmt.Sprintf("%d/%d  ", p.focus+1, len(v.rows)) + footer
-	}
-	put(s, margin, height-1, width, footer, c.base)
-	if w.input != nil {
-		bar(s, height-4, cols, c.selected, ' ')
-		put(s, margin, height-4, width, w.input.title, c.selected)
-		bar(s, height-3, cols, c.base, ' ')
-		val := string(w.input.value)
-		tail := []rune(clean(val))
-		for len(tail) > 0 && uniseg.StringWidth(string(tail)) > width-3 {
-			tail = tail[1:]
-		}
-		put(s, margin, height-3, width, "› "+string(tail), c.title)
-		s.ShowCursor(min(cols-1, margin+2+uniseg.StringWidth(string(tail))), height-3)
-		bar(s, height-2, cols, c.base, ' ')
-		put(s, margin, height-2, width, w.input.problem, c.warning)
-		bar(s, height-1, cols, c.base, ' ')
-		put(s, margin, height-1, width, "Enter 保存   Esc 取消   Ctrl-U 清空", c.muted)
+	if w.input == nil {
+		put(s, margin, height-2, width, hint, hintStyle)
+		put(s, margin, height-1, width, w.keyHints(p, v, active, width), c.base)
+	} else {
+		w.drawPrompt(margin, width, height, c)
 	}
 	s.Show()
+}
+
+func (w *workspace) keyHints(p *page, v content, r *row, width int) string {
+	if w.filtering {
+		return "←→ 移动  Enter 完成  Esc 清除  Ctrl-U 清空"
+	}
+	primary := "↑↓ 阅读"
+	switch {
+	case r != nil:
+		verb := r.verb
+		if verb == "" {
+			verb = "选择"
+			if r.forward {
+				verb = "打开"
+			}
+		}
+		if r.forward {
+			primary = "↑↓ 选择  Enter/→ " + verb
+		} else {
+			primary = "↑↓ 选择  Enter " + verb
+		}
+	case p.copyText != "":
+		primary = "↑↓ 阅读  Enter/c 复制全文  s 另存"
+	case len(v.rows) == 0:
+		primary = "r 刷新"
+	}
+	if width < 45 {
+		if r == nil && p.copyText != "" {
+			return "Enter 复制  s 另存  Esc  ?"
+		}
+		return fit(primary, width-10) + "  Esc  ?  q"
+	}
+	hints := primary + "  Esc 返回  ? 帮助"
+	if len(v.groups) > 0 && r != nil && r.key == r.group {
+		hints = primary + "  → 展开/进入  ← 收起  Esc 返回  ? 帮助"
+	}
+	for _, opt := range []string{"/ 筛选", "r 刷新", "q 退出"} {
+		if uniseg.StringWidth(hints+"  "+opt) <= width {
+			hints += "  " + opt
+		}
+	}
+	return hints
+}
+
+func (w *workspace) drawPrompt(margin, width, height int, c palette) {
+	s := w.screen
+	cols, _ := s.Size()
+	p := w.input
+	for y := height - 4; y < height; y++ {
+		bar(s, y, cols, c.base, ' ')
+	}
+	put(s, margin, height-4, width, p.title, c.accent)
+	w.drawInputLine(margin, height-3, width, "› ", p.value, p.pos, c.title)
+	put(s, margin, height-2, width, p.problem, c.warning)
+	put(s, margin, height-1, width, "←→ 移动  Enter 保存  Esc 取消", c.muted)
+}
+
+// Draw a suffix of the prefix so the insertion point stays inside this terminal.
+func (w *workspace) drawInputLine(x, y, width int, label string, value []rune, pos int, style tcell.Style) {
+	prefixWidth := uniseg.StringWidth(label)
+	room := max(1, width-prefixWidth)
+	pos = max(0, min(pos, len(value)))
+	prefix := string(value[:pos])
+	used := uniseg.StringWidth(prefix)
+	firstByte := 0
+	g := uniseg.NewGraphemes(prefix)
+	for used >= room && g.Next() {
+		used -= g.Width()
+		_, firstByte = g.Positions()
+	}
+	put(w.screen, x, y, width, label+prefix[firstByte:]+string(value[pos:]), style)
+	w.screen.ShowCursor(x+prefixWidth+used, y)
 }

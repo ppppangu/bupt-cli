@@ -139,6 +139,7 @@ func (c *Controller) StartLogin(ctx context.Context, profile string, p Params) (
 		if e := c.saveLoginFlow(profile, "complete", flow); e != nil {
 			return domain.AuthChallenge{}, e
 		}
+		flow.account.loginCompleted()
 		return annotateChallenge(domain.AuthChallenge{Kind: "platform", State: "authenticated"}, "complete"), nil
 	}
 	return c.startSSO(ctx, profile, a, flow)
@@ -197,6 +198,7 @@ func (c *Controller) completeLogin(ctx context.Context, profile string, a domain
 	if e := c.saveLoginFlow(profile, "complete", loginFlow{Service: flow.Service, SSOMethod: flow.SSOMethod, StartedAt: flow.StartedAt}); e != nil {
 		return domain.AuthChallenge{}, e
 	}
+	flow.account.loginCompleted()
 	_ = c.Vault.Delete("platform/" + profile + "/pending-service")
 	c.Audit("auth.completed", profile, "", "", "", "university login and platform identity verified")
 	return annotateChallenge(domain.AuthChallenge{Kind: "platform", State: "authenticated", Message: "platform identity verified"}, "complete"), nil

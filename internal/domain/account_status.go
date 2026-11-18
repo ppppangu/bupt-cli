@@ -1,9 +1,24 @@
 package domain
 
-import "time"
+import (
+	"strings"
+	"time"
+)
+
+// CampusNumber returns a numeric school identifier, preserving leading zeros.
+// Other subjects, including temporary portal accounts, have no campus number.
+func CampusNumber(subject string) string {
+	number := strings.TrimPrefix(subject, "cas_")
+	if strings.Trim(number, "0123456789") != "" {
+		return ""
+	}
+	return number
+}
 
 // AccountStatus is the controller's minimal per-profile display projection.
 type AccountStatus struct {
+	LoginRevision     uint64    `json:"login_revision,omitempty"`
+	ConsentRequired   bool      `json:"consent_required,omitempty"`
 	RunningValidUntil time.Time `json:"running_valid_until,omitzero"`
 	ValidUntil        time.Time `json:"valid_until,omitzero"`
 	Epoch             string    `json:"epoch"`
@@ -19,6 +34,7 @@ type AccountStatus struct {
 
 // AccountObservation contains verified facts from a single passive sample.
 type AccountObservation struct {
+	ConsentRequired                       bool
 	VPN, Platform, Reason, Name, CampusID string
 	Balance                               *float64
 	RetryAfter                            time.Duration
@@ -47,6 +63,7 @@ func (s AccountStatus) Effective(now time.Time) AccountStatus {
 			s.Platform = "unknown"
 		}
 		s.Name, s.CampusID, s.Balance, s.Running = "", "", nil, nil
+		s.ConsentRequired = false
 		s.ValidUntil = time.Time{}
 		s.RunningValidUntil = time.Time{}
 	}

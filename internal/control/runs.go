@@ -155,14 +155,19 @@ func (c *Controller) newManagedRun(ctx context.Context, profile, op string, p Pa
 	if _, ok := c.Configuration().Profiles[profile]; !ok {
 		return nil, domain.E("PROFILE_NOT_FOUND", "profile is not configured")
 	}
+	var preview map[string]any
+	if p.Bool("dry_run") {
+		preview = map[string]any{"dry_run": true}
+	}
 	c.intentMu.Lock()
-	r, e := c.prepareManagedRun(ctx, profile, op, p, job)
+	r, e := c.prepareManagedRun(ctx, profile, op, p, job, preview)
 	c.intentMu.Unlock()
 	if e != nil {
 		return nil, e
 	}
-	if p.Bool("dry_run") {
-		return map[string]any{"dry_run": true, "run": r}, nil
+	if preview != nil {
+		preview["run"] = r
+		return preview, nil
 	}
 	c.kickRun(r.ID)
 	if p.Bool("no_wait") || p.Bool("detach") || (p.Has("wait") && !p.Bool("wait")) {
@@ -170,7 +175,7 @@ func (c *Controller) newManagedRun(ctx context.Context, profile, op string, p Pa
 	}
 	return c.waitManaged(ctx, r.ID, false)
 }
-func (c *Controller) prepareManagedRun(ctx context.Context, profile, op string, p Params, job bool) (domain.Run, error) {
+func (c *Controller) prepareManagedRun(ctx context.Context, profile, op string, p Params, job bool, preview map[string]any) (domain.Run, error) {
 	if selector := p.String("spec_id"); selector != "" && !numericSpecSelector(selector) {
 		spec, e := c.ResolveSpec(ctx, profile, selector)
 		if e != nil {
@@ -405,8 +410,12 @@ func (c *Controller) prepareManagedRun(ctx context.Context, profile, op string, 
 		if op == "clone" {
 			createOp = "clone"
 		}
-		if _, e = c.buildTask(ctx, profile, createOp, intent.Platform); e != nil {
-			return domain.Run{}, e
+		task, err := c.buildTask(ctx, profile, createOp, intent.Platform)
+		if err != nil {
+			return domain.Run{}, err
+		}
+		if constraints := task.Payload["resourceConstraints"]; preview != nil && constraints != nil {
+			preview["resource_constraints"] = constraints
 		}
 	}
 	rid := uuid.NewString()

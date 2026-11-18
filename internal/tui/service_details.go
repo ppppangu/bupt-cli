@@ -19,14 +19,17 @@ func (w *workspace) lifecycleRows(v *content, i domain.Instance) {
 			w.review(change{title: title, method: "instance." + key, args: args, params: map[string]any{"target": id}, facts: []string{i.Name + " · " + id, detail}, task: true})
 		}))
 	}
+	if i.State == "running" || i.Reserved || i.Managed {
+		v.rows = append(v.rows, link("down", "停止并释放", "归还计算资源，保留实例磁盘", cmdline("down", id, "--cleanup", "release"), func() { w.endReview(i) }))
+	}
 	if i.State == "running" {
-		action("stop", "仅停止", "保留磁盘，停止后的预留状态由学校回执确认。")
+		action("stop", "仅停止运行", "保留磁盘，资源是否仍预留以学校回执为准。")
 	}
 	if i.State == "stopped" && i.Reserved {
 		action("release", "释放预留", "归还计算额度，保留可恢复的实例磁盘。")
 	}
 	if i.State == "stopped" && !i.Reserved {
-		v.rows = append(v.rows, link("restore", "恢复预留", "选择有限时长，保留原磁盘", cmdline("compute", "instance", "restore", id), func() {
+		v.rows = append(v.rows, navLink("restore", "恢复预留", "选择有限时长，保留原磁盘", cmdline("compute", "instance", "restore", id), func() {
 			p := w.Config.Policy
 			if preset, ok := w.Config.Presets[w.Config.DefaultPreset]; ok {
 				p = preset.Policy
@@ -53,7 +56,7 @@ func (w *workspace) nodeSnapshots(i domain.Instance, n domain.Node) {
 				continue
 			}
 			name := value(snap["name"])
-			v.rows = append(v.rows, link(sid, name, value(snap["state"]), cmdline(args...), func() {
+			v.rows = append(v.rows, navLink(sid, name, value(snap["state"]), cmdline(args...), func() {
 				w.snapshotPage(i.ID, n.ID, sid, name)
 			}))
 		}

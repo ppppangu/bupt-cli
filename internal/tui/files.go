@@ -13,8 +13,8 @@ import (
 
 func (w *workspace) files() content {
 	return content{rows: []row{
-		link("stores", "平台持久存储", "浏览存储空间、目录和文件", "bupt data stores", w.stores),
-		link("transfer", "实例文件传输", "选择已准备 SSH 的实例", "bupt cp --help", w.transferTargets),
+		navLink("stores", "平台持久存储", "浏览存储空间、目录和文件", "bupt data stores", w.stores),
+		navLink("transfer", "实例文件传输", "在本机与已连接的实例间传送文件", "bupt cp --help", w.transferTargets),
 	}}
 }
 func (w *workspace) invalidateStorage() {
@@ -50,7 +50,7 @@ func (w *workspace) projectStores(group domain.ID) {
 				detail += " · 工作空间"
 			}
 			location := platform.StoragePath{Store: key, GroupID: group}
-			v.rows = append(v.rows, link(key, title, detail, cmdline(storageCommand("ls", location)...), func() { w.directory(location, title) }))
+			v.rows = append(v.rows, navLink(key, title, detail, cmdline(storageCommand("ls", location)...), func() { w.directory(location, title) }))
 		}
 		return v
 	}))
@@ -85,10 +85,14 @@ func (w *workspace) directory(dir platform.StoragePath, title string) {
 			child := dir
 			child.Path = path.Join(dir.Path, f.Name)
 			if f.IsDir {
-				v.rows = append(v.rows, link(f.Name, f.Name+"/", "目录", cmdline(storageCommand("ls", child, child.Path)...), func() { w.directory(child, f.Name) }))
+				v.rows = append(v.rows, navLink(f.Name, f.Name+"/", "目录", cmdline(storageCommand("ls", child, child.Path)...), func() { w.directory(child, f.Name) }))
 				continue
 			}
-			v.rows = append(v.rows, link(f.Name, f.Name, fmt.Sprintf("%d B · %s", f.Size, f.Modified), cmdline(storageCommand("pull", child, child.Path, "LOCAL")...), func() { w.fileDetails(child, f) }))
+			size := fmt.Sprintf("%d B", f.Size)
+			if f.Modified != "" {
+				size += " · " + computeTime(f.Modified)
+			}
+			v.rows = append(v.rows, navLink(f.Name, f.Name, size, cmdline(storageCommand("pull", child, child.Path, "LOCAL")...), func() { w.fileDetails(child, f) }))
 		}
 		if len(v.rows) == 0 {
 			v.facts = append(v.facts, "此目录为空。")
@@ -109,7 +113,10 @@ func (w *workspace) directory(dir platform.StoragePath, title string) {
 func (w *workspace) fileDetails(location platform.StoragePath, f platform.File) {
 	cmd := cmdline(storageCommand("pull", location, location.Path, "LOCAL")...)
 	show := func(f platform.File) content {
-		c := content{rows: []row{info("文件", location.Path), info("大小", fmt.Sprintf("%d B", f.Size)), info("修改时间", f.Modified)}}
+		c := content{facts: []string{location.Store + " / " + location.Path, fmt.Sprintf("大小　%d B", f.Size)}}
+		if f.Modified != "" {
+			c.facts = append(c.facts, "修改时间　"+computeTime(f.Modified))
+		}
 		if !w.Cached {
 			c.rows = append(c.rows, link("get", "下载到本机…", "指定本地文件路径", cmd, func() {
 				w.edit("本地目标文件", f.Name, func(dest string) error {
@@ -185,7 +192,7 @@ func (w *workspace) transferTargets() {
 			}
 			id := string(route.InstanceID)
 			node := string(route.NodeID)
-			v.rows = append(v.rows, link(id+"/"+node, route.Name, "节点 "+node+" · "+label(route.Kind), cmdline("cp", "--node", node, "LOCAL", id+":PATH"), func() {
+			v.rows = append(v.rows, navLink(id+"/"+node, route.Name, "节点 "+node+" · "+label(route.Kind), cmdline("cp", "--node", node, "LOCAL", id+":PATH"), func() {
 				w.local(route.Name, "bupt cp --help", func() content {
 					return content{rows: []row{
 						link("push", "上传文件", "本机 → 实例", cmdline("cp", "--node", node, "LOCAL", id+":PATH"), func() { w.copyForm(id, node, true) }),
@@ -202,17 +209,21 @@ func (w *workspace) copyForm(id, node string, upload bool) {
 		w.notice = "当前为缓存浏览模式"
 		return
 	}
-	w.edit("本机文件路径", "", func(local string) error {
-		if local == "" || local == "-" {
-			return fmt.Errorf("请输入本机文件路径")
+	fromLabel, toLabel := "实例源文件", "本机目标文件"
+	if upload {
+		fromLabel, toLabel = "本机源文件", "实例目标文件"
+	}
+	w.edit(fromLabel, "", func(source string) error {
+		if source == "" || upload && source == "-" {
+			return fmt.Errorf("请填写%s路径", fromLabel)
 		}
-		w.edit("实例文件路径", "", func(remote string) error {
-			if remote == "" {
-				return fmt.Errorf("请输入实例文件路径")
+		w.edit(toLabel, "", func(destination string) error {
+			if destination == "" || !upload && destination == "-" {
+				return fmt.Errorf("请填写%s路径", toLabel)
 			}
-			src, dst := id+":"+remote, local
+			src, dst := id+":"+source, destination
 			if upload {
-				src, dst = dst, src
+				src, dst = source, id+":"+destination
 			}
 			w.terminalReview("传输文件", src+" → "+dst, []string{"cp", "--node", node, "--", src, dst})
 			return nil

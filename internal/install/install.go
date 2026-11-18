@@ -107,6 +107,8 @@ func (h *handler) handle(ctx context.Context, cfg *config.Config, method string,
 		errOut = io.Discard
 	}
 	switch method {
+	case "workspace.start":
+		return h.startWorkspace(ctx, cfg, params, errOut)
 	case "init", "agent.install":
 		return h.setup(ctx, cfg, method, params, in, out, errOut)
 	case "agent.stop":

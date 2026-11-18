@@ -192,8 +192,8 @@ func TestQuotaAndRunActionsUseServerObjectIDs(t *testing.T) {
 		switch method {
 		case "quota.get":
 			return map[string]any{"UserQuota:51": map[string]any{"domain": "campus"}, "UserStorageQuota:52": map[string]any{"storageName": "home"}, "Bad:99": map[string]any{}}, nil
-		case "job.get":
-			return domain.Run{ID: "job1", Kind: "job", State: "running"}, nil
+		case "status.get":
+			return domain.StatusReport{Runs: []domain.Run{{ID: "job1", Kind: "job", State: "running"}}}, nil
 		case "task.get":
 			return domain.TaskRecord{ID: "ticket", State: "submitted"}, nil
 		}

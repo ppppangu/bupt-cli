@@ -314,7 +314,7 @@ func (h *handler) setupRemote(ctx context.Context, cfg *config.Config, p map[str
 			return nil, err
 		}
 	}
-	backup, err := h.saveProfile(cfg, profile)
+	backup, err := h.saveProfile(cfg, profile, false)
 	if err != nil {
 		return nil, err
 	}

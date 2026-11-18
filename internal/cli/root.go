@@ -298,7 +298,7 @@ func (a *app) rpc(ctx context.Context, method string, params map[string]any, out
 	return b.Call(ctx, method, params, out)
 }
 func (a *app) callAndPrint(cmd *cobra.Command, method string, params map[string]any) error {
-	var result any
+	var result json.RawMessage
 	if err := a.rpc(cmd.Context(), method, params, &result); err != nil {
 		return err
 	}
