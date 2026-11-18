@@ -275,3 +275,20 @@ func TestTwoServicesExposeModelDetailsAndContextualKeyCreation(t *testing.T) {
 	}
 	t.Fatal("model was not preselected for the key")
 }
+
+func TestAccountLogoutOpensReviewAndIsHiddenWhenCached(t *testing.T) {
+	f := &fixtureBackend{}
+	w := fixtureWorkspace(t, f)
+	click(t, w, "access")
+	click(t, w, "logout")
+	if w.current().title != "退出登录" || w.current().command != "bupt logout" || w.view(w.current()).rows[0].key != "back" || len(f.observed()) != 0 {
+		t.Fatal("logout navigation did not open a cancellable preview")
+	}
+	w.back()
+	w.Cached = true
+	for _, r := range w.view(w.current()).rows {
+		if r.key == "logout" {
+			t.Fatal("logout available in cached mode")
+		}
+	}
+}

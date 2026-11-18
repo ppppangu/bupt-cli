@@ -219,3 +219,49 @@ func TestDevicePollingStopsAtTakeoverConfirmationWithoutApplyingIt(t *testing.T)
 		t.Fatalf("unexpected confirmation requests: %+v", b.calls)
 	}
 }
+
+func TestLogoutCommandPaths(t *testing.T) {
+	for _, path := range [][]string{{"logout"}, {"auth", "logout"}} {
+		t.Run(strings.Join(path, "-"), func(t *testing.T) {
+			b := &fakeBackend{call: func(_ context.Context, method string, p map[string]any) (any, error) {
+				if method != "auth.logout" {
+					t.Fatal("wrong logout RPC", method)
+				}
+				if p["dry_run"] == true {
+					return map[string]any{"operation": method, "dry_run": true}, nil
+				}
+				return map[string]bool{"logged_out": true, "ssh_routes_preserved": true}, nil
+			}}
+			opts, out, diag := testOptions(t, b)
+			run := func(flags ...string) int {
+				out.Reset()
+				diag.Reset()
+				return executeTest(t, opts, append(append([]string{}, path...), flags...)...)
+			}
+			if code := run("--json"); code != 0 || len(b.calls) != 1 || len(b.calls[0].params) != 0 {
+				t.Fatalf("unexpected default logout: exit=%d calls=%v stderr=%s", code, b.calls, diag)
+			}
+			var result struct {
+				LoggedOut bool `json:"logged_out"`
+			}
+			if err := json.Unmarshal(out.Bytes(), &result); err != nil || !result.LoggedOut {
+				t.Fatalf("unexpected receipt: %s", out)
+			}
+			if code := run("--dry-run", "--json"); code != 0 || len(b.calls) != 2 || b.calls[1].params["dry_run"] != true || !strings.Contains(out.String(), "auth.logout") {
+				t.Fatalf("unexpected preview: exit=%d calls=%v out=%s", code, b.calls, out)
+			}
+			if code := run("--force", "-q"); code != 0 || len(b.calls) != 3 || b.calls[2].params["force"] != true || out.Len() != 0 {
+				t.Fatalf("unexpected quiet logout: exit=%d calls=%v out=%s", code, b.calls, out)
+			}
+			if code := run("extra"); code != 2 || len(b.calls) != 3 {
+				t.Fatal("invalid arguments reached controller", code, b.calls)
+			}
+			b.call = func(context.Context, string, map[string]any) (any, error) {
+				return nil, domain.E("ACTIVE_RUNS", "active managed runs")
+			}
+			if code := run("-q"); code == 0 || out.Len() != 0 || !strings.Contains(diag.String(), "ACTIVE_RUNS") || len(b.calls) != 4 {
+				t.Fatal("logout error was suppressed or retried", code, b.calls)
+			}
+		})
+	}
+}

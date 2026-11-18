@@ -76,10 +76,7 @@ func (a *app) authCommands() *cobra.Command {
 	}
 	g.AddCommand(probe)
 	g.AddCommand(a.simpleRPC("refresh", "Refresh sessions using protected stored credentials", "auth.refresh", 0, 0, nil))
-	logout := a.simpleRPC("logout", "End the selected school session without deleting instances or SSH routes", "auth.logout", 0, 0, nil)
-	logout.Flags().Bool("force", false, "Allow logout while managed runs still need platform access")
-	g.AddCommand(logout)
-	g.AddCommand(a.loginCommand())
+	g.AddCommand(a.loginCommand(), a.logoutCommand())
 	device := &cobra.Command{Use: "device", Short: "Start WebVPN device approval only (does not complete university SSO)", Args: exactArgs(0)}
 	device.Flags().Bool("wait", false, "Wait for device approval")
 	device.Flags().String("qr-file", "", "Save the QR image to a private file")
@@ -501,6 +498,20 @@ func (a *app) captchaCommand() *cobra.Command {
 			return closeErr
 		}
 		return a.emit(map[string]any{"uuid": challenge.UUID, "image_file": filename})
+	}
+	return cmd
+}
+
+func (a *app) logoutCommand() *cobra.Command {
+	cmd := &cobra.Command{Use: "logout", Short: "退出当前配置在控制器上的学校登录会话", Args: exactArgs(0)}
+	cmd.Flags().Bool("force", false, "仍有托管运行需要学校会话时，强制退出")
+	cmd.RunE = func(cmd *cobra.Command, _ []string) error {
+		params := map[string]any{}
+		copyChangedFlags(cmd, params)
+		if a.quiet {
+			return a.rpc(cmd.Context(), "auth.logout", params, nil)
+		}
+		return a.callAndPrint(cmd, "auth.logout", params)
 	}
 	return cmd
 }

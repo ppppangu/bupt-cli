@@ -154,7 +154,7 @@ func NewRoot(options Options) *cobra.Command {
 	root.AddCommand(a.taskCommands(), a.auditCommands())
 	root.AddCommand(a.clientCommands())
 	root.AddCommand(&cobra.Command{Use: "version", Short: "Show version", Args: exactArgs(0), Annotations: map[string]string{"skip_config": "true"}, RunE: func(cmd *cobra.Command, _ []string) error { return a.emit(map[string]any{"version": options.Version}) }})
-	root.AddCommand(a.completionCommand(), a.loginCommand(), a.statusCommand(), a.presetCommands(), a.waitCommand(), a.tuiCommand(), a.resourcesCommand())
+	root.AddCommand(a.completionCommand(), a.loginCommand(), a.logoutCommand(), a.statusCommand(), a.presetCommands(), a.waitCommand(), a.tuiCommand(), a.resourcesCommand())
 	root.AddCommand(a.apiCommand(), a.computeCommand())
 	root.AddCommand(a.portalCommonCommands()...)
 	installDiscovery(root)

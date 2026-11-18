@@ -28,6 +28,7 @@ bupt tui
 | 查看可申请的算力模板与配额 | `bupt compute catalog` |
 | 查看我的实例、预留和截止时间 | `bupt compute instance` |
 | 查看平台登录和资源摘要 | `bupt status` |
+| 退出当前配置的学校会话 | `bupt logout` |
 
 课堂演示可以直接打开 `bupt tui api` 或 `bupt tui compute`。方向键选择，Enter 打开，Esc 返回，`q` 退出。编写脚本时可用 `bupt api model --json` 取得结构化结果。实例启停、SSH、文件和后台作业的例子见[使用手册](docs/usage.md)。
 

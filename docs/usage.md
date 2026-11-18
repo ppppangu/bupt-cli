@@ -206,10 +206,10 @@ secret-provider read platform-credentials-json | \
 ```sh
 bupt auth captcha --output ./captcha.png --json
 bupt auth setup
-bupt auth logout
+bupt logout
 ```
 
-`auth setup` 是显式的设置/修改平台本地密码操作，不会由默认统一认证或普通 SSH 自动触发。`auth logout` 不删除实例、SSH 路由或平台之外的密钥；如果仍有托管运行需要后续清理，默认拒绝退出，只有显式 `--force` 才继续。
+`auth setup` 是显式的设置/修改平台本地密码操作，不会由默认统一认证或普通 SSH 自动触发。`bupt logout` 和 `bupt auth logout` 执行同一操作。退出会清除所选配置的学校会话、已保存的平台本地口令和实例终端密码。若存在活跃托管运行，控制器会返回 `ACTIVE_RUNS`。
 
 ## 实例的日常生命周期
 

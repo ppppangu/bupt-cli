@@ -12,7 +12,7 @@ var Areas = []Area{
 	{"resources", "资源与模板", "查看配额、选择模板、估价和保存预设", []string{"resources", "quota", "spec", "estimate", "preset"}},
 	{"work", "作业与记录", "提交作业、看日志、跟踪运行与平台回执", []string{"run", "job", "wait", "task", "audit"}},
 	{"files", "文件", "浏览持久存储，在本机和实例之间传文件", []string{"data", "cp", "sftp"}},
-	{"access", "账号与连接", "管理登录、控制器、SSH 密钥和连接配置", []string{"login", "account", "news", "agreement", "auth", "agent", "profile", "key", "ssh-config", "init", "config", "client", "proxy", "doctor"}},
+	{"access", "账号与连接", "管理登录、控制器、SSH 密钥和连接配置", []string{"login", "logout", "account", "news", "agreement", "auth", "agent", "profile", "key", "ssh-config", "init", "config", "client", "proxy", "doctor"}},
 }
 
 func Find(id string) (Area, bool) {

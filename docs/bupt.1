@@ -64,11 +64,14 @@ to inspect published module settings. Administrative views verify school roles.
 .B account, news, agreement
 Inspect the signed-in portal account, read campus notices or review the service agreement.
 .TP
-.B login, auth
+.B login, logout, auth
 Manage WebVPN QR approval, university SSO, and the platform callback.
 University SSO uses QR by default. Use bupt login --sso-password for campus
 username and password. The legacy --local option selects a compute-platform password.
 The access subcommand stores the separate instance-console bootstrap password.
+Use bupt logout (also available as bupt auth logout) to end the selected session
+and clear saved platform and instance-console passwords. Active managed runs block
+logout by default. Use bupt logout --dry-run to preview the operation.
 .TP
 .B profile, config
 Select account profiles and inspect or change layered non-secret settings.

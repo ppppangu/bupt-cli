@@ -12,6 +12,9 @@ func TestProgressiveHelpExposesAdvancedFlagsOnDemand(t *testing.T) {
 		want, omit string
 	}{
 		{nil, "bupt tui", "bupt            打开交互总览"},
+		{nil, "bupt logout", ""},
+		{[]string{"help", "access"}, "logout", ""},
+		{[]string{"logout", "--help"}, "--force", ""},
 		{[]string{"--help"}, "help resources", "--controller"},
 		{[]string{"help", "compute"}, "instance", "--force-stop"},
 		{[]string{"up", "--help"}, "--max-runtime", "--constraints"},

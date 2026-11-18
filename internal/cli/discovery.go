@@ -31,7 +31,7 @@ func installDiscovery(root *cobra.Command) {
 		w := cmd.OutOrStdout()
 		fmt.Fprintln(w, "bupt   北邮算力平台")
 		fmt.Fprintln(w, "\n用法  bupt <命令> [选项]")
-		fmt.Fprintln(w, "\n平台    bupt login     bupt status     bupt account     bupt tui")
+		fmt.Fprintln(w, "\n平台    bupt login     bupt logout     bupt status     bupt account     bupt tui")
 		fmt.Fprintln(w, "\n按用途浏览")
 		fmt.Fprintln(w, "  bupt api             大模型 API 服务")
 		fmt.Fprintln(w, "    model              可调用模型、ID、能力、上下文、价格、健康状态")

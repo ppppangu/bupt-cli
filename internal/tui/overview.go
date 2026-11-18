@@ -254,6 +254,9 @@ func (w *workspace) access() content {
 	}
 	if !w.Cached {
 		v.rows = append(v.rows, link("login", "学校登录", "选择统一身份认证方式", "bupt login", w.loginMethods),
+			link("logout", "退出登录", "结束当前配置的学校会话", "bupt logout", func() {
+				w.terminalReview("退出登录", "退出 "+w.Config.Selected+" 的学校会话并清除已保存的平台口令和实例终端密码。", []string{"logout"})
+			}),
 			link("password", "保存实例终端密码", "首次准备 SSH 时使用", "bupt auth access", func() { w.foreground("auth", "access") }))
 	}
 	for _, x := range []struct{ id, title string }{{"account", "门户账号"}, {"news", "平台动态"}, {"agreement", "服务协议"}} {

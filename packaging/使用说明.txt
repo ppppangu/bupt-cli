@@ -41,6 +41,7 @@ Linux 或 WSL2 如果提示 systemctl --user 无法连接，请在一个终端�
     bupt compute catalog     浏览算力模板和配额
     bupt compute instance    查看本人实例、预留状态和期限
     bupt status              查看平台总览
+    bupt logout              退出当前配置的学校登录会话
 
 单独输入 bupt 会打印帮助。全屏界面使用方向键选择，Enter 打开，Esc 返回，q 退出。
 启动或创建实例会占用学校额度，请先在界面预览规格、时限和清理策略。
