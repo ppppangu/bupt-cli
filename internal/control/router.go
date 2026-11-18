@@ -97,6 +97,8 @@ func (c *Controller) Handle(ctx context.Context, r domain.RPCRequest, p Params) 
 		return c.adminQuota(ctx, profile, p)
 	case "compute.read":
 		return c.computeRead(ctx, profile, p)
+	case "portal.trial":
+		return c.modelTrial(ctx, profile, p)
 	case "portal.read":
 		return c.PortalRead(ctx, profile, p)
 	case "portal.change":
@@ -474,7 +476,7 @@ func (c *Controller) authorizedProfile(r domain.RPCRequest, p Params) (string, e
 }
 
 func isMutation(method string) bool {
-	for _, m := range []string{"auth.start", "auth.poll", "auth.sso.submit", "auth.access", "auth.login", "auth.refresh", "auth.setup", "auth.logout", "auth.gateway.start", "auth.gateway.poll", "auth.gateway.confirm", "key.import", "key.revoke", "client.register", "client.revoke", "relay.reserve", "relay.enroll", "relay.revoke", "lease.set", "lease.renew", "job.update", "job.cancel", "agent.stop", "agent.reload", "connect.mkdir", "connect.rename", "connect.remove"} {
+	for _, m := range []string{"portal.trial", "auth.start", "auth.poll", "auth.sso.submit", "auth.access", "auth.login", "auth.refresh", "auth.setup", "auth.logout", "auth.gateway.start", "auth.gateway.poll", "auth.gateway.confirm", "key.import", "key.revoke", "client.register", "client.revoke", "relay.reserve", "relay.enroll", "relay.revoke", "lease.set", "lease.renew", "job.update", "job.cancel", "agent.stop", "agent.reload", "connect.mkdir", "connect.rename", "connect.remove"} {
 		if method == m {
 			return true
 		}

@@ -94,6 +94,7 @@ func (j *cookieStore) snapshot() sessionData {
 type Client struct {
 	portalObserved     domain.PortalAccount
 	retryPortalAfter   time.Time
+	retryTrialAfter    time.Time
 	portalPeer         *Client
 	parent             *Client
 	serviceMu          sync.Mutex

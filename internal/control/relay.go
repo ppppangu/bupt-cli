@@ -60,7 +60,7 @@ func (c *Controller) Authorize(id, method, p string) error {
 	if !allowed {
 		return domain.E("PROFILE_FORBIDDEN", "client is not allowed to manage this profile")
 	}
-	if !identity.Owner && (strings.HasPrefix(method, "compute.admin") || method == "portal.change" || method == "portal.export" || strings.HasPrefix(method, "client.") || method == "agent.stop" || method == "agent.reload" || method == "auth.login" || method == "auth.access" || method == "auth.start" || method == "auth.poll" || method == "auth.sso.submit" || method == "auth.probe" || method == "auth.setup" || method == "auth.logout" || strings.HasPrefix(method, "auth.gateway.")) {
+	if !identity.Owner && (strings.HasPrefix(method, "compute.admin") || method == "portal.trial" || method == "portal.change" || method == "portal.export" || strings.HasPrefix(method, "client.") || method == "agent.stop" || method == "agent.reload" || method == "auth.login" || method == "auth.access" || method == "auth.start" || method == "auth.poll" || method == "auth.sso.submit" || method == "auth.probe" || method == "auth.setup" || method == "auth.logout" || strings.HasPrefix(method, "auth.gateway.")) {
 		return domain.E("OWNER_REQUIRED", "this operation requires the controller owner")
 	}
 	if identity.ReadOnly {

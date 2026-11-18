@@ -170,6 +170,7 @@ func (w *workspace) portalContent(section, cmd string, page domain.PortalPage) c
 			sub := "bupt api " + x.id
 			v.rows = append(v.rows, link(x.id, x.title, x.detail, sub, func() { w.portalPage(x.id, x.title, sub, nil) }))
 		}
+		v.rows = append([]row{link("trial", "试用模型", "输入自己的问题或文本，查看实际返回", "bupt api model", w.chooseTrialModel)}, v.rows...)
 		v.rows = append(v.rows, w.moreCommands("api"))
 		if !w.Cached {
 			v.rows = append(v.rows, link("login", "平台登录", "", "bupt login", w.loginMethods))
@@ -181,6 +182,11 @@ func (w *workspace) portalContent(section, cmd string, page domain.PortalPage) c
 			v.rows = append(v.rows, link(m.ID, m.ID, detail, show, func() {
 				w.local(m.Name, show, func() content {
 					cv := content{facts: []string{m.ID, m.Description}, rows: []row{info("能力", m.Kind), info("上下文", m.Context), info("输入 / 输出价", ntext(m.InputPrice)+" / "+ntext(m.OutputPrice)+" 点/百万 Token"), info("健康状态", m.Health+" · "+m.Coverage), info("最近采样", m.SampledAt), info("延迟", ntext(m.LatencyMS)+" ms")}}
+					if t, e := domain.TrialFor(m); e == nil {
+						cv.rows = append([]row{link("try", "试用模型", "输入自己的内容并发送", cmdline("api", "model", "example", m.ID), func() { w.modelPlayground(m, t) })}, cv.rows...)
+					} else {
+						cv.rows = append(cv.rows, info("模型试用", e.Error()))
+					}
 					if len(m.History) > 0 {
 						cv.rows = append(cv.rows, link("history", "历史采样", "", show, func() { w.objectPage("历史采样", show, m.History) }))
 					}
@@ -290,7 +296,8 @@ func (w *workspace) portalKey(k domain.PortalKey) {
 		return v
 	})
 }
-func (w *workspace) keyForm(initial []string) {
+func (w *workspace) keyForm(initial []string) { w.keyFormReturning(initial, nil, nil) }
+func (w *workspace) keyFormReturning(initial []string, returnTo *page, done func(map[string]any)) {
 	selected := slices.Clone(initial)
 	name := ""
 	w.push(queryPage(w, "创建 API Key", "bupt api key create NAME --model ID", "portal.read", map[string]any{"section": "model"}, true, func(p domain.PortalPage) content {
@@ -317,12 +324,19 @@ func (w *workspace) keyForm(initial []string) {
 				w.notice = "请填写名称并选择模型"
 				return
 			}
-			w.portalConfirm("创建 API Key", args, map[string]any{"action": "key.create", "name": name, "models": selected}, func() { w.portalPage("key", "API Key", "bupt api key", nil) })
+			after := done
+			if after == nil {
+				after = func(map[string]any) { w.portalPage("key", "API Key", "bupt api key", nil) }
+			}
+			w.confirmPortalChange("创建 API Key", args, map[string]any{"action": "key.create", "name": name, "models": selected}, returnTo, after)
 		}))
 		return v
 	}))
 }
 func (w *workspace) portalConfirm(title string, args []string, params map[string]any, done func()) {
+	w.confirmPortalChange(title, args, params, nil, func(map[string]any) { done() })
+}
+func (w *workspace) confirmPortalChange(title string, args []string, params map[string]any, returnTo *page, done func(map[string]any)) {
 	if w.Cached {
 		return
 	}
@@ -347,10 +361,10 @@ func (w *workspace) portalConfirm(title string, args []string, params map[string
 						w.notice = whenError(e)
 						return
 					}
-					for len(w.pages) > 1 && w.current().title != "大模型 API 服务" && w.current().title != "账号与平台" {
+					for len(w.pages) > 1 && w.current() != returnTo && w.current().title != "大模型 API 服务" && w.current().title != "账号与平台" {
 						w.back()
 					}
-					done()
+					done(result)
 					w.notice = "学校已确认操作"
 				})
 			}()

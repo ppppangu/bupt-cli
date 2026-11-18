@@ -31,7 +31,7 @@ func commandForm(c *cobra.Command) tui.CommandForm {
 	// preview first, including actions introduced in future command groups.
 	name := c.Name()
 	switch name {
-	case "ls", "list", "show", "inspect", "status", "features", "quota", "model", "key", "usage", "guide", "leaderboard", "display", "news", "account", "agreement", "catalog", "estimate", "stores", "events", "logs", "template", "cluster", "dataset", "project", "request", "job", "admin", "user", "partition", "storage", "task", "audit", "instance", "run", "history", "hpc":
+	case "example", "ls", "list", "show", "inspect", "status", "features", "quota", "model", "key", "usage", "guide", "leaderboard", "display", "news", "account", "agreement", "catalog", "estimate", "stores", "events", "logs", "template", "cluster", "dataset", "project", "request", "job", "admin", "user", "partition", "storage", "task", "audit", "instance", "run", "history", "hpc":
 		f.Query = true
 	}
 	if strings.HasPrefix(strings.Join(path, " "), "compute run submit") || strings.HasPrefix(strings.Join(path, " "), "compute run run") {

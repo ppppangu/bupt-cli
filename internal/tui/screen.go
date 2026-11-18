@@ -68,6 +68,10 @@ func (w *workspace) draw() {
 		s.Show()
 		return
 	}
+	if w.composer != nil {
+		w.drawTrialEditor(cols, height, c)
+		return
+	}
 	margin := 2
 	if cols < 50 {
 		margin = 1

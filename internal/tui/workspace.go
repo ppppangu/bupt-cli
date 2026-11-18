@@ -63,7 +63,8 @@ type prompt struct {
 	problem string
 }
 type workspace struct {
-	fatal error
+	composer *trialEditor
+	fatal    error
 	Options
 	ctx                           context.Context
 	screen                        tcell.Screen
@@ -390,6 +391,9 @@ func (w *workspace) activate() {
 	}
 }
 func (w *workspace) mouse(e *tcell.EventMouse) {
+	if w.composer != nil {
+		return
+	}
 	x, y := e.Position()
 	buttons := e.Buttons()
 	pressed := buttons&tcell.Button1 != 0 && w.lastMouse&tcell.Button1 == 0
@@ -413,6 +417,10 @@ func (w *workspace) mouse(e *tcell.EventMouse) {
 	}
 }
 func (w *workspace) handleKey(e *tcell.EventKey) {
+	if w.composer != nil {
+		w.trialEditKey(e)
+		return
+	}
 	if w.paste && ((w.input == nil && !w.filtering) || e.Key() != tcell.KeyRune) {
 		return
 	}

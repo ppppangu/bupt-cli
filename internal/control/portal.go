@@ -85,6 +85,10 @@ func (c *Controller) portalAccount(ctx context.Context, profile, ns string, b po
 	return a, c.Vault.Put(ns+"index", *i)
 }
 func (c *Controller) PortalRead(ctx context.Context, profile string, p Params) (domain.PortalPage, error) {
+	defer c.lockLogin(profile)()
+	return c.portalReadLocked(ctx, profile, p)
+}
+func (c *Controller) portalReadLocked(ctx context.Context, profile string, p Params) (domain.PortalPage, error) {
 	var q domain.PortalInput
 	raw, _ := json.Marshal(p)
 	if e := json.Unmarshal(raw, &q); e != nil {
@@ -99,7 +103,6 @@ func (c *Controller) PortalRead(ctx context.Context, profile string, p Params) (
 	if c.Vault == nil {
 		return domain.PortalPage{}, domain.E("SECRET_STORE", "门户需要控制器的私有存储。")
 	}
-	defer c.lockLogin(profile)()
 	ns := c.portalNamespace(profile)
 	idx, e := c.portalIndex(ns)
 	if e != nil {

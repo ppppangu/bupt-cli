@@ -33,6 +33,25 @@ bupt api key disable KEY_ID
 
 模型和健康页按真实 ID 合并。学校未公布的上下文、价格和未监测的状态保持未知。门户页面显示的「周期内剩余」与「算力余额」目前读取同一个余额字段。用量趋势带有统计区间。校园服务连接限流时按服务器等待时间退避，门户查询在一分钟内复用同账号的快照；`--refresh` 刷新当前栏目，`--cached` 可离线查看已保存的数据。
 
+### 模型试用
+
+在大模型 API 首页选择「试用模型」和模型 ID，或从单个模型详情进入。选中输入项按 Enter 打开文本编辑器，支持中文、多行粘贴和方向键移动。Ctrl+S 保存，Ctrl+D 用当前 Key 发送一次。也可以回到表单选择「发送一次」。新建 Key 时可从这里返回同一份草稿。
+
+| 能力 | 自己输入的内容 | 返回内容 |
+| --- | --- | --- |
+| 对话 | 自由提问，可调输出 Token 上限 | 模型回复、耗时及网关返回的 Token 用量 |
+| 向量 | 一段或多段文本 | 每段的维度和向量预览，恰好两段时展示余弦相似度，可展开完整向量 |
+| 重排 | 问题、候选段落和可选的返回条数 | 排序、原始候选编号、原文和相关度分数 |
+
+```sh
+bupt api model example bge-m3 --text '今天去图书馆' --format python
+bupt api model try qwen3.8-27b --key KEY_ID --text '请用一句话解释向量检索。'
+bupt api model try bge-m3 --key KEY_ID --text '怎样借书？' --text 'How can I borrow a book?'
+bupt api model try jina-reranker-m0 --key KEY_ID --query '去哪借书？' --document '食堂供应早餐。' --document '图书馆提供借阅服务。'
+```
+
+`KEY_ID` 是 `bupt api key` 列表中的标识，完整 Key 由控制器取用。单次试用按当前输入生成独立请求。`example` 可查看同一输入对应的 curl、Python 或 JSON，`try --sample` 显式发送内置示例，`try --dry-run` 仅预览。缓存模式可以编辑和预览，实际调用需要在线。响应在当前界面显示，程序不保存提示词和回复历史。请求结果不确定时先核对用量，再决定是否重新发送。
+
 ### 项目与可选管理功能
 
 `bupt compute features` 查看学校发布的模块开关。`bupt compute project show GROUP` 展开已验证项目的角色、可见实例，以及学校已向该项目管理员发布的成员。`bupt compute admin` 单独核验学校后台会话。经学校授权的管理员可查询账户与集群限额，限额调整以预览返回的版本提交。学校权限与控制器权限分别校验。

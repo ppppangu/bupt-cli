@@ -216,7 +216,7 @@ func columnsFor(rows []map[string]any) []string {
 // Only numeric billing measurements may pass through token redaction.
 func publicMeter(key string, v any) bool {
 	switch strings.ToLower(key) {
-	case "total_tokens", "input_tokens", "output_tokens", "periodtokens", "inputtokens", "outputtokens", "totaltokens", "tokens", "input_points_per_million_tokens", "output_points_per_million_tokens":
+	case "max_tokens", "prompt_tokens", "completion_tokens", "total_tokens", "input_tokens", "output_tokens", "periodtokens", "inputtokens", "outputtokens", "totaltokens", "tokens", "input_points_per_million_tokens", "output_points_per_million_tokens":
 		if v == nil {
 			return true
 		}

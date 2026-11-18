@@ -123,13 +123,7 @@ func (c *Client) portalRequest(ctx context.Context, method, path string, body an
 	case 404:
 		return domain.E("NOT_FOUND", "学校门户没有找到所选对象。")
 	case 429:
-		wait := resp.Header.Get("Retry-After")
-		delay := time.Minute
-		if n, err := strconv.ParseInt(wait, 10, 32); err == nil && n >= 0 {
-			delay = time.Duration(n) * time.Second
-		} else if until, err := http.ParseTime(wait); err == nil && until.After(time.Now()) {
-			delay = time.Until(until)
-		}
+		delay := retryDelay(resp.Header.Get("Retry-After"))
 		c.mu.Lock()
 		c.retryPortalAfter = time.Now().Add(delay)
 		c.mu.Unlock()
@@ -157,6 +151,15 @@ func (c *Client) portalRequest(ctx context.Context, method, path string, body an
 		return domain.E("PORTAL_PROTOCOL", "门户响应未提供预期的 JSON。")
 	}
 	return nil
+}
+func retryDelay(value string) time.Duration {
+	if n, err := strconv.ParseInt(value, 10, 32); err == nil && n >= 0 {
+		return time.Duration(n) * time.Second
+	}
+	if until, err := http.ParseTime(value); err == nil && until.After(time.Now()) {
+		return time.Until(until)
+	}
+	return time.Minute
 }
 func (c *Client) portalCASTarget(ctx context.Context, policy *ssoPolicy) (*url.URL, error) {
 	req, e := http.NewRequestWithContext(ctx, "GET", c.endpoint("/api/auth/cas/login"), nil)

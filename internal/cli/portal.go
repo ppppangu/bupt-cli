@@ -60,6 +60,7 @@ func (a *app) apiCommand() *cobra.Command {
 	g := a.portalQuery("api", "大模型 API 服务总览", "overview")
 	models := a.portalQuery("model", "查询全部可见模型、能力、上下文、价格和健康状态", "model")
 	models.Aliases = []string{"models"}
+	models.AddCommand(a.modelTrialCommand(false), a.modelTrialCommand(true))
 	models.AddCommand(a.portalQuery("show ID", "查看模型指标和采样历史", "model"), a.portalQuery("ls", "列出模型", "model"))
 	keys := a.portalQuery("key", "管理 API Key、模型范围和控制器保管状态", "key")
 	keys.Aliases = []string{"keys"}
