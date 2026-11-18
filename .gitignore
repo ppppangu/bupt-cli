@@ -1,0 +1,15 @@
+/bin/
+/build/
+/dist/
+/coverage.out
+*.test
+.env
+*.key
+*.pem
+*.db
+*.db.lock
+.DS_Store
+/.bupt.toml
+.env.*
+!.env.example
+__pycache__/

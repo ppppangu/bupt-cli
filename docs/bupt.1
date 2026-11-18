@@ -1,0 +1,221 @@
+.TH BUPT 1 "2026-11-18" "bupt" "User Commands"
+.SH NAME
+bupt \- manage BUPT model APIs, compute resources, and school sessions
+.SH SYNOPSIS
+.B bupt
+[
+.I global-options
+]
+.I command
+[
+.I arguments
+]
+.SH DESCRIPTION
+bupt is a Unix-style client and controller for BUPT compute.
+The controller runs locally by default. An optional remote controller can
+continue lifecycle management while the workstation is asleep.
+Previously prepared SSH routes do not require a fresh school login.
+.SH GETTING STARTED
+.nf
+bupt init
+bupt
+bupt login
+bupt status
+bupt api model
+bupt api usage
+bupt api key
+bupt compute catalog
+bupt compute instance
+bupt up experiment --preset gpu-small --max-runtime 2h
+bupt ssh experiment
+bupt down experiment
+.fi
+.PP
+Configure the preset from the actual platform catalogue before allocation.
+Outside the school network, a reachable direct SSH route or a configured
+SSH relay is required. Automatic peer-to-peer NAT traversal is not provided.
+.SH DISCOVERY
+With no arguments, bupt prints the command summary and exits.
+Run bupt tui to open the interactive platform overview.
+Use arrows, Enter and Escape to browse, / to filter, r to refresh, and q to quit.
+bupt tui api and bupt tui compute open the service directly.
+The resources, work, files and access shortcuts also remain available.
+Use --cached with tui to browse controller records and saved catalogues.
+.PP
+bupt help TOPIC shows related commands. COMMAND --help shows common flags.
+bupt help COMMAND --all displays full options, and bupt help --all lists the command tree.
+.SH COMMANDS
+.TP
+.B init, agent
+Initialize, install, inspect, or run a local or optional remote controller.
+.TP
+.B api
+Show the model service overview. Use api model for model IDs, capabilities,
+context, prices and observed health. Use api usage for period totals and balance.
+Use api key to list, create, enable, disable, export or delete a scoped key.
+Only an explicit export releases the secret held by the selected controller.
+Use api guide for the current gateway address and SDK examples.
+.TP
+.B compute
+Show the compute workspace. Browse catalog, instance, quota, project, storage,
+school scheduler jobs, managed runs, or operation receipts. Use compute features
+to inspect published module settings. Administrative views verify school roles.
+.TP
+.B account, news, agreement
+Inspect the signed-in portal account, read campus notices or review the service agreement.
+.TP
+.B login, auth
+Manage WebVPN QR approval, university SSO, and the platform callback.
+University SSO uses QR by default. Use bupt login --sso-password for campus
+username and password. The legacy --local option selects a compute-platform password.
+The access subcommand stores the separate instance-console bootstrap password.
+.TP
+.B profile, config
+Select account profiles and inspect or change layered non-secret settings.
+.TP
+.B status
+Show live authentication and resource status; --cached reads only saved state.
+Status never starts a login or takes over another school session.
+.TP
+.B preset
+Save verified resource choices, select defaults, or remove local presets.
+The set, ls, show, use, and rm subcommands support reusable finite limits.
+.TP
+.B wait
+Resume waiting for a durable run ID; --for finished waits for cleanup.
+Interrupting a wait does not cancel the controller-owned run.
+.TP
+.B resources, spec, quota, estimate
+Inspect personal resource limits and visible templates grouped by pool.
+Use resources --cached for the saved catalogue, or spec show to inspect one template.
+.TP
+.B instance, up, down
+Create, adopt, start, stop, release, restore, and explicitly delete instances.
+.TP
+.B lease
+Inspect or change the current finite runtime and renewal policy.
+.TP
+.B run, job
+Launch bounded detached jobs; inspect, follow logs, wait, cancel,
+or update policy.
+.TP
+.B ssh, exec, proxy, forward, cp, sftp
+Use cached SSH routes for terminals, commands, byte streams, port forwarding,
+and file transfers.
+.TP
+.B console
+Use the platform terminal. This path still requires platform authentication.
+.TP
+.B data
+List, upload, or download persistent platform storage.
+.TP
+.B resize, snapshot, clone, service
+Use capabilities actually supported by the selected platform template.
+.TP
+.B key, client, ssh-config
+Manage dedicated instance keys, scoped controller clients,
+and optional OpenSSH configuration.
+ssh-config install INSTANCE --alias bupt-gpu installs a short SSH alias
+with a verified host key and a recoverable configuration backup.
+.TP
+.B task, audit, doctor
+Inspect operation receipts, sanitized controller events,
+and independent health checks.
+.TP
+.B completion
+Generate Bash, Zsh, or Fish completion scripts.
+.SH GLOBAL OPTIONS
+.TP
+.BR --profile " NAME"
+Select an account profile.
+.TP
+.BR --config " FILE"
+Select the trusted global TOML configuration.
+.TP
+.BR --project-config " FILE", " --no-project"
+Select or ignore a project configuration.
+.TP
+.BR --controller " local|ssh://HOST", " --socket " PATH
+Override the controller connection for this invocation.
+.TP
+.BR --json ", " --jsonl ", " --quiet
+Write one JSON value, one record per line, or identifiers only.
+These options are mutually exclusive and are rejected for raw SSH/proxy output.
+.TP
+.B --non-interactive
+Do not prompt. Authentication requiring human approval returns a real error.
+.TP
+.B --dry-run
+Validate and describe changes without applying them.
+Some validation may read platform state.
+.TP
+.BR --timeout " DURATION"
+Limit RPC waiting. Interactive SSH sessions have no default session timeout.
+.TP
+.BR --idempotency-key " KEY"
+Reuse a stable request identifier for retries of the same intended operation.
+Changing the payload with the same key is an error.
+.SH RUNTIME POLICY
+Managed allocation and jobs require an explicit finite
+.B --max-runtime
+or
+.B --until
+value, either from configuration or command flags.
+Elapsed setup and queue time count toward the run limit.
+Updating a limit does not reset the original start time.
+.PP
+The default cleanup policy is release: stop the instance and release its
+allocation into the platform recycle bin. Delete is separate and permanent.
+School authentication is still required for platform renewal and cleanup.
+A sleeping local controller cannot submit these requests until it resumes.
+.SH INPUT AND OUTPUT
+Results and remote program bytes use stdout. Prompts and diagnostics use stderr.
+Interactive terminals wait for school approval. With --sso-password, WebVPN
+still uses QR. The CLI prompts for the campus username and a hidden password
+only when CAS needs them. Use --username to prefill the campus ID. The
+controller saves the verified session and uses the campus password once.
+Without a terminal, use --device --wait and optionally --qr-file FILE.
+QR filenames receive private per-stage suffixes
+and never replace existing files.
+For scripted campus login, combine --sso-password with --username and
+--password-stdin, or with --credentials-stdin JSON containing username,
+password and optional captcha_code. Use auth poll --wait to resume a staged login. Password and token argument flags are not provided.
+Use -- before the remote argv of exec or run;
+shell syntax is not expanded locally.
+.SH EXIT STATUS
+0 indicates success. 1 indicates an operational failure. 2 indicates invalid
+CLI usage. 130 indicates interruption. Native exec and completed jobs preserve
+the remote command's exit status, so those statuses can overlap local codes.
+.SH FILES
+.TP
+.I $XDG_CONFIG_HOME/bupt/config.toml
+Trusted profiles and non-secret defaults; default base is ~/.config.
+.TP
+.I .bupt.toml
+Project selection, presets, and runtime policy. Trusted endpoint and identity
+settings are not accepted from this file.
+.TP
+.I $XDG_STATE_HOME/bupt/
+Controller state database and local socket; default base is ~/.local/state.
+.TP
+.I $XDG_DATA_HOME/bupt/
+Encrypted credentials, protected master key, and dedicated key files;
+default base is ~/.local/share.
+.SH EXAMPLES
+.nf
+bupt run --preset gpu-small --max-runtime 4h -- python3 train.py
+bupt job run --instance experiment --max-runtime 1h --detach -- make test
+bupt ssh experiment --session work --reconnect
+bupt exec experiment -- printf '%s\\n' 'an exact argument'
+bupt lease set experiment --max-runtime 6h
+bupt lease set experiment --no-renew
+bupt data pull output/model.bin - > model.bin
+bupt cp --recursive ./src experiment:work/src
+.fi
+.SH SEE ALSO
+.B bupt help
+and
+.B bupt COMMAND --help
+provide the current command and option reference.
+README.md documents setup and lifecycle workflows; docs/protocol.md documents
+adapter evidence, transport contracts, and current limitations.

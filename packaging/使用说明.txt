@@ -1,0 +1,59 @@
+北邮算力工具 bupt
+
+收到这份安装包后，用自己的学校账号登录即可。先将整个 ZIP 解压，再使用解压目录中的文件。
+
+安装
+
+macOS        打开“终端”，输入 cd 和一个空格，把解压后的文件夹拖入终端，再按回车。
+Linux        在解压后的文件夹中打开终端。
+Windows      在 PowerShell 运行 wsl -l -v，查看 Linux 发行版的 VERSION 是否为 2。
+             首次安装 WSL2 可按 Microsoft 的说明操作。
+             https://learn.microsoft.com/zh-cn/windows/wsl/install
+             在解压目录打开 Windows 终端，输入 wsl。进入 Linux 后，运行 ls install.sh
+             确认当前目录能看到安装脚本，再执行下面的安装命令。
+
+依次执行以下命令。安装脚本会识别处理器，校验程序，并安装到当前用户的 ~/.local/bin。
+
+    sh ./install.sh
+    export PATH="$HOME/.local/bin:$PATH"
+    bupt version
+
+如果新开终端后提示找不到 bupt，把上面的 export 行加入当前 shell 的启动文件。
+macOS 默认 zsh 可放在 ~/.zshrc，Linux 或 WSL 常用的交互 bash 可放在 ~/.bashrc。
+
+首次登录
+
+    bupt init
+    bupt login
+    bupt tui
+
+init 为当前用户启动本地控制器。校外网络认证过期时，先扫码通过 WebVPN，再完成学校统一身份认证。
+支持统一认证密码的账号也可以运行 bupt login --sso-password，按提示在终端中输入学工号和密码。
+
+Linux 或 WSL2 如果提示 systemctl --user 无法连接，请在一个终端运行 bupt init --foreground
+并保持该窗口打开，然后在第二个 Linux 终端运行 bupt login 和 bupt tui。
+
+常用查询
+
+    bupt api model           查模型 ID、价格、上下文和状态
+    bupt api usage           查余额和用量
+    bupt api key             查看本账号的 API Key
+    bupt compute catalog     浏览算力模板和配额
+    bupt compute instance    查看本人实例、预留状态和期限
+    bupt status              查看平台总览
+
+单独输入 bupt 会打印帮助。全屏界面使用方向键选择，Enter 打开，Esc 返回，q 退出。
+启动或创建实例会占用学校额度，请先在界面预览规格、时限和清理策略。
+使用本地控制器时，电脑休眠会暂停它向学校提交管理操作。
+
+更新
+
+在没有活跃托管任务时，解压新版安装包，再次执行 sh ./install.sh 和 bupt init。
+用 bupt version 查看客户端版本，用 bupt agent status 检查控制器。
+配置、登录会话和设备密钥保存在各自账户的用户目录中。分发给同学时转发原始 ZIP 即可。
+
+更多命令
+
+    bupt help api
+    bupt help compute
+    bupt help --all
