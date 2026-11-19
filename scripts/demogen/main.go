@@ -1,3 +1,5 @@
+//go:build demogen
+
 // Demo frame generator: renders the TUI journeys with canned school data.
 // Usage: go run -tags demogen ./scripts/demogen [OUTPUT_DIR]
 package main
