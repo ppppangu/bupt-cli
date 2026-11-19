@@ -503,6 +503,6 @@ func dumpANSI(w *workspace, path string) error {
 			x += max(1, width)
 		}
 	}
-	b.WriteString("\x1b[0m\x1b[?25h\n")
+	b.WriteString("\x1b[0m")
 	return os.WriteFile(path, []byte(b.String()), 0o644)
 }

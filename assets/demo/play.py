@@ -48,7 +48,9 @@ def main() -> None:
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
     try:
-        tty.setraw(fd)
+        # cbreak keeps output processing (ONLCR) intact; raw mode would strip
+        # CRLF conversion and misalign every rendered row in xterm.js.
+        tty.setcbreak(fd)
         sys.stdout.write("\x1b[2J\x1b[H\x1b[?25l")
         sys.stdout.flush()
         last = len(frames) - 1
