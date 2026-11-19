@@ -1,0 +1,38 @@
+#!/bin/sh
+# Canned bupt shim for demo recordings only. It plays the pre-rendered TUI
+# frames or prints canned CLI outputs; it never touches real accounts.
+# See assets/demo/README.md.
+d=$(CDPATH= cd "$(dirname "$0")/.." && pwd)
+case "$1" in
+"tui")
+    case "$2" in
+    compute) exec python3 "$d/play.py" "$d/compute" ;;
+    api)     exec python3 "$d/play.py" "$d/api" ;;
+    *)       cat "$d/cli/help.txt" ;;
+    esac
+    ;;
+"api")
+    case "$2" in
+    model) cat "$d/cli/model.json" ;;
+    key)   cat "$d/cli/keys.json" ;;
+    usage) cat "$d/cli/usage.txt" ;;
+    *)     cat "$d/cli/help-api.txt" ;;
+    esac
+    ;;
+"compute")
+    case "$2" in
+    instance) cat "$d/cli/instances.json" ;;
+    *)        cat "$d/cli/help.txt" ;;
+    esac
+    ;;
+"help")
+    case "$2" in
+    api) cat "$d/cli/help-api.txt" ;;
+    *)   cat "$d/cli/help.txt" ;;
+    esac
+    ;;
+"status")  cat "$d/cli/status.txt" ;;
+"version") printf 'bupt 0.1.0\n' ;;
+"--help")  cat "$d/cli/help.txt" ;;
+*)         cat "$d/cli/help.txt" ;;
+esac

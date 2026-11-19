@@ -1,0 +1,77 @@
+{
+  "models": [
+    {
+      "id": "qwen3.8-27b",
+      "name": "Qwen3.8-27B",
+      "kind": "chat",
+      "vendor": "通义千问",
+      "context": "128K",
+      "input_points_per_million_tokens": 0.8,
+      "output_points_per_million_tokens": 1.6,
+      "health": "ok",
+      "last_latency_ms": 312,
+      "last_sampled_at": "2026-11-19T16:20:00+08:00"
+    },
+    {
+      "id": "deepseek-v4-flash",
+      "name": "DeepSeek-V4-Flash",
+      "kind": "chat",
+      "vendor": "深度求索",
+      "context": "64K",
+      "input_points_per_million_tokens": 0.4,
+      "output_points_per_million_tokens": 1.2,
+      "health": "ok",
+      "last_latency_ms": 268,
+      "last_sampled_at": "2026-11-19T16:19:00+08:00"
+    },
+    {
+      "id": "glm-4.5-air",
+      "name": "GLM-4.5-Air",
+      "kind": "chat",
+      "vendor": "智谱",
+      "context": "128K",
+      "input_points_per_million_tokens": 0.5,
+      "output_points_per_million_tokens": 1.5,
+      "health": "degraded",
+      "last_sampled_at": "2026-11-19T16:15:00+08:00"
+    },
+    {
+      "id": "bge-m3",
+      "name": "BGE-M3",
+      "kind": "embedding",
+      "vendor": "BAAI",
+      "context": "8K",
+      "input_points_per_million_tokens": 0.1,
+      "output_points_per_million_tokens": 0.1,
+      "health": "ok",
+      "last_latency_ms": 45,
+      "last_sampled_at": "2026-11-19T16:20:00+08:00"
+    },
+    {
+      "id": "jina-embeddings-v3",
+      "name": "Jina-Embeddings-v3",
+      "kind": "embedding",
+      "vendor": "Jina AI",
+      "context": "32K",
+      "input_points_per_million_tokens": 0.2,
+      "output_points_per_million_tokens": 0.2,
+      "health": "ok",
+      "last_latency_ms": 88,
+      "last_sampled_at": "2026-11-19T16:20:00+08:00"
+    },
+    {
+      "id": "jina-reranker-m0",
+      "name": "Jina-Reranker-M0",
+      "kind": "rerank",
+      "vendor": "Jina AI",
+      "context": "8K",
+      "input_points_per_million_tokens": 0.2,
+      "output_points_per_million_tokens": 0.2,
+      "health": "ok",
+      "last_latency_ms": 60,
+      "last_sampled_at": "2026-11-19T16:20:00+08:00"
+    }
+  ],
+  "source": "live",
+  "observed_at": "2026-11-19T16:20:00+08:00"
+}

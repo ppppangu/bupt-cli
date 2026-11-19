@@ -1,0 +1,17 @@
+大模型 API 服务总览
+
+用法  bupt api [flags]
+
+子命令
+  admin             查看学校门户授予的后台权限
+  guide             取得公网网关地址及 Python、curl 接入示例
+  key               管理 API Key、模型范围和控制器保管状态
+  leaderboard       查看门户排行榜
+  model             查询全部可见模型、能力、上下文、价格和健康状态
+  usage             查询余额、调用次数和按模型统计的用量
+
+常用选项
+      --cached    只读控制器保存的快照
+      --refresh   刷新本栏目
+
+完整选项  bupt help api --all

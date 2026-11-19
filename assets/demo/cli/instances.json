@@ -1,0 +1,23 @@
+{
+  "instances": [
+    {
+      "id": "101",
+      "name": "llm-finetune",
+      "state": "running",
+      "reserved": true,
+      "expires_at": "2026-11-19T19:56:07+08:00",
+      "created_at": "2026-11-19T13:20:00+08:00",
+      "ssh_state": "ready",
+      "nodes": [{"id": "7", "name": "worker-a100-07"}]
+    },
+    {
+      "id": "102",
+      "name": "gpu-dev",
+      "state": "stopped",
+      "reserved": false,
+      "created_at": "2026-11-18T14:20:00+08:00"
+    }
+  ],
+  "source": "live",
+  "observed_at": "2026-11-19T16:20:00+08:00"
+}

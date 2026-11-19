@@ -1,0 +1,20 @@
+bupt   北邮算力平台
+
+用法  bupt <命令> [选项]
+
+平台    bupt login     bupt logout     bupt status     bupt account     bupt tui
+
+按用途浏览
+  bupt api             模型 API（大模型 API 服务）
+    model              可调用模型、ID、能力、上下文、价格、健康状态
+    usage              余额与用量
+    key                密钥与模型范围
+  bupt compute         裸算力服务器（裸算力服务）
+    catalog            资源池、模板和可申请规格
+    instance           实例、预留、期限与节点
+    quota              账号与存储配额
+
+bupt help api 或 bupt help compute 查看业务命令。bupt help resources 查看模板相关快捷命令。
+
+bupt help tutorial  阅读教程
+bupt help --all  查看完整命令树和全局选项
