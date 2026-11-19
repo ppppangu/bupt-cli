@@ -17,7 +17,7 @@ Sleep 800ms
 
 Type "bupt --help"
 Enter
-Sleep 2.6s
+Sleep 2.2s
 
 Type "bupt api model --json | jq -r '.models[] | select(.input_points_per_million_tokens < 0.7) | .id'"
 Enter
@@ -33,4 +33,4 @@ Sleep 1.8s
 
 Type "bupt api usage --days 7"
 Enter
-Sleep 2.6s
+Sleep 2.2s

@@ -60,4 +60,4 @@ Sleep 900ms
 Up
 Sleep 900ms
 Right
-Sleep 4s
+Sleep 1.2s
