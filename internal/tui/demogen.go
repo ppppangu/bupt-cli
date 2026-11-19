@@ -45,24 +45,30 @@ func (demoBackend) Stream(context.Context, string, any, io.Reader, io.Writer) (m
 var demoModels = []domain.PortalModel{
 	{ID: "qwen3.8-27b", Name: "Qwen3.8-27B", Kind: "chat", Vendor: "通义千问", Context: "128K", InputPrice: fptr(0.8), OutputPrice: fptr(1.6), Health: "ok", LatencyMS: fptr(312), SampledAt: "2 分钟前"},
 	{ID: "deepseek-v4-flash", Name: "DeepSeek-V4-Flash", Kind: "chat", Vendor: "深度求索", Context: "64K", InputPrice: fptr(0.4), OutputPrice: fptr(1.2), Health: "ok", LatencyMS: fptr(268), SampledAt: "1 分钟前"},
+	{ID: "kimi-k2-instruct", Name: "Kimi-K2-Instruct", Kind: "chat", Vendor: "月之暗面", Context: "128K", InputPrice: fptr(0.6), OutputPrice: fptr(1.4), Health: "ok", LatencyMS: fptr(421), SampledAt: "3 分钟前"},
 	{ID: "glm-4.5-air", Name: "GLM-4.5-Air", Kind: "chat", Vendor: "智谱", Context: "128K", InputPrice: fptr(0.5), OutputPrice: fptr(1.5), Health: "degraded", SampledAt: "5 分钟前"},
+	{ID: "qwen2.5-72b-instruct", Name: "Qwen2.5-72B-Instruct", Kind: "chat", Vendor: "通义千问", Context: "64K", InputPrice: fptr(2.5), OutputPrice: fptr(5.0), Health: "degraded", SampledAt: "4 分钟前"},
 	{ID: "bge-m3", Name: "BGE-M3", Kind: "embedding", Vendor: "BAAI", Context: "8K", InputPrice: fptr(0.1), OutputPrice: fptr(0.1), Health: "ok", LatencyMS: fptr(45), SampledAt: "刚刚"},
 	{ID: "jina-embeddings-v3", Name: "Jina-Embeddings-v3", Kind: "embedding", Vendor: "Jina AI", Context: "32K", InputPrice: fptr(0.2), OutputPrice: fptr(0.2), Health: "ok", LatencyMS: fptr(88), SampledAt: "刚刚"},
+	{ID: "gte-large-zh", Name: "GTE-Large-Zh", Kind: "embedding", Vendor: "阿里云", Context: "32K", InputPrice: fptr(0.15), OutputPrice: fptr(0.15), Health: "ok", LatencyMS: fptr(52), SampledAt: "刚刚"},
 	{ID: "jina-reranker-m0", Name: "Jina-Reranker-M0", Kind: "rerank", Vendor: "Jina AI", Context: "8K", InputPrice: fptr(0.2), OutputPrice: fptr(0.2), Health: "ok", LatencyMS: fptr(60), SampledAt: "刚刚"},
 }
 
 var demoKeys = []domain.PortalKey{
 	{ID: "key-research", Name: "科研", Masked: "sk-…7f2k", Models: []string{"qwen3.8-27b", "bge-m3", "jina-reranker-m0"}, Status: "active", Used: fptr(123.4), CreatedAt: "2026-11-02", Stored: true},
 	{ID: "key-course", Name: "课程作业", Masked: "sk-…a9q1", Models: []string{"qwen3.8-27b", "deepseek-v4-flash"}, Status: "active", Used: fptr(58.1), CreatedAt: "2026-11-15", Stored: true},
+	{ID: "key-toolkit", Name: "工具链", Masked: "sk-…c3m8", Models: []string{"qwen3.8-27b", "kimi-k2-instruct", "bge-m3", "jina-reranker-m0"}, Status: "active", Used: fptr(31.7), CreatedAt: "2026-11-18", Stored: true},
 }
 
 var demoPools = []domain.ResourcePool{
 	{ID: "pool-gpu", Name: "GPU 资源池", Templates: []domain.TemplateSummary{
 		{ID: "tpl-pytorch", Name: "PyTorch 2.3 · CUDA 12.1", Version: "v2", Resources: map[string]any{"gpu": "1×A100-80G", "cpu": 8, "memory": 65536}},
 		{ID: "tpl-llama", Name: "Llama-Factory 微调环境", Version: "v1", Resources: map[string]any{"gpu": "2×A100-80G", "cpu": 16, "memory": 131072}},
+		{ID: "tpl-vllm", Name: "vLLM 推理服务", Version: "v3", Resources: map[string]any{"gpu": "1×RTX-4090", "cpu": 8, "memory": 32768}},
 	}},
 	{ID: "pool-cpu", Name: "CPU 资源池", Templates: []domain.TemplateSummary{
 		{ID: "tpl-dev", Name: "Ubuntu 22.04 开发环境", Version: "v3", Resources: map[string]any{"cpu": 4, "memory": 16384}},
+		{ID: "tpl-julia", Name: "Julia 科学计算", Version: "v1", Resources: map[string]any{"cpu": 8, "memory": 32768}},
 	}},
 }
 
@@ -89,15 +95,17 @@ func demoReply(method string, p map[string]any) (any, error) {
 		now := time.Now()
 		return domain.StatusReport{
 			Profile: "默认", Controller: "本机", Platform: "authenticated", Gateway: "authenticated",
-			API: domain.PortalSummary{State: "authenticated", Balance: fptr(1234.5), Keys: iptr(2), Models: iptr(6), CheckedAt: now},
-			Catalog:           &domain.CatalogCounts{Pools: 2, Templates: 3, ObservedAt: now},
+			API: domain.PortalSummary{State: "authenticated", Balance: fptr(1234.5), Keys: iptr(3), Models: iptr(9), CheckedAt: now},
+			Catalog:           &domain.CatalogCounts{Pools: 2, Templates: 5, ObservedAt: now},
 			SnapshotAvailable: true, Source: "live", CheckedAt: now,
 			Instances: []domain.Instance{
 				{ID: "101", Name: "llm-finetune", SpecID: "tpl-pytorch", State: "running", Health: "healthy", Reserved: true, ExpiresAt: now.Add(20 * time.Minute), CreatedAt: now.Add(-3 * time.Hour), Nodes: []domain.Node{{ID: "7", Name: "worker-a100-07"}}, SSHState: "ready"},
+				{ID: "103", Name: "bert-pretrain", SpecID: "tpl-llama", State: "running", Health: "healthy", Reserved: true, ExpiresAt: now.Add(2 * time.Hour), CreatedAt: now.Add(-5 * time.Hour), Nodes: []domain.Node{{ID: "3", Name: "worker-a100-03"}}, SSHState: "ready"},
 				{ID: "102", Name: "gpu-dev", SpecID: "tpl-pytorch", State: "stopped", Reserved: false, CreatedAt: now.Add(-26 * time.Hour)},
+				{ID: "104", Name: "web-demo", SpecID: "tpl-vllm", State: "stopped", Reserved: false, CreatedAt: now.Add(-2 * 24 * time.Hour)},
 			},
-			Runs: []domain.Run{{ID: "run-9f21", Kind: "session", State: "running", InstanceID: "101"}},
-			Routes: []domain.Route{{InstanceID: "101", NodeID: "7", State: "ready"}},
+			Runs: []domain.Run{{ID: "run-9f21", Kind: "session", State: "running", InstanceID: "101"}, {ID: "run-7c31", Kind: "session", State: "running", InstanceID: "103"}},
+			Routes: []domain.Route{{InstanceID: "101", NodeID: "7", State: "ready"}, {InstanceID: "103", NodeID: "3", State: "ready"}},
 		}, nil
 	case "portal.read":
 		switch p["section"] {
@@ -109,7 +117,7 @@ func demoReply(method string, p map[string]any) (any, error) {
 	case "resources.overview":
 		return domain.ResourceOverview{
 			Profile:     "默认",
-			Capacity:    []domain.Capacity{{Scope: "个人", Resource: "GPU", Used: fptr(1), Limit: fptr(2), Unit: "卡"}, {Scope: "个人", Resource: "CPU", Used: fptr(4), Limit: fptr(16), Unit: "核"}, {Scope: "项目", Resource: "算力积分", Used: fptr(12.5), Limit: fptr(100), Unit: "分/天"}},
+			Capacity:    []domain.Capacity{{Scope: "个人", Resource: "GPU", Used: fptr(2), Limit: fptr(4), Unit: "卡"}, {Scope: "个人", Resource: "CPU", Used: fptr(12), Limit: fptr(32), Unit: "核"}, {Scope: "个人", Resource: "存储", Used: fptr(240), Limit: fptr(500), Unit: "GiB"}, {Scope: "项目", Resource: "算力积分", Used: fptr(36.5), Limit: fptr(100), Unit: "分/天"}},
 			QuotaSource: "学校", Pools: demoPools, CatalogSource: "live", CatalogAt: &[]time.Time{time.Now().Add(-9 * time.Minute)}[0],
 		}, nil
 	case "spec.show":
@@ -147,18 +155,20 @@ func demoWorkspace(home string) (*workspace, error) {
 		},
 		report: domain.StatusReport{
 			Profile: "默认", Controller: "本机", Platform: "authenticated", Gateway: "authenticated",
-			API:               domain.PortalSummary{State: "authenticated", Balance: fptr(1234.5), Keys: iptr(2), Models: iptr(6), CheckedAt: now},
+			API:               domain.PortalSummary{State: "authenticated", Balance: fptr(1234.5), Keys: iptr(3), Models: iptr(9), CheckedAt: now},
 			SnapshotAvailable: true, Source: "live", CheckedAt: now,
 			Instances: []domain.Instance{
 				{ID: "101", Name: "llm-finetune", SpecID: "tpl-pytorch", State: "running", Health: "healthy", Reserved: true, ExpiresAt: now.Add(20 * time.Minute), CreatedAt: now.Add(-3 * time.Hour), Nodes: []domain.Node{{ID: "7", Name: "worker-a100-07"}}, SSHState: "ready"},
+				{ID: "103", Name: "bert-pretrain", SpecID: "tpl-llama", State: "running", Health: "healthy", Reserved: true, ExpiresAt: now.Add(2 * time.Hour), CreatedAt: now.Add(-5 * time.Hour), Nodes: []domain.Node{{ID: "3", Name: "worker-a100-03"}}, SSHState: "ready"},
 				{ID: "102", Name: "gpu-dev", SpecID: "tpl-pytorch", State: "stopped", Reserved: false, CreatedAt: now.Add(-26 * time.Hour)},
+				{ID: "104", Name: "web-demo", SpecID: "tpl-vllm", State: "stopped", Reserved: false, CreatedAt: now.Add(-2 * 24 * time.Hour)},
 			},
-			Runs:  []domain.Run{{ID: "run-9f21", Kind: "session", State: "running", InstanceID: "101"}},
-			Routes: []domain.Route{{InstanceID: "101", NodeID: "7", State: "ready"}},
+			Runs:  []domain.Run{{ID: "run-9f21", Kind: "session", State: "running", InstanceID: "101"}, {ID: "run-7c31", Kind: "session", State: "running", InstanceID: "103"}},
+			Routes: []domain.Route{{InstanceID: "101", NodeID: "7", State: "ready"}, {InstanceID: "103", NodeID: "3", State: "ready"}},
 		},
 	}
 	w.pages = []*page{{title: "校园算力平台", command: "bupt status", build: w.home}}
-	s.SetSize(100, 28)
+	s.SetSize(72, 24)
 	w.draw()
 	return w, nil
 }
@@ -467,7 +477,7 @@ func dumpANSI(w *workspace, path string) error {
 	cols, rows := s.Size()
 	var b strings.Builder
 	b.WriteString("\x1b[?25l")
-	last := "\x1b[0m"
+	last := ""
 	for y := 0; y < rows; y++ {
 		if y > 0 {
 			b.WriteString("\n")
@@ -475,9 +485,14 @@ func dumpANSI(w *workspace, path string) error {
 		for x := 0; x < cols; {
 			mainc, comb, style, width := s.GetContent(x, y)
 			seq, ok := ansiStyle(style)
-			if ok && seq != last {
+			switch {
+			case ok && seq != last:
 				b.WriteString(seq)
 				last = seq
+			case !ok && last != "":
+				// Back to the default style: reset so backgrounds never bleed.
+				b.WriteString("\x1b[0m")
+				last = ""
 			}
 			if mainc == 0 {
 				b.WriteString(" ")

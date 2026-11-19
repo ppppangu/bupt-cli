@@ -25,6 +25,18 @@
       "last_sampled_at": "2026-11-19T16:19:00+08:00"
     },
     {
+      "id": "kimi-k2-instruct",
+      "name": "Kimi-K2-Instruct",
+      "kind": "chat",
+      "vendor": "月之暗面",
+      "context": "128K",
+      "input_points_per_million_tokens": 0.6,
+      "output_points_per_million_tokens": 1.4,
+      "health": "ok",
+      "last_latency_ms": 421,
+      "last_sampled_at": "2026-11-19T16:17:00+08:00"
+    },
+    {
       "id": "glm-4.5-air",
       "name": "GLM-4.5-Air",
       "kind": "chat",
@@ -34,6 +46,17 @@
       "output_points_per_million_tokens": 1.5,
       "health": "degraded",
       "last_sampled_at": "2026-11-19T16:15:00+08:00"
+    },
+    {
+      "id": "qwen2.5-72b-instruct",
+      "name": "Qwen2.5-72B-Instruct",
+      "kind": "chat",
+      "vendor": "通义千问",
+      "context": "64K",
+      "input_points_per_million_tokens": 2.5,
+      "output_points_per_million_tokens": 5.0,
+      "health": "degraded",
+      "last_sampled_at": "2026-11-19T16:16:00+08:00"
     },
     {
       "id": "bge-m3",
@@ -57,6 +80,18 @@
       "output_points_per_million_tokens": 0.2,
       "health": "ok",
       "last_latency_ms": 88,
+      "last_sampled_at": "2026-11-19T16:20:00+08:00"
+    },
+    {
+      "id": "gte-large-zh",
+      "name": "GTE-Large-Zh",
+      "kind": "embedding",
+      "vendor": "阿里云",
+      "context": "32K",
+      "input_points_per_million_tokens": 0.15,
+      "output_points_per_million_tokens": 0.15,
+      "health": "ok",
+      "last_latency_ms": 52,
       "last_sampled_at": "2026-11-19T16:20:00+08:00"
     },
     {

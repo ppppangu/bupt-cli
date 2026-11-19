@@ -1,15 +1,15 @@
 # bupt CLI demo: scriptable commands and JSON output for agents.
 # The shim prints canned data; help text comes from the real binary.
 Set Shell zsh
-Set Columns 96
+Set Columns 72
 Set Rows 24
-Set FontSize 16
+Set FontSize 18
 Set Padding 0
 Set Margin 0
 Set Framerate 24
 Set TypingSpeed 45ms
 Set CursorBlink false
-Set Theme { "background": "#0d1117", "foreground": "#e6edf3", "cursor": "#58a6ff" }
+Set Theme { "background": "#1b222c", "foreground": "#e6edf3", "cursor": "#58a6ff" }
 
 Type 'export PATH="assets/demo/bin:$PATH"'
 Enter

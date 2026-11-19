@@ -1,15 +1,15 @@
 # bupt TUI demo: browse templates, review the create form, manage instances.
 # Plays pre-rendered frames from the real TUI; never touches real accounts.
 Set Shell zsh
-Set Columns 100
-Set Rows 28
-Set FontSize 14
+Set Columns 72
+Set Rows 24
+Set FontSize 18
 Set Padding 0
 Set Margin 0
 Set Framerate 24
 Set TypingSpeed 40ms
 Set CursorBlink false
-Set Theme { "background": "#0d1117", "foreground": "#e6edf3", "cursor": "#58a6ff" }
+Set Theme { "background": "#1b222c", "foreground": "#e6edf3", "cursor": "#58a6ff" }
 
 Type 'export PATH="assets/demo/bin:$PATH"'
 Enter
