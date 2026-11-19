@@ -1,15 +1,37 @@
+# Project build and distribution outputs
 /bin/
 /build/
 /dist/
 /coverage.out
+
+# Go build and test artifacts
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
 *.test
+*.out
+coverage.html
+coverage.txt
+coverage.xml
+*.coverprofile
+profile.cov
+go.work
+go.work.sum
+
+# Secrets and local state
 .env
+.env.*
+!.env.example
 *.key
 *.pem
 *.db
 *.db.lock
-.DS_Store
 /.bupt.toml
-.env.*
-!.env.example
+
+# Editor and OS files
+.DS_Store
+.idea/
+.vscode/
 __pycache__/
