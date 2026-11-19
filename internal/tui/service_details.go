@@ -20,10 +20,10 @@ func (w *workspace) lifecycleRows(v *content, i domain.Instance) {
 		}))
 	}
 	if i.State == "running" || i.Reserved || i.Managed {
-		v.rows = append(v.rows, link("down", "停止并释放", "归还计算资源，保留实例磁盘", cmdline("down", id, "--cleanup", "release"), func() { w.endReview(i) }))
+		v.rows = append(v.rows, link("down", "停止并归还算力", "保留实例磁盘", cmdline("down", id, "--cleanup", "release"), func() { w.endReview(i) }))
 	}
 	if i.State == "running" {
-		action("stop", "仅停止运行", "保留磁盘，资源是否仍预留以学校回执为准。")
+		action("stop", "仅停止运行", "运行任务会中断，磁盘保留。预留算力与存储可能继续计费，以学校账单为准。")
 	}
 	if i.State == "stopped" && i.Reserved {
 		action("release", "释放预留", "归还计算额度，保留可恢复的实例磁盘。")

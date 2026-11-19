@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"bupt.local/cli/internal/navigation"
 	"context"
 	"errors"
 	"strings"
@@ -15,6 +16,7 @@ type controllerRecovery struct {
 	action       install.WorkspaceAction
 	starting     bool
 	pending      bool
+	offerLogin   bool
 }
 
 func errorCode(err error) string {
@@ -107,7 +109,7 @@ func (w *workspace) controllerProblem(err error) string {
 			if e != nil {
 				w.connection.detail = readProblem(e)
 			} else if w.connection.action == install.WorkspaceInitialize {
-				w.connection.detail = "首次使用需要在这台电脑启动个人控制器。"
+				w.connection.detail = "首次使用需要设置这台电脑，之后可登录学校账号。"
 			} else if w.connection.action == install.WorkspaceResume {
 				w.connection.detail = "此工作区的本机控制器已停止。"
 			}
@@ -135,11 +137,11 @@ func (w *workspace) checkPendingSetup() {
 // The overview of each area can report a workspace-wide issue. Local readers,
 // tutorials and nested forms keep their own context and feedback.
 func (w *workspace) statusPage(p *page) bool {
-	return p == w.pages[0] || len(w.pages) > 1 && p == w.pages[1] && p.area != ""
+	return p == w.pages[0] || p.area == "access" && p.title == navigation.AccountTitle || len(w.pages) > 1 && p == w.pages[1] && p.area != ""
 }
 
 func (w *workspace) recoveryContent(p *page, v content) content {
-	if w.Cached || p.loginMenu || p.filter != "" {
+	if w.Cached || p.loginMenu || p.filter != "" && p.editor == nil {
 		return v
 	}
 	statusPage := w.statusPage(p)
@@ -152,7 +154,7 @@ func (w *workspace) recoveryContent(p *page, v content) content {
 	case w.connection.code != "" && (statusPage || connectionError(p.problemCode) || p.queryMethod != "" && p.problem != ""):
 		switch w.connection.action {
 		case install.WorkspaceInitialize:
-			r = link("workspace-start", "初始化个人工作区", "创建本机身份并启动个人控制器", "bupt init", w.startWorkspace)
+			r = link("workspace-start", "首次设置这台电脑", "创建个人工作区，随后登录学校账号", "bupt init", w.startWorkspace)
 			r.verb = "初始化"
 		case install.WorkspaceResume:
 			r = link("workspace-start", "启动本机控制器", "使用已安装的个人工作区", "", w.startWorkspace)
@@ -164,7 +166,7 @@ func (w *workspace) recoveryContent(p *page, v content) content {
 			r = link("reconnect", "重新连接控制器", "检查当前工作区的连接", "bupt agent status", w.reconnectController)
 			r.verb = "重连"
 		}
-	case p.blockedByLogin || statusNeedsLogin || (statusPage || p.queryMethod == "portal.read" || p.needsSchool) && w.needsLogin():
+	case p == w.pages[0] && w.connection.offerLogin, p.blockedByLogin, statusNeedsLogin, (statusPage || p.queryMethod == "portal.read" || p.needsSchool) && w.needsLogin():
 		r = navLink("login", "登录学校账号", "完成学校认证后继续当前任务", "bupt login", w.loginMethods)
 	case !p.agreementDocument && (p.problemCode == "AGREEMENT_REQUIRED" || (p.queryMethod == "portal.read" || statusPage && (p == w.pages[0] || p.area == "api" || p.area == "access")) && w.bar.snapshot.Effective(time.Now()).ConsentRequired):
 		r = navLink("agreement-required", "阅读学校服务协议", "阅读正文后可确认本版本", "bupt agreement", func() { w.reviewRequiredAgreement(p) })
@@ -186,7 +188,7 @@ func (w *workspace) recoveryContent(p *page, v content) content {
 		recovery = append(recovery, more)
 	}
 	v.rows = append(recovery, v.rows...)
-	if !p.interacted && !w.filtering && w.input == nil && w.composer == nil {
+	if !p.interacted && !w.filtering && w.input == nil && p.editor == nil {
 		p.key = r.key
 	}
 	return v
@@ -223,6 +225,9 @@ func (w *workspace) startWorkspace() {
 			} else {
 				w.controllerAvailable()
 				w.checkPendingSetup()
+				if action == install.WorkspaceInitialize || action == install.WorkspaceProcess {
+					w.connection.offerLogin = w.bar.snapshot.Effective(time.Now()).Platform != "authenticated"
+				}
 				w.notice = "个人工作区已就绪"
 			}
 			w.reconnectController()

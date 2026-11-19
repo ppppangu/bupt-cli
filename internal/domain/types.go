@@ -44,6 +44,7 @@ func (i ID) Number() json.Number {
 }
 
 type Error struct {
+	RequestID string `json:"request_id,omitempty"`
 	Code      string `json:"code"`
 	Message   string `json:"message"`
 	Retryable bool   `json:"retryable,omitempty"`
@@ -92,6 +93,7 @@ type Identity struct {
 }
 type ProjectMembership struct {
 	GroupID ID     `json:"group_id"`
+	Name    string `json:"name,omitempty"`
 	Role    string `json:"role"`
 	State   string `json:"state,omitempty"`
 }
@@ -131,6 +133,7 @@ type Service struct {
 	Builtin   bool   `json:"builtin,omitempty"`
 }
 type Node struct {
+	Image     string           `json:"image,omitempty"`
 	ID        ID               `json:"id"`
 	Name      string           `json:"name"`
 	Username  string           `json:"username,omitempty"`

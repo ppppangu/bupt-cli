@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -36,6 +37,8 @@ type Options struct {
 	Timeout         time.Duration
 }
 type row struct {
+	prose                       bool
+	aliases                     string
 	forward, recovery           bool
 	verb                        string
 	group                       string
@@ -43,16 +46,39 @@ type row struct {
 	key, title, detail, command string
 	open                        func()
 }
+
+func (r row) matches(query string) bool {
+	return strings.Contains(strings.ToLower(strings.Join([]string{r.title, r.detail, r.key, r.aliases}, " ")), query)
+}
+
 type content struct {
-	document  bool
-	split     bool
-	groups    []navGroup
-	fullWidth bool
-	facts     []string
-	rows      []row
-	empty     string
+	panelTitle  string
+	panelFooter string
+	panel       []string
+	redrawAt    time.Time
+	document    bool
+	split       bool
+	groups      []navGroup
+	fullWidth   bool
+	facts       []string
+	rows        []row
+	empty       string
 }
 type page struct {
+	onLeave           func()
+	onFocus           func(string)
+	newKeyID          string
+	overlay           bool
+	shortcuts         map[rune]string
+	acceptDraft       func(*trialForm)
+	bench             string
+	interrupt         context.CancelFunc
+	instanceID        domain.ID
+	tracking          *instanceOperation
+	createStep        bool
+	priceDraft        *draft
+	nextKey           string
+	editor            *trialEditor
 	agreementDocument bool
 	problemCode       string
 	loginMenu         bool
@@ -61,6 +87,11 @@ type page struct {
 	expanded          map[string]bool
 	filterAnchor      string
 	filterStart       struct {
+		focus, scroll int
+		reading       bool
+	}
+	searchStart struct {
+		query, key    string
 		focus, scroll int
 		reading       bool
 	}
@@ -91,10 +122,11 @@ type prompt struct {
 	problem string
 }
 type workspace struct {
+	trialDrafts            map[string]savedTrial
+	redrawAt               time.Time
 	statusArea, statusCode string
 	connection             controllerRecovery
 	bar                    accountView
-	composer               *trialEditor
 	fatal                  error
 	Options
 	ctx                                                context.Context
@@ -130,7 +162,7 @@ func runScreen(ctx context.Context, o Options, s tcell.Screen) error {
 		o.Timeout = 30 * time.Second
 	}
 	w := &workspace{Options: o, ctx: ctx, screen: s, events: make(chan func(), 16)}
-	w.pages = []*page{{title: "平台总览", command: "bupt status", build: w.home}}
+	w.pages = []*page{{title: "校园算力平台", command: "bupt status", build: w.home}}
 	w.startAccountView()
 	s.EnableMouse(tcell.MouseButtonEvents)
 	s.EnablePaste()
@@ -150,7 +182,11 @@ func runScreen(ctx context.Context, o Options, s tcell.Screen) error {
 	var setupCheck <-chan time.Time
 	for !w.quit {
 		var expires <-chan time.Time
-		if until := w.bar.snapshot.NextExpiry(); !until.IsZero() {
+		until := w.bar.snapshot.NextExpiry()
+		if !w.redrawAt.IsZero() && (until.IsZero() || w.redrawAt.Before(until)) {
+			until = w.redrawAt
+		}
+		if !until.IsZero() {
 			expiry.Reset(time.Until(until))
 			expires = expiry.C
 		}
@@ -177,6 +213,11 @@ func runScreen(ctx context.Context, o Options, s tcell.Screen) error {
 			p := w.current()
 			if !p.watch || p.loading || p.problem != "" || p.submitting {
 				continue
+			}
+			if p.bench == "instance" {
+				if !w.refreshing {
+					w.refreshStatus(false)
+				}
 			}
 			w.loadPage(p)
 		case apply := <-w.events:
@@ -292,6 +333,13 @@ func (w *workspace) push(p *page) {
 		w.loadPage(p)
 	}
 }
+func (w *workspace) popup(p *page) {
+	p.overlay = true
+	w.push(p)
+}
+func (w *workspace) picker(title string, build func() content) {
+	w.popup(&page{title: title, build: build})
+}
 func (w *workspace) back() {
 	w.notice = ""
 	if w.input != nil {
@@ -310,9 +358,15 @@ func (w *workspace) back() {
 		w.notice = "正在提交，回执将显示在此页"
 		return
 	}
+	if p.onLeave != nil {
+		p.onLeave()
+	}
 	if p.cancel != nil {
 		p.cancel()
 		p.generation++
+	}
+	if p.priceDraft != nil {
+		p.priceDraft.quote.cancel()
 	}
 	w.pages = w.pages[:len(w.pages)-1]
 	if parent := w.current(); !w.resumeProtectedRead(parent) && (parent.loading || parent.stale) {
@@ -391,7 +445,19 @@ func (w *workspace) refresh() {
 	if p.submitting {
 		return
 	}
+	if p.overlay && p.load == nil {
+		return
+	}
+	if p.priceDraft != nil {
+		w.loadDraftQuote(p.priceDraft)
+		if p.load == nil {
+			return
+		}
+	}
 	if p.load != nil {
+		if p.bench == "instance" {
+			w.refreshStatus(false)
+		}
 		w.fetchPage(p, true)
 	} else {
 		w.refreshStatus(false)
@@ -457,7 +523,15 @@ func (w *workspace) view(p *page) content {
 		v = p.build()
 	}
 	if len(v.groups) > 0 {
-		v.rows = w.groupRows(p, v.groups)
+		if p.filter != "" {
+			q := strings.ToLower(p.filter)
+			v.rows = slices.DeleteFunc(slices.Clone(v.rows), func(r row) bool { return !r.matches(q) })
+		}
+		v.rows = append(v.rows, w.groupRows(p, v.groups)...)
+	}
+	if p.newKeyID != "" {
+		id := p.newKeyID
+		v.rows = append([]row{navLink("new-secret", "查看刚创建的密钥", "从此控制器读取一次，可复制", "", func() { w.revealCreatedKey(p, id) })}, v.rows...)
 	}
 	v = w.recoveryContent(p, v)
 	v = w.completeFields(p, v)
@@ -465,12 +539,12 @@ func (w *workspace) view(p *page) content {
 		query := strings.ToLower(p.filter)
 		filtered := make([]row, 0, len(v.rows))
 		for _, r := range v.rows {
-			if strings.Contains(strings.ToLower(r.title+" "+r.detail+" "+r.key), query) {
+			if r.matches(query) {
 				filtered = append(filtered, r)
 			}
 		}
 		v.rows = filtered
-		v.empty = "未找到匹配项，按 / 修改筛选。"
+		v.empty = "本页没有匹配项，按 / 修改或按退格清除。"
 	}
 	if len(v.rows) == 0 {
 		// An initial load can temporarily hide a preselected object.
@@ -506,9 +580,20 @@ func (w *workspace) showHelp() {
 	if p.title == "本页帮助" {
 		return
 	}
-	instructions := "↑↓ 选择，Enter 执行所选项。\n→ 进入可浏览的页面或展开分组，← 返回上一级。\nEsc 清除筛选或返回，/ 筛选，r 刷新，q 退出。"
+	instructions := "↑↓ 或 j/k 选择，Enter 执行所选项。Tab / Shift+Tab 切换控件。\n→ 进入可浏览的页面或展开分组，← 返回上一级。\nEsc 返回上一级，/ 本页筛选，退格清除筛选，r 刷新，q 退出。"
+	if p.overlay {
+		instructions = "↑↓ 或 j/k 选择，Enter 应用，Esc 取消。/ 筛选，Tab 或 Shift+Tab 切换控件。"
+	}
+	if p.nextKey == "preview" {
+		instructions += "\nSpace 切换授权模型，F2 核对授权。"
+	}
+	if p.shortcuts['n'] != "" {
+		instructions += "\nn 新建当前资源。"
+	}
 	v := w.view(p)
-	if p.copyText != "" {
+	if p.bench == "code" {
+		instructions += "\nc 复制当前预览，s 另存为新文件。选「环境配置与依赖」可以切换到配置说明。"
+	} else if p.copyText != "" {
 		instructions = "↑↓ 阅读，Enter 或 c 复制全文。\ns 另存为新文件。可用 Tab 跳到操作，再按 Enter 执行所选项。"
 	} else if v.document || actionFrom(v.rows, 0, 1) < 0 {
 		instructions = "↑↓ 滚动正文，PgUp/PgDn 翻页。\nTab 跳至可用操作，Enter 执行，Esc 返回。"
@@ -539,6 +624,9 @@ func (w *workspace) showHelp() {
 		add("cli", "选中行的 CLI 用法", selected)
 		if p.command != selected {
 			add("page", "本页相关的 CLI 用法", p.command)
+		}
+		if p.area == "compute" && p.title != "更多算力工具" {
+			v.rows = append(v.rows, w.computeToolsLink())
 		}
 		v.rows = append(v.rows, navLink("tutorial", "查看完整教程", "", "bupt help tutorial", w.tutorials))
 		return v

@@ -8,6 +8,7 @@ import (
 // Optional measurements stay nil when absent or null in the school response.
 // Zero is a published measurement.
 type PortalUsage struct {
+	CostPoints  *float64           `json:"periodCostPoints,omitempty"`
 	Days        int                `json:"days"`
 	Available   *bool              `json:"usageAvailable"`
 	Calls       *int64             `json:"periodCalls"`
@@ -102,10 +103,10 @@ func (u *PortalUsage) UnmarshalJSON(raw []byte) error {
 	if e := json.Unmarshal(raw, &v); e != nil {
 		return e
 	}
-	if v.Available == nil && v.Calls == nil && v.Tokens == nil && v.SuccessRate == nil && v.Input == nil && v.Output == nil && v.Models == nil {
+	if v.CostPoints == nil && v.Available == nil && v.Calls == nil && v.Tokens == nil && v.SuccessRate == nil && v.Input == nil && v.Output == nil && v.Models == nil {
 		return E("PORTAL_PROTOCOL", "门户未返回用量数据或可用状态。")
 	}
-	if v.Calls != nil && *v.Calls < 0 || v.Tokens != nil && *v.Tokens < 0 || v.SuccessRate != nil && (*v.SuccessRate < 0 || *v.SuccessRate > 100) {
+	if v.CostPoints != nil && *v.CostPoints < 0 || v.Calls != nil && *v.Calls < 0 || v.Tokens != nil && *v.Tokens < 0 || v.SuccessRate != nil && (*v.SuccessRate < 0 || *v.SuccessRate > 100) {
 		return E("PORTAL_PROTOCOL", "门户用量汇总字段无效。")
 	}
 	for _, series := range [][]*int64{v.Input, v.Output} {

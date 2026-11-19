@@ -163,7 +163,7 @@ func TestFormAndFilterEditAtGraphemeCursor(t *testing.T) {
 	if w.current().filter != "abxc" || w.current().key != "abxc" {
 		t.Fatal(w.current().filter, w.current().key)
 	}
-	navPress(w, tcell.KeyEscape)
+	navPress(w, tcell.KeyBackspace2)
 	if w.current().key != "abc2" || w.current().filter != "" {
 		t.Fatal("did not return to original object")
 	}

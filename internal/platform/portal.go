@@ -420,7 +420,7 @@ func (c *Client) PortalPage(ctx context.Context, a domain.PortalAccount, q domai
 		}
 		var data map[string]any
 		err = c.portalRequest(ctx, "GET", "/api/usage?days="+strconv.Itoa(days), nil, &data)
-		p.Data = portalValue(data, "usageAvailable", "periodCalls", "periodTokens", "successRate", "inputSeries", "outputSeries", "modelDistribution", "days", "dates")
+		p.Data = portalValue(data, "usageAvailable", "periodCostPoints", "periodCalls", "periodTokens", "successRate", "inputSeries", "outputSeries", "modelDistribution", "days", "dates")
 		if p.Data["usageAvailable"] == false {
 			p.Data = map[string]any{"usageAvailable": false}
 		}

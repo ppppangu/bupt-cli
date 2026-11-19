@@ -111,6 +111,7 @@ func TestAccountWatchReconnectsWithoutLosingDraftOrFocus(t *testing.T) {
 	initial := positiveFrame(w.Config.Selected)
 	s.send(t, initial)
 	waitFor(t, w, func() bool { return w.bar.snapshot.Name == initial.Name })
+	click(t, w, "tutorial")
 	click(t, w, "access")
 	w.move(2)
 	w.edit("输入", "未提交内容", func(string) error { return nil })
@@ -237,6 +238,7 @@ func TestPreferenceChangesReachBothWindowsAndCachedModeStaysOffline(t *testing.T
 	live.stream(t, true)
 	cached.stream(t, false)
 	for _, w := range []*workspace{a, b} {
+		click(t, w, "tutorial")
 		click(t, w, "access")
 		rows := w.view(w.current()).rows
 		if rows[len(rows)-2].key != "news" || rows[len(rows)-1].key != "agreement" || w.current().title != navigation.AccountTitle {

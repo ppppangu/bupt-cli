@@ -13,8 +13,8 @@ import (
 
 func (w *workspace) files() content {
 	return content{rows: []row{
-		navLink("stores", "平台持久存储", "浏览存储空间、目录和文件", "bupt data stores", w.stores),
-		navLink("transfer", "实例文件传输", "在本机与已连接的实例间传送文件", "bupt cp --help", w.transferTargets),
+		navLink("stores", "平台持久存储", "把文件保存到学校存储空间", "bupt data stores", w.stores),
+		navLink("transfer", "实例文件传输", "在本机和实例之间上传或下载文件", "bupt cp --help", w.transferTargets),
 	}}
 }
 func (w *workspace) invalidateStorage() {
@@ -195,8 +195,8 @@ func (w *workspace) transferTargets() {
 			v.rows = append(v.rows, navLink(id+"/"+node, route.Name, "节点 "+node+" · "+label(route.Kind), cmdline("cp", "--node", node, "LOCAL", id+":PATH"), func() {
 				w.local(route.Name, "bupt cp --help", func() content {
 					return content{rows: []row{
-						link("push", "上传文件", "本机 → 实例", cmdline("cp", "--node", node, "LOCAL", id+":PATH"), func() { w.copyForm(id, node, true) }),
-						link("pull", "下载文件", "实例 → 本机", cmdline("cp", "--node", node, id+":PATH", "LOCAL"), func() { w.copyForm(id, node, false) }),
+						link("push", "上传文件", "本机 → 实例", cmdline("cp", "--node", node, "LOCAL", id+":PATH"), func() { w.copyForm(id, node, true, nil) }),
+						link("pull", "下载文件", "实例 → 本机", cmdline("cp", "--node", node, id+":PATH", "LOCAL"), func() { w.copyForm(id, node, false, nil) }),
 					}}
 				})
 			}))
@@ -204,7 +204,76 @@ func (w *workspace) transferTargets() {
 		return v
 	})
 }
-func (w *workspace) copyForm(id, node string, upload bool) {
+func (w *workspace) uploadToInstance(i domain.Instance) {
+	origin := w.current()
+	options := func() content {
+		v := content{empty: "当前没有就绪节点，请返回实例页准备 SSH。"}
+		current, ok := w.instance(i.ID)
+		if !ok || w.Cached {
+			return v
+		}
+		run := w.instanceRun(current)
+		for _, route := range w.report.Routes {
+			if route.InstanceID != i.ID {
+				continue
+			}
+			n, ok := w.verifiedNode(current, route)
+			if !ok {
+				continue
+			}
+			name := n.Name
+			if name == "" {
+				name = string(n.ID)
+			}
+			detail := "SSH 就绪"
+			if run != nil && run.NodeID == n.ID {
+				detail += " · 本次作业节点"
+			}
+			v.rows = append(v.rows, link(string(n.ID), name, detail, "", func() {
+				w.copyForm(string(i.ID), string(n.ID), true, func(dest string) {
+					w.uploadedToInstance(origin, i.ID, n.ID, name, dest)
+				})
+			}))
+		}
+		return v
+	}
+	if choices := options(); len(choices.rows) == 1 {
+		choices.rows[0].open()
+		return
+	}
+	w.local("选择接收代码的节点", "bupt cp --help", options)
+	if run := w.instanceRun(i); run != nil && run.NodeID != "" {
+		w.current().key = string(run.NodeID)
+	}
+}
+
+func (w *workspace) uploadedToInstance(origin *page, instance, node domain.ID, name, path string) {
+	for len(w.pages) > 1 && w.current() != origin {
+		w.back()
+	}
+	if origin.filter != "" {
+		w.clearFilter(origin)
+	}
+	origin.key = "ssh/" + string(node)
+	w.notice = "已上传到 " + name + " · " + path
+	current, ok := w.instance(instance)
+	if !ok {
+		return
+	}
+	run := w.instanceRun(current)
+	switch {
+	case run != nil && run.NodeID != "" && run.NodeID != node:
+		w.notice += " · 后台作业使用节点 " + string(run.NodeID)
+	case current.Managed && current.State == "running":
+		origin.key = "job"
+		w.notice += " · 可提交后台作业"
+	case current.State == "running":
+		origin.key = "start"
+		w.notice += " · 设置运行期限后可提交作业"
+	}
+}
+
+func (w *workspace) copyForm(id, node string, upload bool, after func(string)) {
 	if w.Cached {
 		w.notice = "当前为缓存浏览模式"
 		return
@@ -225,7 +294,12 @@ func (w *workspace) copyForm(id, node string, upload bool) {
 			if upload {
 				src, dst = source, id+":"+destination
 			}
-			w.terminalReview("传输文件", src+" → "+dst, []string{"cp", "--node", node, "--", src, dst})
+			args := []string{"cp", "--node", node, "--", src, dst}
+			w.terminalConfirmation("传输文件", src+" → "+dst, args, func() {
+				if w.foreground(args...) && after != nil {
+					after(destination)
+				}
+			})
 			return nil
 		})
 		return nil

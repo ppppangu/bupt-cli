@@ -33,9 +33,12 @@ func TestComputeGroupDisclosureFilterAndMouse(t *testing.T) {
 			w.handleKey(tcell.NewEventKey(tcell.KeyRune, r, 0))
 		}
 	}
-	if got := keys(); !slices.Equal(got, []string{"group/work", "instances", "new", "runs", "group/resources", "group/data", "group/org"}) {
+	if got := keys(); !slices.Equal(got, []string{"instances", "new", "catalog"}) {
 		t.Fatal(got)
 	}
+	w.showHelp()
+	click(t, w, "tools")
+	p = w.current()
 	idx := slices.Index(keys(), "group/data")
 	w.move(idx)
 	press(tcell.KeyRight)
@@ -56,9 +59,32 @@ func TestComputeGroupDisclosureFilterAndMouse(t *testing.T) {
 	if got := keys(); !slices.Equal(got, []string{"group/data", "dataset"}) || p.expanded["group/data"] {
 		t.Fatal(got)
 	}
-	press(tcell.KeyEscape)
+	press(tcell.KeyBackspace2)
 	if got := keys(); p.key != "group/data" || slices.Contains(got, "dataset") {
 		t.Fatal(got, p.key)
+	}
+	screen := w.screen.(tcell.SimulationScreen)
+	screen.SetSize(60, 24)
+	typ("/我的配额")
+	press(tcell.KeyEnter)
+	w.draw()
+	match := w.view(p).rows
+	if len(match) != 2 || match[0].open != nil || p.key != "quota" || !strings.Contains(navLine(w, 23), "Esc 返回") {
+		t.Fatal("filter should focus the matched action and explain Esc", p.key, navLine(w, 23))
+	}
+	press(tcell.KeyEnter)
+	if w.current().title != "我的配额" {
+		t.Fatal("Enter did not open the matched item")
+	}
+	press(tcell.KeyEscape)
+	w.draw()
+	if p.key != "quota" || p.filter != "我的配额" {
+		t.Fatal("back lost the filtered selection")
+	}
+	press(tcell.KeyBackspace2)
+	w.draw()
+	if p.key != "group/data" || p.expanded["group/resources"] {
+		t.Fatal("clearing the filter changed the original selection or expansion")
 	}
 	typ("/不存在")
 	press(tcell.KeyCtrlU)
@@ -66,9 +92,11 @@ func TestComputeGroupDisclosureFilterAndMouse(t *testing.T) {
 	if got := keys(); p.key != "group/data" || slices.Contains(got, "dataset") {
 		t.Fatal(got, p.key)
 	}
-	screen := w.screen.(tcell.SimulationScreen)
-	screen.SetSize(110, 27)
+	screen.SetSize(120, 27)
 	w.draw()
+	if w.listRight < 115 || strings.Contains(navLine(w, w.listTop), "选中项摘要") {
+		t.Fatal("the compute menu repeated its selected row in a preview")
+	}
 	at := w.listTop + slices.Index(keys(), "group/org")
 	mouse := func(x, y int) {
 		w.mouse(tcell.NewEventMouse(x, y, tcell.Button1, 0))
@@ -123,6 +151,8 @@ func TestComputeRemoteOrderPagingIdentityAndFreshState(t *testing.T) {
 	w := fixtureWorkspace(t, b)
 	wait := func() { waitFor(t, w, func() bool { return !w.current().loading }) }
 	click(t, w, "compute")
+	w.showHelp()
+	click(t, w, "tools")
 	click(t, w, "group/resources")
 	click(t, w, "remote")
 	click(t, w, "remote.order")
@@ -212,6 +242,8 @@ func TestComputeReadRoutesAndRoleGates(t *testing.T) {
 	}
 	w := fixtureWorkspace(t, b)
 	click(t, w, "compute")
+	w.showHelp()
+	click(t, w, "tools")
 	click(t, w, "group/org")
 	click(t, w, "admin")
 	waitFor(t, w, func() bool { return !w.current().loading })
@@ -219,11 +251,19 @@ func TestComputeReadRoutesAndRoleGates(t *testing.T) {
 		t.Fatal(got)
 	}
 	for _, tc := range []struct{ key, sub string }{{"billing", "billing"}, {"billing", "billing.account"}, {"billing", "billing.storage"}, {"billing", "billing.history"}, {"billing", "billing.hpc"}, {"billing", "billing.prepayment"}, {"llm", "llm.account"}, {"llm", "llm.key"}, {"llm", "llm.model"}, {"llm", "llm.spend"}} {
-		for w.current().title != "裸算力服务" {
+		for w.current().title != "更多算力工具" {
 			w.back()
 		}
 		click(t, w, tc.key)
-		click(t, w, tc.sub)
+		if tc.key == "billing" {
+			waitFor(t, w, func() bool { return !w.current().loading })
+			if tc.sub != "billing" {
+				click(t, w, "category")
+				click(t, w, tc.sub)
+			}
+		} else {
+			click(t, w, tc.sub)
+		}
 		waitFor(t, w, func() bool { return !w.current().loading })
 		calls := b.observed()
 		if p := calls[len(calls)-1].params; p["section"] != tc.sub {

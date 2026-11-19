@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"os"
@@ -45,13 +46,20 @@ func (w *workspace) saveSnippet(text string) {
 	})
 }
 func (w *workspace) snippetPage(title, cmd, body string) {
+	w.guidedSnippet(title, cmd, body, "")
+}
+func (w *workspace) guidedSnippet(title, cmd, body, hint string, next ...row) {
 	w.push(&page{title: title, command: cmd, copyText: body, build: func() content {
 		v := w.textContent(body)
+		if hint != "" {
+			v.facts = []string{hint}
+		}
 		copy := link("copy", "复制全文", "", cmd, func() { w.copySnippet(body) })
 		copy.verb = "复制全文"
 		save := link("save", "另存为新文件", "", "", func() { w.saveSnippet(body) })
 		save.verb = "选择路径"
 		v.rows = append(v.rows, copy, save)
+		v.rows = append(v.rows, next...)
 		return v
 	}})
 }
@@ -71,51 +79,148 @@ func (w *workspace) readTrialPage(ctx context.Context, section string) (domain.P
 	return result, err
 }
 
-func (w *workspace) integrationExamples() {
+func (w *workspace) integrationExamples(seed *trialForm) {
 	browser := &exampleBrowser{format: snippetFormats[0], drafts: make(map[string]*trialForm)}
-	p := &page{title: "接入示例", command: "bupt api guide", queryMethod: "portal.read"}
-	p.load = func(ctx context.Context) (func() content, error) {
-		guide, guideErr := w.readTrialPage(ctx, "guide")
-		catalog, catalogErr := w.readTrialPage(ctx, "model")
-		base, _ := guide.Data["base_url"].(string)
-		var models []domain.PortalModel
-		for _, m := range catalog.Models {
-			if _, err := domain.TrialFor(m); err == nil {
-				models = append(models, m)
-			}
+	if seed != nil {
+		browser.model = seed.model.ID
+		browser.drafts[browser.model] = seed
+	}
+	p := &page{title: "代码工作台", bench: "code", command: "bupt api guide", queryMethod: "portal.read"}
+	p.acceptDraft = func(d *trialForm) { browser.model = d.model.ID; browser.drafts[browser.model] = d }
+	owner := w.bar.snapshot.CampusID
+	p.onLeave = func() {
+		if f := browser.drafts[browser.model]; f != nil && owner == w.bar.snapshot.CampusID {
+			w.rememberTrial(f, w.trialDrafts[w.draftSlot(f)].outcome)
 		}
+	}
+	var expanded, config bool
+	p.load = func(ctx context.Context) (func() content, error) {
+		guide, ge := w.readTrialPage(ctx, "guide")
+		catalog, ce := w.readTrialPage(ctx, "model")
+		base, _ := guide.Data["base_url"].(string)
+		models := supportedModels(catalog.Models, "")
 		return func() content {
 			v := content{}
+			p.copyText = ""
+			if ge != nil {
+				v.facts = append(v.facts, whenError(ge))
+			}
+			if ce != nil {
+				v.facts = append(v.facts, whenError(ce))
+			}
 			if base == "" {
-				v.facts = append(v.facts, "尚未取得 Base URL。可在 BUPT_BASE_URL 中设置门户公布的地址。")
+				v.facts = append(v.facts, "Base URL 待学校提供，可在环境变量 BUPT_BASE_URL 中设置。")
 			}
-			if guideErr != nil {
-				v.facts = append(v.facts, whenError(guideErr))
+			var f *trialForm
+			if len(models) > 0 {
+				f = browser.draft(models)
+			} else if ce != nil {
+				f = browser.drafts[browser.model]
 			}
-			var draft *trialForm
-			switch {
-			case catalogErr != nil:
-				v.facts = append(v.facts, whenError(catalogErr))
-			case len(models) == 0:
-				v.facts = append(v.facts, "当前目录没有可生成示例的模型。")
-			default:
-				draft = browser.draft(models)
-				w.exampleOptions(&v, browser, models, draft)
+			if len(models) > 0 {
+				v.rows = append(v.rows, link("model", "模型", browser.model, "bupt api model", func() {
+					w.modelPicker(models, browser.model, func(m domain.PortalModel) {
+						if f != nil && browser.drafts[m.ID] == nil {
+							t, _ := domain.TrialFor(m)
+							if t.Kind == f.template.Kind {
+								copy := f.clone()
+								copy.model, copy.template = m, t
+								if !slices.Contains(copy.keyModels, m.ID) {
+									copy.key, copy.keyName, copy.external = "", "", false
+								}
+								browser.drafts[m.ID] = copy
+							}
+						}
+						browser.model = m.ID
+					})
+				}))
+			}
+			if f == nil {
+				v.facts = append(v.facts, "请选择目录中支持调用示例的模型。")
+			} else {
+				f.models = models
+				if f.similarity {
+					v.facts = append(v.facts, "向量由网关返回，余弦相似度在本机计算。")
+				}
+				format := browser.format
+				v.rows = append(v.rows, link("format", "示例格式", format.label, "", func() {
+					w.chooseExample("选择示例格式", snippetFormats, browser.format.id, func(c exampleChoice) {
+						browser.format = c
+						if c.id == "json" {
+							config = false
+						}
+					})
+				}))
+				w.trialInputRows(&v, f)
+				w.trialLimitRow(&v, f)
+				if format.id != "json" {
+					key := cmp.Or(f.keyName, f.key, "选择或创建")
+					if f.external && format.id != "bupt" {
+						key = "环境变量 BUPT_API_KEY"
+					}
+					v.rows = append(v.rows, link("setup", "调用密钥", key, "bupt api key", func() { w.selectTrialKey(p, f, nil, format.id != "bupt") }), link("config", "环境配置与依赖", "查看或收起配置命令", "", func() { config = !config; expanded = false }))
+				}
+				cmd := cmdline(f.args(false, "--format", format.id)...)
+				generate := f.model.ExampleCode
+				if f.similarity {
+					generate = f.model.SimilarityExample
+				}
+				body, err := generate(f.input, format.id, base)
+				if config && format.id != "json" {
+					hint := "在运行程序的终端配置密钥。"
+					if f.similarity && format.id == "curl" {
+						hint = "curl 取得向量，Python 3 标准库计算余弦相似度。"
+					}
+					if format.id == "python" {
+						hint = "使用 Python 3 标准库，无需安装第三方包。保存为 example.py 后运行 python3 example.py。"
+					}
+					v.facts = append(v.facts, hint)
+					switch {
+					case f.key != "":
+						body = keySetup(w.Config.Selected, format.id != "bupt", f.key)
+						err = nil
+					case f.external && format.id != "bupt":
+						body = "在运行程序的环境中设置 BUPT_API_KEY，值为已授权此模型的完整密钥。"
+						err = nil
+					default:
+						body = "先在「调用密钥」中选择密钥。"
+						err = nil
+					}
+					v.panelTitle = "环境配置"
+				} else {
+					v.panelTitle = "代码预览 · " + format.label
+				}
+				if err != nil {
+					v.panel = []string{"补全输入即可预览此格式的代码。"}
+				} else {
+					p.copyText = body
+					v.panel = strings.Split(body, "\n")
+					caption := "代码"
+					if config {
+						caption = "配置说明"
+					}
+					v.rows = append(v.rows, link("copy", "复制"+caption, "c · 全文", cmd, func() { w.copySnippet(body) }), link("save", "另存"+caption, "s · 写入新文件", cmd, func() { w.saveSnippet(body) }), link("preview", "展开或收起全文", format.label, cmd, func() { expanded = !expanded }))
+				}
+				v.rows = append(v.rows, navLink("trial", "在线调试", "带当前模型和输入打开调试工作台", "bupt help api model try --all", func() { w.switchWorkbench("trial", f) }))
 			}
 			if base != "" {
-				v.rows = append(v.rows, navLink("base", "公网地址（Base URL）", base, "bupt api guide -q", func() { w.snippetPage("Base URL", "bupt api guide -q", base) }))
+				v.rows = append(v.rows, link("base", "复制 Base URL", base, "bupt api guide -q", func() { w.copySnippet(base) }))
 			}
-			if draft != nil {
-				w.exampleOutput(&v, draft, browser.format, base)
+			if expanded && p.copyText != "" {
+				v.panel = nil
+				v.rows = append(v.rows, w.textContent(p.copyText).rows...)
 			}
 			return v
-		}, firstAccessError(guideErr, catalogErr)
+		}, firstAccessError(ge, ce)
 	}
 	w.push(p)
 }
 
 func (b *exampleBrowser) draft(models []domain.PortalModel) *trialForm {
 	at := slices.IndexFunc(models, func(m domain.PortalModel) bool { return m.ID == b.model })
+	if at < 0 && b.model != "" {
+		return nil
+	}
 	if at < 0 {
 		at = max(0, slices.IndexFunc(models, func(m domain.PortalModel) bool { t, _ := domain.TrialFor(m); return t.Kind == "chat" }))
 	}
@@ -128,110 +233,27 @@ func (b *exampleBrowser) draft(models []domain.PortalModel) *trialForm {
 		b.drafts[m.ID] = f
 	}
 	f.model = m
+	f.template = t
 	return f
 }
 
-func (w *workspace) exampleOptions(v *content, b *exampleBrowser, models []domain.PortalModel, f *trialForm) {
-	v.facts = append(v.facts, "在自己的程序里调用模型。运行请求后按学校用量计费。")
-	input := f.input.Query
-	if len(f.input.Texts) > 0 {
-		input = f.input.Texts[0]
-		if len(f.input.Texts) > 1 {
-			input = fmt.Sprintf("%d 段文本 · %s", len(f.input.Texts), input)
-		}
-	}
-	if len(f.input.Documents) > 0 {
-		input = fmt.Sprintf("%d 个候选段落 · %s", len(f.input.Documents), input)
-	}
-	v.rows = append(v.rows, navLink("model", "选择模型", f.model.ID, "", func() {
-		choices := make([]exampleChoice, len(models))
-		for i, m := range models {
-			choices[i] = exampleChoice{m.ID, m.ID}
-		}
-		w.chooseExample("选择模型", choices, b.model, func(c exampleChoice) { b.model = c.id })
-	}), navLink("format", "示例格式", b.format.label, "", func() {
-		w.chooseExample("选择示例格式", snippetFormats, b.format.id, func(c exampleChoice) { b.format = c })
-	}), navLink("input", "编辑示例输入", input, "", func() {
-		w.local("编辑示例输入", "", func() content {
-			cv := content{}
-			w.trialInputRows(&cv, f, nil)
-			w.trialLimitRow(&cv, f)
-			return cv
-		})
-	}))
-	if b.format.id != "json" {
-		external := b.format.id != "bupt"
-		key := "BUPT_KEY_ID"
-		if external {
-			key = "BUPT_API_KEY"
-		}
-		v.rows = append(v.rows, navLink("setup", "准备调用密钥", "设置 "+key, "bupt api key", func() {
-			w.exampleKeySetup(f.model.ID, key, external)
-		}))
-	}
-}
-
-func (w *workspace) exampleOutput(v *content, f *trialForm, format exampleChoice, base string) {
-	cmd := cmdline(f.args(false, "--format", format.id)...)
-	v.rows = append(v.rows, navLink("preview", "查看并复制代码", format.label+" · "+f.model.ID, cmd, func() {
-		code, err := f.model.ExampleCode(f.input, format.id, base)
-		if err != nil {
-			w.notice = whenError(err)
-			return
-		}
-		w.snippetPage(format.label, cmd, code)
-	}))
-	if !w.Cached {
-		v.rows = append(v.rows, navLink("trial", "在 TUI 中试用", "沿用当前模型和输入", "bupt help api model try --all", func() {
-			w.openTrialForm(&trialForm{model: f.model, template: f.template, input: copyTrial(f.input)})
-		}))
-	}
-}
-
-func (w *workspace) exampleKeySetup(model, variable string, external bool) {
-	created := ""
-	w.local("准备调用密钥", "bupt api key", func() content {
-		v := content{facts: []string{"选择一把已启用、允许 " + model + " 的 Key。"}}
-		if created != "" {
-			v.facts = []string{"新 Key 已授权此模型，配置命令已选用 " + created + "。"}
-		} else if external {
-			v.facts = append(v.facts, "已有完整密钥时，将它设置为程序的 BUPT_API_KEY。")
-		}
-		v.rows = append(v.rows, navLink("instructions", "使用 bupt 保管的 Key", "复制终端命令以设置 "+variable, "bupt api key", func() {
-			w.snippetPage("设置 "+variable, "bupt api key", keySetup(external, created))
-		}))
-		if created == "" && !w.Cached {
-			v.rows = append(v.rows, navLink("new", "为此模型创建 Key", model, cmdline("api", "key", "create", "NAME", "--model", model), func() {
-				w.keyFormReturning([]string{model}, w.current(), func(result map[string]any) { created, _ = result["id"].(string) })
-			}))
-		}
-		return v
-	})
-}
-
 func (w *workspace) chooseExample(title string, choices []exampleChoice, selected string, selectChoice func(exampleChoice)) {
-	w.local(title, "", func() content {
+	w.picker(title, func() content {
 		v := content{}
 		for _, c := range choices {
 			detail := ""
 			if c.id == selected {
 				detail = "已选"
 			}
-			v.rows = append(v.rows, link(c.id, c.label, detail, "", func() { selectChoice(c); w.back() }))
+			v.rows = append(v.rows, link(c.id, c.label, detail, "", func() { w.back(); selectChoice(c) }))
 		}
 		return v
 	})
 	w.move(slices.IndexFunc(choices, func(c exampleChoice) bool { return c.id == selected }))
 }
 
-func keySetup(exportKey bool, id string) string {
-	text := `bupt api key
-printf 'Key ID > '
-IFS= read -r BUPT_KEY_ID
-export BUPT_KEY_ID`
-	if id != "" {
-		text = "export BUPT_KEY_ID=" + shellquote.Literal(id)
-	}
+func keySetup(profile string, exportKey bool, id string) string {
+	text := "export BUPT_PROFILE=" + shellquote.Literal(profile) + "\nexport BUPT_KEY_ID=" + shellquote.Literal(id)
 	if exportKey {
 		text += `
 BUPT_API_KEY=$(bupt api key export --output - -- "$BUPT_KEY_ID") && export BUPT_API_KEY`

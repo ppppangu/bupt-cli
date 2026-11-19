@@ -9,26 +9,24 @@ import (
 )
 
 type draft struct {
-	restore     bool
-	pool        string
-	catalog     map[string]any
-	price       string
-	instance    *domain.Instance
-	spec        domain.Spec
-	preset      *domain.Preset
-	name, limit string
-	policy      domain.RunPolicy
-	resources   map[string]string
-	group       string
-	node        domain.Node
+	restore          bool
+	pool             string
+	catalog          map[string]any
+	quote            *instanceQuote
+	instance         *domain.Instance
+	spec             domain.Spec
+	preset           *domain.Preset
+	name, limit      string
+	policy           domain.RunPolicy
+	resources        map[string]string
+	group, groupName string
+	node             domain.Node
 }
 
 func (w *workspace) startForm(i domain.Instance) {
-	for _, r := range w.report.Runs {
-		if r.InstanceID == i.ID && r.Kind == "allocation" && r.State == "allocated" {
-			w.startOnNode(i, &r)
-			return
-		}
+	if r := w.instanceRun(i); r != nil && r.Kind == "allocation" && r.State == "allocated" {
+		w.startOnNode(i, r)
+		return
 	}
 	w.startOnNode(i, nil)
 }
@@ -53,11 +51,11 @@ func (w *workspace) startOnNode(i domain.Instance, allocation *domain.Run) {
 		open(n)
 		return
 	}
-	w.local("选择 SSH 节点", "", func() content {
+	w.picker("选择 SSH 节点", func() content {
 		v := content{facts: []string{"选择需要为其准备 SSH 的节点"}}
 		for _, n := range i.Nodes {
 			if n.ID != "" {
-				v.rows = append(v.rows, link(string(n.ID), n.Name, n.Role, "", func() { open(n) }))
+				v.rows = append(v.rows, link(string(n.ID), n.Name, n.Role, "", func() { w.back(); open(n) }))
 			}
 		}
 		return v
@@ -97,18 +95,23 @@ func (w *workspace) createForm(s domain.Spec, preset *domain.Preset) {
 // its school metadata leaves the user's name, time limit and overrides intact.
 func (w *workspace) createFromTemplate(t domain.TemplateSummary, pool string) {
 	policy := w.Config.Policy
-	d := &draft{policy: policy, limit: policy.MaxRuntime, pool: pool, catalog: t.Resources, resources: map[string]string{}}
-	w.push(queryPage(w, "创建实例", cmdline("compute", "catalog", "show", string(t.ID)), "spec.show", map[string]any{"target": t.ID}, true, func(spec domain.Spec) content {
+	d := &draft{spec: domain.Spec{ID: t.ID}, policy: policy, limit: policy.MaxRuntime, pool: pool, catalog: t.Resources, resources: map[string]string{}}
+	p := queryPage(w, "创建实例", cmdline("compute", "catalog", "show", string(t.ID)), "spec.show", map[string]any{"target": t.ID}, true, func(spec domain.Spec) content {
 		if spec.ID == "" || spec.ID != t.ID {
 			return content{empty: "模板已变更，请返回资源目录重新选择。"}
 		}
 		d.spec = spec
 		return w.resourceFields("创建实例", d)
-	}))
+	})
+	p.createStep = true
+	w.push(p)
+	w.attachDraftQuote(p, d)
 }
 
 func (w *workspace) resourceForm(title string, d *draft) {
 	w.local(title, "", func() content { return w.resourceFields(title, d) })
+	w.current().createStep = true
+	w.attachDraftQuote(w.current(), d)
 }
 
 func (w *workspace) resourceFields(title string, d *draft) content {
@@ -118,13 +121,16 @@ func (w *workspace) resourceFields(title string, d *draft) content {
 		until = "截止 " + moment(d.policy.Until)
 	}
 	v := content{facts: append(slices.Clone(op.facts), op.resources...)}
+	if d.quote != nil {
+		v.facts = append([]string{d.quote.label()}, v.facts...)
+	}
 	if !d.restore {
 		v.rows = append(v.rows, w.field("name", "实例名称", &d.name, "必填，给这次实验起名"))
 	}
 	v.rows = append(v.rows, w.field("limit", "运行上限", &d.limit, until))
 	needsProject := d.needsProject()
 	if needsProject {
-		v.rows = append(v.rows, w.field("group", "项目 ID", &d.group, "此模板仅供项目使用，必填"))
+		v.rows = append(v.rows, w.projectField(d))
 	}
 	preview := link("preview", "核对"+title, "查看截止时间、资源和到期处理", cmdline(op.args...), func() {
 		target := ""
@@ -142,7 +148,7 @@ func (w *workspace) resourceFields(title string, d *draft) content {
 		}
 		if target == "" && needsProject && (d.group == "" || d.group == "0") {
 			target = "group"
-			w.notice = "此模板需要填写所属项目 ID"
+			w.notice = "请选择有权使用此模板的所属项目"
 		}
 		if target != "" {
 			w.current().key = target
@@ -151,13 +157,15 @@ func (w *workspace) resourceFields(title string, d *draft) content {
 		w.review(op)
 	})
 	preview.verb = "核对"
-	v.rows = append(v.rows, preview)
 	if d.instance == nil {
-		price := link("estimate", "查看学校估价", "按当前配置查询", "bupt estimate", func() { w.estimate(d) })
+		price := link("estimate", "刷新学校估价", "按当前配置查询每日积分", "bupt estimate", func() { w.loadDraftQuote(d) })
 		price.verb = "查询估价"
 		v.rows = append(v.rows, price)
+	}
+	v.rows = append(v.rows, preview)
+	if d.instance == nil {
 		if d.preset == nil {
-			v.rows = append(v.rows, navLink("options", "调整资源和项目", "GPU、CPU、内存和项目归属", "", func() { w.draftOptions(d) }),
+			v.rows = append(v.rows, navLink("options", "调整资源和项目", "GPU、CPU、内存、磁盘和项目归属", "", func() { w.draftOptions(d) }),
 				navLink("spec", "查看模板说明", "学校公布的规格和可选值", cmdline("spec", "show", string(d.spec.ID)), func() {
 					lines := []string{strings.TrimSpace(d.spec.Name + " " + d.spec.Version), d.spec.Description}
 					for _, r := range constraintRows(d.spec.Options["resourceConstraints"]) {
@@ -172,33 +180,91 @@ func (w *workspace) resourceFields(title string, d *draft) content {
 }
 
 func (w *workspace) draftOptions(d *draft) {
-	w.local("调整资源和项目", "", func() content {
+	w.picker("调整资源和项目", func() content {
 		v := content{facts: d.resourceFacts()}
-		for _, field := range []struct{ key, label string }{{"gpu", "GPU（卡或模板规格）"}, {"cpu", "CPU（核）"}, {"memory", "内存（MiB 或 GiB）"}} {
+		for _, field := range []struct{ key, label string }{{"gpu", "GPU（卡或模板规格）"}, {"cpu", "CPU（核）"}, {"memory", "内存（MiB 或 GiB）"}, {"disk", "磁盘（MiB 或 GiB）"}} {
 			current := d.resources[field.key]
 			detail := current
 			if detail == "" {
 				detail = "沿用模板"
 			}
 			r := link(field.key, field.label, detail, "", func() {
-				w.edit(field.label, current, func(s string) error {
-					d.price = ""
+				set := func(s string) error {
 					if value := strings.TrimSpace(s); value != "" {
 						d.resources[field.key] = value
 					} else {
 						delete(d.resources, field.key)
 					}
+					w.loadDraftQuote(d)
 					return nil
-				})
+				}
+				groups := constraintGroups(d.spec.Options["resourceConstraints"])
+				if len(groups) == 1 {
+					typ := map[string]string{"cpu": "CPU", "gpu": "GPU", "memory": "Memory", "disk": "AccelDisk"}[field.key]
+					for _, group := range groups {
+						for _, c := range group.Constraints {
+							if c.Type == typ && c.Options != "" {
+								choices := []exampleChoice{{"", "模板默认 · " + c.Value}}
+								for _, o := range strings.Split(c.Options, ",") {
+									o = strings.TrimSpace(o)
+									if o != "" {
+										choices = append(choices, exampleChoice{o, o})
+									}
+								}
+								w.chooseExample(field.label, choices, current, func(o exampleChoice) { set(o.id) })
+								return
+							}
+						}
+					}
+				}
+				w.edit(field.label, current, set)
 			})
-			r.verb = "编辑"
+			r.verb = "设置"
 			v.rows = append(v.rows, r)
 		}
 		if !d.needsProject() {
-			v.rows = append(v.rows, w.field("group", "项目 ID", &d.group, "个人 / 模板默认"))
+			v.rows = append(v.rows, w.projectField(d))
 		}
 		v.rows = append(v.rows, navLink("done", "返回申请", "保留当前选择", "", w.back))
 		return v
+	})
+}
+
+func (w *workspace) projectField(d *draft) row {
+	detail := d.groupName
+	if detail == "" {
+		switch {
+		case d.group != "":
+			detail = "项目 " + d.group
+		case d.needsProject():
+			detail = "必选，从我的项目中选择"
+		default:
+			detail = "个人 / 模板默认"
+		}
+	}
+	return navLink("group", "所属项目", detail, "bupt compute project", func() {
+		w.popup(queryPage(w, "选择所属项目", "bupt compute project", "compute.read", map[string]any{"section": "project", "cached": w.Cached}, true, func(members []domain.ProjectMembership) content {
+			v := content{empty: "当前账号没有已核验的可用项目。可返回选择个人模板。"}
+			if !d.needsProject() {
+				v.rows = append(v.rows, link("personal", "个人 / 模板默认", "", "", func() { d.group, d.groupName = "", ""; w.back() }))
+			}
+			seen := map[domain.ID]bool{}
+			for _, m := range members {
+				if m.GroupID == "" || m.GroupID == "0" || seen[m.GroupID] || (m.State != "" && m.State != "active") || !slices.Contains([]string{"member", "manager", "admin"}, m.Role) {
+					continue
+				}
+				seen[m.GroupID] = true
+				name := m.Name
+				if name == "" {
+					name = "项目 " + string(m.GroupID)
+				}
+				v.rows = append(v.rows, link("project/"+string(m.GroupID), name, projectRole(m.Role)+" · ID "+string(m.GroupID), "", func() {
+					d.group, d.groupName = string(m.GroupID), m.Name
+					w.back()
+				}))
+			}
+			return v
+		}))
 	})
 }
 
@@ -223,6 +289,15 @@ func (d *draft) resourceFacts() []string {
 			facts = append(facts, "默认资源数待学校确认")
 		}
 	}
+	if storage := value(d.spec.Options["storageName"]); storage != "" {
+		facts = append(facts, "存储  "+storage)
+	}
+	images := templateImages(d.spec.Options)
+	image := "随所选模板"
+	if len(images) > 0 {
+		image = strings.Join(images, "、")
+	}
+	facts = append(facts, "镜像  "+image)
 	var selected []string
 	for _, k := range orderedKeys(d.resources) {
 		switch k {
@@ -230,12 +305,16 @@ func (d *draft) resourceFacts() []string {
 			selected = append(selected, gpuConstraint(d.resources[k]))
 		case "cpu":
 			selected = append(selected, d.resources[k]+" 核")
-		case "memory":
+		case "memory", "disk":
+			name := "内存"
+			if k == "disk" {
+				name = "磁盘"
+			}
 			memory := d.resources[k]
 			if _, err := strconv.ParseUint(memory, 10, 64); err == nil {
 				memory += " MiB"
 			}
-			selected = append(selected, memory+" 内存")
+			selected = append(selected, memory+" "+name)
 		}
 	}
 	if len(selected) > 0 {
@@ -295,13 +374,18 @@ func (d *draft) change(title string) change {
 			op.params["resources"] = resources
 		}
 		if d.group != "" {
-			op.facts = append(op.facts, "项目  "+d.group)
+			fact := "项目 ID  " + d.group
+			if d.groupName != "" {
+				fact = "项目  " + d.groupName + " · ID " + d.group
+			}
+			op.facts = append(op.facts, fact)
 			op.params["group_id"] = d.group
 			op.args = append(op.args, "--group-id", d.group)
 		}
 	}
-	if d.price != "" {
-		op.facts = append(op.facts, "学校估价  "+d.price+" 积分/天")
+	if d.instance == nil {
+		op.quote = d.quote
+		op.facts = append(op.facts, "连接方式  启动后可在实例详情准备 SSH。Web IDE 按节点提供的服务显示。", "获得计算预留或保留存储可能产生费用。实际计费起点与金额以学校账单为准。")
 	}
 	if d.limit != "" {
 		policy := d.policy
@@ -328,4 +412,28 @@ func (d *draft) change(title string) change {
 	}
 	op.args = append(op.args, "--no-wait", "--", target)
 	return op
+}
+
+func templateImages(options map[string]any) []string {
+	var images []string
+	var visit func(any)
+	visit = func(node any) {
+		switch v := node.(type) {
+		case []any:
+			for _, child := range v {
+				visit(child)
+			}
+		case map[string]any:
+			if name, ok := v["imageName"].(string); ok && name != "" && !slices.Contains(images, name) {
+				images = append(images, name)
+			}
+			for _, key := range orderedKeys(v) {
+				visit(v[key])
+			}
+		}
+	}
+	for _, key := range []string{"nodeSpecs", "executorSpecs", "executors", "spec"} {
+		visit(options[key])
+	}
+	return images
 }

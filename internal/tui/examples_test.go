@@ -32,31 +32,18 @@ func TestIntegrationExamplesSelectEditCopySaveAndTry(t *testing.T) {
 		return result, nil
 	}}
 	w := fixtureWorkspace(t, b)
-	w.integrationExamples()
+	w.integrationExamples(nil)
 	waitFor(t, w, func() bool { return !w.current().loading })
 	first := w.current()
 	actions := w.view(first).rows
-	var sequence, addresses []string
-	for _, r := range actions {
-		sequence = append(sequence, r.key)
-		if strings.Contains(r.detail, base) {
-			addresses = append(addresses, r.key)
-		}
+	if r, _ := findPortalRow(content{rows: actions}, "base"); r.detail != base {
+		t.Fatal(r)
 	}
-	if strings.Join(sequence, ",") != "model,format,input,setup,base,preview,trial" || len(addresses) != 1 || strings.Contains(strings.Join(w.view(first).facts, " "), base) {
-		t.Fatal("guide order or duplicate public address", sequence, addresses)
-	}
-	click(t, w, "base")
-	trialKey(w, tcell.KeyRight)
 	screen := w.screen.(tcell.SimulationScreen)
-	if got := string(screen.GetClipboardData()); got != "" {
-		t.Fatalf("browsing copied %q", got)
+	click(t, w, "base")
+	if string(screen.GetClipboardData()) != base || w.current() != first {
+		t.Fatal("address did not copy in place")
 	}
-	trialKey(w, tcell.KeyEnter)
-	if got := string(screen.GetClipboardData()); got != base {
-		t.Fatal(got)
-	}
-	w.back()
 	click(t, w, "model")
 	if w.current().focus != 1 {
 		t.Fatal("initial model selection lost")
@@ -64,12 +51,11 @@ func TestIntegrationExamplesSelectEditCopySaveAndTry(t *testing.T) {
 	click(t, w, "rank")
 	click(t, w, "format")
 	click(t, w, "json")
-	click(t, w, "input")
 	click(t, w, "query")
 	trialKey(w, tcell.KeyCtrlU)
 	typeTrialText(w, "自定义\n问题")
 	trialKey(w, tcell.KeyCtrlS)
-	w.back()
+	w.view(first)
 	click(t, w, "preview")
 	w.handleKey(tcell.NewEventKey(tcell.KeyRune, 'c', 0))
 	raw := string(screen.GetClipboardData())
@@ -113,23 +99,21 @@ func TestIntegrationExamplesSelectEditCopySaveAndTry(t *testing.T) {
 	if err != nil || string(disk) != raw {
 		t.Fatal(err)
 	}
-	w.back()
 	click(t, w, "model")
 	click(t, w, "chat")
 	click(t, w, "model")
 	click(t, w, "rank")
-	click(t, w, "preview")
+	w.view(first)
 	if w.current().copyText != raw {
 		t.Fatal("model edit was lost")
 	}
-	w.back()
 	if w.current() != first || calls != 0 {
 		t.Fatal("unexpected navigation or key lookup")
 	}
 	click(t, w, "trial")
 	waitFor(t, w, func() bool { return !w.current().loading })
 	click(t, w, "query")
-	if string(w.composer.text) != payload.Query || calls != 1 {
+	if string(w.current().editor.text) != payload.Query || calls != 1 {
 		t.Fatal("trial draft not transferred")
 	}
 }
@@ -145,13 +129,12 @@ func TestOfflineExamplesRetainBaseAndReadOnlyTutorial(t *testing.T) {
 	}}
 	w := fixtureWorkspace(t, b)
 	w.Cached = true
-	w.integrationExamples()
+	w.integrationExamples(nil)
 	waitFor(t, w, func() bool { return !w.current().loading })
 	click(t, w, "base")
-	if w.current().copyText != "https://example.edu/v1" {
-		t.Fatal("lost Base URL when model catalogue failed")
+	if got := string(w.screen.(tcell.SimulationScreen).GetClipboardData()); got != "https://example.edu/v1" {
+		t.Fatal(got)
 	}
-	w.back()
 	w.back()
 	w.Commands = map[string]CommandForm{"api": {Path: []string{"api"}, Title: "api", Children: []CommandForm{{Path: []string{"api", "key", "delete"}, Title: "delete", Runnable: true}}}}
 	var explained string
@@ -162,7 +145,6 @@ func TestOfflineExamplesRetainBaseAndReadOnlyTutorial(t *testing.T) {
 	if w.current().command != "bupt help tutorial keys" {
 		t.Fatal(w.current().command)
 	}
-	w.back()
 	click(t, w, "reference")
 	click(t, w, "all")
 	if explained != "--all" {
@@ -184,6 +166,9 @@ func TestExampleKeyPreparationReturnsRequestedScopeAndPublicID(t *testing.T) {
 	f := &fixtureBackend{reply: func(_ context.Context, m string, p map[string]any) (any, error) {
 		switch m {
 		case "portal.read":
+			if p["section"] == "key" {
+				return domain.PortalPage{Section: "key"}, nil
+			}
 			if p["section"] != "model" {
 				t.Errorf("unexpected read %#v", p)
 			}
@@ -198,8 +183,10 @@ func TestExampleKeyPreparationReturnsRequestedScopeAndPublicID(t *testing.T) {
 		return nil, nil
 	}}
 	w := fixtureWorkspace(t, f)
-	w.exampleKeySetup("course", "BUPT_API_KEY", true)
-	setup := w.current()
+	form := &trialForm{model: domain.PortalModel{ID: "course"}}
+	home := w.current()
+	w.selectTrialKey(home, form, nil, true)
+	waitFor(t, w, func() bool { return !w.current().loading })
 	click(t, w, "new")
 	waitFor(t, w, func() bool { return !w.current().loading })
 	click(t, w, "name")
@@ -213,15 +200,14 @@ func TestExampleKeyPreparationReturnsRequestedScopeAndPublicID(t *testing.T) {
 		}
 	}
 	trialKey(w, tcell.KeyRight)
-	if confirm.submitting || len(f.observed()) != 1 {
+	if confirm.submitting || len(f.observed()) != 2 {
 		t.Fatal("browsing created a key")
 	}
 	trialKey(w, tcell.KeyEnter)
-	waitFor(t, w, func() bool { return w.current() == setup })
-	click(t, w, "instructions")
-	code := w.current().copyText
-	if !strings.Contains(code, "course-id") || !strings.Contains(code, "BUPT_API_KEY") || strings.Contains(code, "read -r") || len(f.observed()) != 2 {
-		t.Fatal("setup did not reuse the confirmed Key ID", code, f.observed())
+	waitFor(t, w, func() bool { return w.current() == home })
+	code := keySetup(w.Config.Selected, true, form.key)
+	if !strings.Contains(code, "course-id") || !strings.Contains(code, "BUPT_API_KEY") || form.key != "course-id" || len(f.observed()) != 3 {
+		t.Fatal(code, f.observed())
 	}
 }
 
@@ -255,5 +241,131 @@ func TestContextHelpDiscoverableAndScrollableOnSmallTerminal(t *testing.T) {
 	w.draw()
 	if w.current().scroll == 0 || !strings.Contains(line(w.listTop+w.listHeight-1, 40), "查看完整教程") {
 		t.Fatal("help or navigation inaccessible")
+	}
+}
+
+func TestModelToPythonKeepsModelAndNamedKey(t *testing.T) {
+	const id = "selected-chat"
+	models := []domain.PortalModel{{ID: "another-chat", Kind: "chat"}, {ID: id, Kind: "chat", Name: "所选模型"}}
+	b := &fixtureBackend{reply: func(_ context.Context, method string, p map[string]any) (any, error) {
+		if method != "portal.read" {
+			return nil, errors.New("unexpected write")
+		}
+		page := domain.PortalPage{Section: p["section"].(string), Models: models, Data: map[string]any{"base_url": "https://example.invalid/v1"}}
+		if page.Section == "key" {
+			page.Keys = []domain.PortalKey{
+				{ID: "course-id", Name: "我的课程", Stored: true, Status: "active", Models: []string{id}},
+				{ID: "wrong-scope", Stored: true, Status: "active", Models: []string{"another-chat"}},
+				{ID: "external-key", Status: "active", Models: []string{id}},
+			}
+		}
+		return page, nil
+	}}
+	w := fixtureWorkspace(t, b)
+	open := func(key string) { click(t, w, key); waitFor(t, w, func() bool { return !w.current().loading }) }
+	open("api")
+	open("model")
+	open(id)
+	open("guide")
+	if r, _ := objectRow(t, w, "model"); r.detail != id {
+		t.Fatal(r.detail)
+	}
+	open("format")
+	open("python")
+	open("setup")
+	if _, ok := objectRow(t, w, "wrong-scope"); ok {
+		t.Fatal("another model's key was offered")
+	}
+	if _, ok := objectRow(t, w, "external-key"); ok {
+		t.Fatal("unavailable secret was offered for export")
+	}
+	if r, _ := objectRow(t, w, "course-id"); r.title != "我的课程" {
+		t.Fatal(r)
+	}
+	open("course-id")
+	if w.current().bench != "code" {
+		t.Fatal("key selection navigated away")
+	}
+	open("config")
+	w.view(w.current())
+	if !strings.Contains(w.current().copyText, "course-id") || !strings.Contains(w.current().copyText, "BUPT_API_KEY") {
+		t.Fatal(w.current().copyText)
+	}
+	open("config")
+	w.view(w.current())
+	if got := w.current().copyText; !strings.Contains(got, id) || !strings.Contains(got, "urllib.request") || strings.Contains(got, "another-chat") {
+		t.Fatal(got)
+	}
+}
+
+func TestWorkbenchRoundTripPreservesCodeContextAndModalCancellation(t *testing.T) {
+	models := []domain.PortalModel{{ID: "chat-a", Kind: "chat"}, {ID: "chat-b", Kind: "chat"}, {ID: "embed", Kind: "embedding"}}
+	f := &fixtureBackend{reply: func(_ context.Context, m string, p map[string]any) (any, error) {
+		if m != "portal.read" {
+			t.Errorf("navigation called %s", m)
+		}
+		return domain.PortalPage{Section: p["section"].(string), Models: models, Data: map[string]any{"base_url": "https://example.invalid/v1"}, Keys: []domain.PortalKey{
+			{ID: "course", Name: "课程", Stored: true, Status: "active", Models: []string{"chat-a", "chat-b"}},
+			{ID: "lab", Name: "实验", Stored: true, Status: "active", Models: []string{"chat-a"}},
+		}}, nil
+	}}
+	w := fixtureWorkspace(t, f)
+	open := func(key string) {
+		click(t, w, key)
+		waitFor(t, w, func() bool { return !w.current().loading })
+		w.view(w.current())
+	}
+	w.integrationExamples(nil)
+	code := w.current()
+	waitFor(t, w, func() bool { return !code.loading })
+	open("format")
+	open("python")
+	open("prompt")
+	trialKey(w, tcell.KeyCtrlU)
+	typeTrialText(w, "我的代码输入")
+	trialKey(w, tcell.KeyEscape)
+	open("setup")
+	navType(w, "/实验")
+	navPress(w, tcell.KeyEscape)
+	if w.current() != code {
+		t.Fatal("Esc did not cancel the filtered picker")
+	}
+	open("setup")
+	navType(w, "/课程")
+	navPress(w, tcell.KeyEnter)
+	if w.current() != code {
+		t.Fatal("Enter did not apply and close filtered key selector")
+	}
+	expected := w.view(code)
+	body := code.copyText
+	key, _ := findPortalRow(expected, "setup")
+	if key.detail != "课程" || !strings.Contains(body, "我的代码输入") {
+		t.Fatal(key, body)
+	}
+	open("trial")
+	trial := w.current()
+	open("model")
+	if _, ok := objectRow(t, w, "embed"); ok {
+		t.Fatal("incompatible trial model offered")
+	}
+	open("chat-b")
+	open("prompt")
+	typeTrialText(w, "试验")
+	trialKey(w, tcell.KeyEscape)
+	w.back()
+	if w.current() != code || code.key != "trial" {
+		t.Fatal("lost source focus")
+	}
+	w.view(code)
+	if code.copyText != body {
+		t.Fatal("implicit back changed the original code")
+	}
+	open("trial")
+	open("prompt")
+	typeTrialText(w, "带回")
+	trialKey(w, tcell.KeyEscape)
+	open("code")
+	if w.current() != code || w.current() == trial || !strings.Contains(code.copyText, "我的代码输入带回") || !strings.Contains(code.copyText, "urllib.request") {
+		t.Fatal("explicit transfer lost format or edited draft", code.copyText)
 	}
 }

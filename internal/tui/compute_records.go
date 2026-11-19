@@ -77,7 +77,7 @@ func recordSummary(m map[string]any) []string {
 	var lines []string
 	for _, f := range []struct{ k, n string }{
 		{"amount", "金额"}, {"cost", "费用"}, {"sum", "合计"}, {"usagePoints", "消耗积分"},
-		{"balance", "余额"}, {"balanceAfter", "变更后余额"}, {"price", "单价"}, {"durationUnit", "计费周期单位"},
+		{"duration", "计费时长"}, {"runningSeconds", "运行秒数"}, {"balance", "余额"}, {"balanceAfter", "变更后余额"}, {"price", "单价"}, {"durationUnit", "计费周期单位"},
 		{"state", "状态"}, {"status", "状态"}, {"startAt", "开始"}, {"endAt", "结束"}, {"createdAt", "创建"}, {"expiredAt", "到期"},
 		{"reason", "事由"}, {"description", "说明"}, {"summary", "摘要"}, {"role", "角色"},
 		{"group_id", "项目 ID"}, {"clusterId", "集群"}, {"id", "ID"},
@@ -90,6 +90,12 @@ func recordSummary(m map[string]any) []string {
 				s = label(s)
 			case "role":
 				s = projectRole(s)
+			case "duration":
+				unit := computeValue(m, "durationUnit")
+				if unit == "" {
+					unit = "（单位未公布）"
+				}
+				s += " " + unit
 			case "price":
 				s = strings.TrimSpace(s + " " + computeValue(m, "currency", "priceUnit"))
 			case "amount", "cost", "balance", "sum", "balanceAfter":
@@ -152,6 +158,7 @@ func (w *workspace) computeList(section, title, command string, num int) {
 			}
 			r := navLink(section+"/"+key, name, label(detail), cmd, func() { w.computeRecord(section, command, name, id, m) })
 			r.preview = summary
+			r.aliases = computeValue(m, "appId") + " " + strings.Join(summary, " ")
 			if section == "project" {
 				membership := projectRole(value(m["role"]))
 				if state := value(m["state"]); state != "" {

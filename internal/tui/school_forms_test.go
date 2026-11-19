@@ -21,7 +21,7 @@ func TestInstanceTransferAsksForSourceThenDestination(t *testing.T) {
 		{false, "work/data", "./my data", "实例源文件", "bupt cp --node 10 -- 9:work/data './my data'"},
 	} {
 		w := fixtureWorkspace(t, &fixtureBackend{})
-		w.copyForm("9", "10", tc.upload)
+		w.copyForm("9", "10", tc.upload, nil)
 		if w.input.title != tc.title {
 			t.Fatal(w.input.title)
 		}

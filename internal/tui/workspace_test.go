@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -63,7 +64,7 @@ func fixtureWorkspace(t *testing.T, f *fixtureBackend) *workspace {
 	s.SetSize(80, 24)
 	w := &workspace{Options: Options{Config: cfg, Backend: f, Timeout: time.Second}, screen: s, ctx: ctx, events: make(chan func(), 16), hasReport: true,
 		report: domain.StatusReport{Profile: "test", Platform: "authenticated", Gateway: "authenticated", Source: "live", SnapshotAvailable: true, Instances: []domain.Instance{{ID: "101", Name: "gpu-dev", State: "stopped"}}, Runs: []domain.Run{}}}
-	w.pages = []*page{{title: "平台总览", command: "bupt status", build: w.home}}
+	w.pages = []*page{{title: "校园算力平台", command: "bupt status", build: w.home}}
 	return w
 }
 func click(t *testing.T, w *workspace, key string) {
@@ -123,7 +124,7 @@ func TestNavigationPreviewsThenSubmitsOnceByStableID(t *testing.T) {
 	waitFor(t, w, func() bool { return !w.current().loading })
 	click(t, w, "submit")
 	w.activate()
-	waitFor(t, w, func() bool { return w.current().title == "运行详情" && !w.current().loading })
+	waitFor(t, w, func() bool { return w.current().bench == "instance" && w.current().tracking != nil && !w.refreshing })
 	var submitted []observed
 	var previewKey any
 	for _, c := range f.observed() {
@@ -164,6 +165,8 @@ func TestCachedBrowsingAndCancelOfSlowList(t *testing.T) {
 	w.refreshStatus(true)
 	waitFor(t, w, func() bool { return !w.refreshing })
 	click(t, w, "compute")
+	w.showHelp()
+	click(t, w, "tools")
 	click(t, w, "group/data")
 	click(t, w, "stores")
 	if w.current().problem == "" || len(f.observed()) != 1 {
@@ -183,7 +186,7 @@ func TestCachedBrowsingAndCancelOfSlowList(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("leaving a page did not cancel its fetch")
 	}
-	if w.current().title != "裸算力服务" || w.current().key != "stores" {
+	if w.current().title != "更多算力工具" || w.current().key != "stores" {
 		t.Fatal(w.current().title, w.current().key)
 	}
 }
@@ -206,7 +209,7 @@ func TestProgressiveScreenFitsSmallTerminalAndIgnoresPastedCommands(t *testing.T
 			}
 			screen.WriteByte('\n')
 		}
-		if !strings.Contains(screen.String(), "北邮算力") || strings.Contains(screen.String(), "--force-stop") {
+		if !strings.Contains(screen.String(), "校园算力平台") || strings.Contains(screen.String(), "--force-stop") {
 			t.Fatalf("wrong first layer: %q", screen.String())
 		}
 	}
@@ -232,6 +235,7 @@ func TestProgressiveScreenFitsSmallTerminalAndIgnoresPastedCommands(t *testing.T
 func TestLoginMenuOffersBothSSOMethodsWithoutStartingEither(t *testing.T) {
 	f := &fixtureBackend{}
 	w := fixtureWorkspace(t, f)
+	click(t, w, "tutorial")
 	click(t, w, "access")
 	click(t, w, "login")
 	choices := w.view(w.current()).rows
@@ -239,7 +243,7 @@ func TestLoginMenuOffersBothSSOMethodsWithoutStartingEither(t *testing.T) {
 		t.Fatal("login choices did not reflect the CLI")
 	}
 	w.back()
-	if w.current().title != "账号状态与配置" {
+	if w.current().title != navigation.AccountTitle {
 		t.Fatal("login menu lost its place")
 	}
 }
@@ -266,18 +270,17 @@ func TestTwoServicesExposeModelDetailsAndContextualKeyCreation(t *testing.T) {
 	}
 	click(t, w, "create")
 	waitFor(t, w, func() bool { return !w.current().loading })
-	for _, r := range w.view(w.current()).rows {
-		if r.key == "m-1" && strings.HasPrefix(r.title, "■ ") {
-			return
-		}
+	v := w.view(w.current())
+	if !strings.Contains(strings.Join(v.facts, " "), "授权模型  m-1") {
+		t.Fatal("model creation lost its scope", v.facts)
 	}
-	t.Fatal("model was not preselected for the key")
 }
 
 func TestAccountLogoutOpensReviewAndIsHiddenWhenCached(t *testing.T) {
 	f := &fixtureBackend{}
 	w := fixtureWorkspace(t, f)
 	w.acceptAccount(positiveFrame(w.Config.Selected))
+	click(t, w, "tutorial")
 	click(t, w, "access")
 	click(t, w, "logout")
 	if w.current().title != "退出登录" || w.current().command != "bupt logout" || w.view(w.current()).rows[0].key != "back" || len(f.observed()) != 0 {
@@ -288,6 +291,90 @@ func TestAccountLogoutOpensReviewAndIsHiddenWhenCached(t *testing.T) {
 	for _, r := range w.view(w.current()).rows {
 		if r.key == "logout" {
 			t.Fatal("logout available in cached mode")
+		}
+	}
+}
+
+func TestPlannedNavigationTreeThroughHomeShortcuts(t *testing.T) {
+	backend := &fixtureBackend{reply: func(_ context.Context, method string, p map[string]any) (any, error) {
+		switch method {
+		case "portal.read":
+			return map[string]any{"section": "usage", "data": map[string]any{"days": 7, "periodCalls": 1, "inputSeries": []int{2}, "outputSeries": []int{4}, "dates": []string{"2026-11-18"}}}, nil
+		case "resources.overview":
+			return domain.ResourceOverview{CatalogSource: "live", Pools: []domain.ResourcePool{{ID: "p", Templates: []domain.TemplateSummary{{ID: "7", Name: "教学实例"}}}}}, nil
+		case "spec.estimate":
+			return map[string]any{"points_per_day": 0}, nil
+		default:
+			return nil, errors.New("unexpected navigation call " + method)
+		}
+	}}
+	w := fixtureWorkspace(t, backend)
+	home := w.current()
+	names := func(prefix string) []string {
+		var out []string
+		for _, r := range w.view(w.current()).rows {
+			if strings.HasPrefix(r.key, prefix) {
+				out = append(out, strings.TrimSuffix(r.title, "  · 当前"))
+			}
+		}
+		return out
+	}
+	check := func(prefix string, want ...string) {
+		t.Helper()
+		if got := names(prefix); !slices.Equal(got, want) {
+			t.Fatalf("%s menu: %v; want %v", w.current().title, got, want)
+		}
+	}
+	for _, width := range []int{60, 80, 120} {
+		w.screen.(tcell.SimulationScreen).SetSize(width, 24)
+		check("", "R  模型 API", "S  裸算力服务器", "U  余额与用量", "?  帮助与账户")
+		navType(w, "R")
+		check("", "1  在线调试", "2  模型与价格", "3  在我的程序中调用", "4  API 密钥", "5  排行榜")
+		navPress(w, tcell.KeyEscape)
+		navType(w, "S")
+		check("", "1  我的实例", "2  创建实例", "3  资源与价格")
+		w.Cached = true
+		check("", "1  我的实例", "2  创建实例", "3  资源与价格")
+		if r, _ := objectRow(t, w, "new"); r.open != nil {
+			t.Fatal("creation actionable offline")
+		}
+		w.Cached = false
+		navType(w, "3")
+		waitFor(t, w, func() bool { return !w.current().loading })
+		w.draw()
+		if w.current().key != "spec/7" {
+			t.Fatal("utility link displaced the selected resource")
+		}
+		click(t, w, "tools")
+		check("", "▸ 我的工作", "▸ 资源与申请", "▸ 存储与数据", "▸ 项目与费用")
+		navPress(w, tcell.KeyEscape)
+		navPress(w, tcell.KeyEscape)
+		navPress(w, tcell.KeyEscape)
+		navType(w, "U")
+		usage := w.current()
+		waitFor(t, w, func() bool { return !usage.loading })
+		check("view/", "1  总览", "2  模型 API", "3  裸算力", "4  趋势", "5  明细")
+		navType(w, "4")
+		if _, ok := objectRow(t, w, "in"); !ok {
+			t.Fatal("trend shortcut missing data")
+		}
+		navType(w, "5")
+		if _, ok := objectRow(t, w, "day/1"); !ok || w.current() != usage {
+			t.Fatal("details should be another view of the same workspace")
+		}
+		navPress(w, tcell.KeyEscape)
+		navType(w, "?")
+		check("", "快捷键说明", "API 使用文档", "账户及相关设置")
+		click(t, w, "keys")
+		click(t, w, "tutorials")
+		if _, ok := objectRow(t, w, "compute"); !ok {
+			t.Fatal("complete tutorials inaccessible")
+		}
+		navPress(w, tcell.KeyEscape)
+		navPress(w, tcell.KeyEscape)
+		navPress(w, tcell.KeyEscape)
+		if w.current() != home {
+			t.Fatal("could not return to the original home")
 		}
 	}
 }

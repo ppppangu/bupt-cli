@@ -17,6 +17,7 @@ type change struct {
 	title, method string
 	args          []string
 	params        map[string]any
+	quote         *instanceQuote
 	facts         []string
 	resources     []string
 	deleteName    string
@@ -24,11 +25,14 @@ type change struct {
 }
 
 func (w *workspace) terminalReview(title, detail string, args []string) {
+	w.terminalConfirmation(title, detail, args, func() { w.foreground(args...) })
+}
+func (w *workspace) terminalConfirmation(title, detail string, args []string, apply func()) {
 	display := cmdline(args...)
 	w.local(title, display, func() content {
 		return content{facts: []string{detail}, rows: []row{
 			link("back", "返回", "取消操作", "", w.back),
-			link("apply", title, "在当前终端执行", display, func() { w.foreground(args...) }),
+			link("apply", title, "在当前终端执行", display, apply),
 		}}
 	})
 }
@@ -117,6 +121,20 @@ func (w *workspace) review(op change) {
 		v.rows = append(v.rows, submit)
 		return v
 	})
+	if op.quote != nil {
+		loadPlan := p.load
+		p.load = func(ctx context.Context) (func() content, error) {
+			show, err := loadPlan(ctx)
+			if err != nil {
+				return nil, err
+			}
+			select {
+			case <-op.quote.ready:
+			case <-ctx.Done():
+			}
+			return func() content { v := show(); v.facts = append(v.facts, op.quote.label()); return v }, nil
+		}
+	}
 	w.push(p)
 }
 func gpuConstraint(raw string) string {
@@ -154,11 +172,18 @@ func (w *workspace) submit(p *page, op change, params map[string]any) {
 			if err != nil {
 				var detail *domain.Error
 				if errors.As(err, &detail) {
-					switch {
-					case detail.RunID != "":
-						w.runPage(detail.RunID)
-					case detail.TaskID != "":
-						w.taskPage(detail.TaskID)
+					ref := detail.RunID
+					if ref == "" {
+						ref = detail.TaskID
+					}
+					if ref != "" {
+						if instanceChange(op.method) {
+							w.trackInstance(op, ref, detail.RunID == "")
+						} else if detail.RunID != "" {
+							w.runPage(ref)
+						} else {
+							w.taskPage(ref)
+						}
 					}
 				}
 				w.notice = whenError(err)
@@ -168,7 +193,11 @@ func (w *workspace) submit(p *page, op change, params map[string]any) {
 				w.notice = "控制器未返回回执，请查看作业与记录"
 				return
 			}
-			w.pages = w.pages[:len(w.pages)-1]
+			if instanceChange(op.method) {
+				w.trackInstance(op, receipt.ID, op.task)
+				return
+			}
+			w.back()
 			if op.task {
 				w.taskPage(receipt.ID)
 			} else {
@@ -179,13 +208,78 @@ func (w *workspace) submit(p *page, op change, params map[string]any) {
 		})
 	}()
 }
+func instanceChange(method string) bool {
+	return method == "up" || method == "down" || strings.HasPrefix(method, "instance.")
+}
+func (w *workspace) trackInstance(op change, ref string, task bool) {
+	target := domain.ID(value(op.params["target"]))
+	var p *page
+	if target != "" {
+		for i := len(w.pages) - 2; i >= 0; i-- {
+			candidate := w.pages[i]
+			if candidate.bench == "instance" && candidate.instanceID == target {
+				p = candidate
+				break
+			}
+		}
+	}
+	w.back()
+	if p != nil {
+		for w.current() != p {
+			w.back()
+		}
+	} else {
+		for len(w.pages) > 1 && (w.current().createStep || w.current().overlay) {
+			w.back()
+		}
+		title := value(op.params["name"])
+		if title == "" {
+			title = string(target)
+		}
+		if title == "" {
+			title = "实例详情"
+		}
+		p = w.instanceWorkspace(target, title, nil)
+	}
+	progress := &instanceOperation{id: ref, label: op.title, method: op.method, task: task}
+	if p.cancel != nil {
+		p.cancel()
+		p.generation++
+		p.loading = false
+	}
+	p.tracking = progress
+	p.watch = !w.Cached
+	p.load = nil
+	if task {
+		p.load = func(ctx context.Context) (func() content, error) {
+			var t domain.TaskRecord
+			err := w.Backend.Call(ctx, "task.get", map[string]any{"target": ref}, &t)
+			return func() content {
+				progress.problem = ""
+				if err != nil {
+					progress.problem = readProblem(err)
+				} else if t.ID == ref {
+					progress.record = t
+				} else {
+					progress.problem = "学校回执尚待核对"
+				}
+				return w.instanceContent(p)
+			}, nil
+		}
+		w.loadPage(p)
+	} else {
+		p.build = func() content { return w.instanceContent(p) }
+	}
+	w.notice = "请求已提交，实例状态将自动更新"
+	w.refreshStatus(false)
+}
 func (w *workspace) endReview(i domain.Instance) {
 	id := string(i.ID)
-	w.review(change{title: "停止并释放", method: "down", args: []string{"down", id, "--cleanup", "release", "--no-wait"}, params: map[string]any{"target": id, "cleanup": "release"}, facts: []string{i.Name + " · " + id, "停止计算并释放预留资源，保留实例磁盘。"}})
+	w.review(change{title: "停止并归还算力", method: "down", args: []string{"down", id, "--cleanup", "release", "--no-wait"}, params: map[string]any{"target": id, "cleanup": "release"}, facts: []string{i.Name + " · " + id, "正在运行的任务会中断。释放计算预留，保留实例磁盘。", "保留的存储仍可能计费，费用以学校存储账单为准。"}})
 }
 func (w *workspace) deleteReview(i domain.Instance) {
 	id := string(i.ID)
-	w.review(change{title: "永久删除", method: "instance.delete", args: []string{"instance", "delete", id, "--no-wait"}, params: map[string]any{"target": id}, facts: []string{i.Name + " · " + id, "平台将永久删除实例及其实例磁盘。"}, deleteName: i.Name, task: true})
+	w.review(change{title: "永久删除实例及磁盘", method: "instance.delete", args: []string{"instance", "delete", id, "--no-wait"}, params: map[string]any{"target": id}, facts: []string{i.Name + " · " + id, "平台将永久删除实例及其实例磁盘。"}, deleteName: i.Name, task: true})
 }
 func (w *workspace) cancelReview(r domain.Run) {
 	w.review(change{title: "取消作业", method: "job.cancel", args: []string{"job", "cancel", r.ID}, params: map[string]any{"target": r.ID}, facts: []string{r.Name + " · " + r.ID, "作业终止后按周期策略清理 · " + label(r.Policy.Cleanup)}})
@@ -206,16 +300,26 @@ func (w *workspace) jobForm(i domain.Instance) {
 	var argv = []string{""}
 	w.local("提交后台作业", "bupt run --help", func() content {
 		args := append([]string{"run", "--detach", "--instance", id, "--"}, argv...)
-		facts := []string{"实例 " + i.Name + " · 沿用当前运行期限和清理策略"}
+		facts := []string{"实例 " + i.Name + " · 示例命令  python train.py", "作业结束或达到时限后，按本次托管策略清理。"}
+		if r := w.instanceRun(i); r != nil {
+			facts = append(facts, runDeadline(*r))
+			if r.NodeID != "" {
+				facts = append(facts, "运行节点  "+string(r.NodeID))
+			}
+		}
 		v := content{facts: facts}
 		for j, s := range argv {
 			title := "可执行文件"
 			if j > 0 {
 				title = fmt.Sprintf("参数 %d", j)
 			}
-			v.rows = append(v.rows, link(fmt.Sprint(j), title, s, "", func() { w.edit(title, s, func(val string) error { argv[j] = val; return nil }) }))
+			detail := s
+			if j == 0 && s == "" {
+				detail = "例如 python"
+			}
+			v.rows = append(v.rows, link(fmt.Sprint(j), title, detail, "", func() { w.edit(title, s, func(val string) error { argv[j] = val; return nil }) }))
 		}
-		v.rows = append(v.rows, link("add", "+ 添加参数", "每项作为一个参数传递", "", func() { w.edit("新参数", "", func(val string) error { argv = append(argv, val); return nil }) }))
+		v.rows = append(v.rows, link("add", "+ 添加参数", "例如 train.py，每项单独填写", "", func() { w.edit("新参数", "", func(val string) error { argv = append(argv, val); return nil }) }))
 		if len(argv) > 1 {
 			v.rows = append(v.rows, link("remove", "移除末尾参数", argv[len(argv)-1], "", func() { argv = argv[:len(argv)-1] }))
 		}

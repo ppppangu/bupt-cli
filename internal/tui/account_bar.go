@@ -123,6 +123,9 @@ func (w *workspace) acceptAccount(s domain.AccountStatus) {
 		return
 	}
 	w.bar.snapshot = s
+	if s.Platform == "authenticated" {
+		w.connection.offerLogin = false
+	}
 	w.bar.watchProblem = ""
 	w.controllerAvailable()
 	if s.Epoch != prev.Epoch || w.connection.pending {

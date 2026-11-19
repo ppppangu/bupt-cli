@@ -192,7 +192,32 @@ func (m PortalModel) TrialRequest(in TrialInput) (TrialRequest, error) {
 
 // Snippets and the actual POST share exactly the same serialized request body.
 // Secrets are supplied by the caller's environment in the exported examples.
-func (r TrialRequest) Code(format, base string) (string, error) {
+// SimilarityExample uses the embedding endpoint and computes the same local
+// cosine score as the workbench. JSON remains the exact gateway request.
+func (m PortalModel) SimilarityExample(in TrialInput, format, base string) (string, error) {
+	r, err := m.TrialRequest(in)
+	if err != nil {
+		return "", err
+	}
+	if r.Kind != "embedding" || len(in.Texts) != 2 {
+		return "", E("INVALID_TRIAL_INPUT", "语义相似度需要两段向量文本。")
+	}
+	if format == "bupt" {
+		return m.ExampleCode(in, format, base)
+	}
+	return r.code(format, base, true)
+}
+
+const similarityPython = `import math
+items = sorted(data["data"], key=lambda item: item["index"])
+a, b = (item["embedding"] for item in items)
+if len(a) != len(b) or not a or not any(a) or not any(b):
+    raise ValueError("两个向量须维度相同且非零")
+score = sum(x * y for x, y in zip(a, b)) / (math.hypot(*a) * math.hypot(*b))
+print(f"余弦相似度  {score:.4f}")`
+
+func (r TrialRequest) Code(format, base string) (string, error) { return r.code(format, base, false) }
+func (r TrialRequest) code(format, base string, similarity bool) (string, error) {
 	body, e := json.MarshalIndent(r.Body, "", "  ")
 	if e != nil {
 		return "", e
@@ -209,11 +234,19 @@ func (r TrialRequest) Code(format, base string) (string, error) {
 			prefix = ": \"${BUPT_BASE_URL:?请设置 BUPT_BASE_URL}\"\n"
 			target = "\"${BUPT_BASE_URL%/}" + r.Path + "\""
 		}
-		return prefix + "curl -q --silent --show-error --globoff --proto '=https' --url " + target + " \\\n  -H \"Authorization: Bearer ${BUPT_API_KEY:?请设置 BUPT_API_KEY}\" \\\n  -H 'Content-Type: application/json' \\\n  --data-binary " + shellquote.Literal(string(body)), nil
+		code := prefix + "curl -q --silent --show-error --globoff --proto '=https' --url " + target + " \\\n  -H \"Authorization: Bearer ${BUPT_API_KEY:?请设置 BUPT_API_KEY}\" \\\n  -H 'Content-Type: application/json' \\\n  --data-binary " + shellquote.Literal(string(body))
+		if similarity {
+			code += " | python3 -c " + shellquote.Literal("import json, sys\ndata = json.load(sys.stdin)\n"+similarityPython)
+		}
+		return code, nil
 	case "python":
 		target := literal(endpoint)
 		if base == "" {
 			target = "os.environ['BUPT_BASE_URL'].rstrip('/') + " + literal(r.Path)
+		}
+		output := "    print(json.dumps(json.load(response), ensure_ascii=False, indent=2))"
+		if similarity {
+			output = "    data = json.load(response)\n\n" + similarityPython
 		}
 		return `import json
 import os
@@ -231,7 +264,7 @@ req = Request(url, data=json.dumps(payload).encode(), headers={
     'Authorization': 'Bearer ' + os.environ['BUPT_API_KEY'],
 })
 with build_opener(NoRedirect).open(req, timeout=90) as response:
-    print(json.dumps(json.load(response), ensure_ascii=False, indent=2))`, nil
+` + output, nil
 	default:
 		return "", E("INVALID_FORMAT", "示例格式可选 curl、python 或 json。")
 	}
@@ -248,14 +281,17 @@ type RankedText struct {
 	Text  string  `json:"text"`
 }
 type TrialResult struct {
-	Model     string       `json:"model"`
-	Kind      string       `json:"kind"`
-	ElapsedMS int64        `json:"elapsed_ms"`
-	Answer    string       `json:"answer,omitempty"`
-	Finish    string       `json:"finish_reason,omitempty"`
-	Vectors   [][]float64  `json:"embeddings,omitempty"`
-	Ranked    []RankedText `json:"results,omitempty"`
-	Usage     *TrialUsage  `json:"usage,omitempty"`
+	ResponseID string       `json:"response_id,omitempty"`
+	RequestID  string       `json:"request_id,omitempty"`
+	CostPoints *float64     `json:"cost_points,omitempty"`
+	Model      string       `json:"model"`
+	Kind       string       `json:"kind"`
+	ElapsedMS  int64        `json:"elapsed_ms"`
+	Answer     string       `json:"answer,omitempty"`
+	Finish     string       `json:"finish_reason,omitempty"`
+	Vectors    [][]float64  `json:"embeddings,omitempty"`
+	Ranked     []RankedText `json:"results,omitempty"`
+	Usage      *TrialUsage  `json:"usage,omitempty"`
 }
 
 func (r TrialResult) Summary() string {
@@ -295,6 +331,9 @@ func (r TrialResult) Summary() string {
 			parts = append(parts, fmt.Sprintf("%d. 候选 %d · %.4f\n%s", rank+1, d.Index+1, d.Score, d.Text))
 		}
 	}
+	return strings.Join(append(parts, r.Metrics()), "\n\n")
+}
+func (r TrialResult) Metrics() string {
 	var stats []string
 	if r.Usage != nil {
 		if n := r.Usage.Prompt; n != nil {
@@ -307,8 +346,14 @@ func (r TrialResult) Summary() string {
 			stats = append(stats, fmt.Sprintf("合计 %d Token", *n))
 		}
 	}
+	if r.CostPoints != nil {
+		stats = append(stats, fmt.Sprintf("费用 %g 积分", *r.CostPoints))
+	}
+	if r.RequestID != "" {
+		stats = append(stats, "网关请求编号 "+r.RequestID)
+	}
 	stats = append(stats, fmt.Sprintf("耗时 %.2f 秒", float64(r.ElapsedMS)/1000))
-	return strings.Join(append(parts, strings.Join(stats, " · ")), "\n\n")
+	return strings.Join(stats, " · ")
 }
 
 func (p PortalPage) TrialModel(id string) (PortalModel, error) {

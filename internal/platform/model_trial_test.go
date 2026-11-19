@@ -19,7 +19,7 @@ func TestModelGatewayPostsOnlyTheEditedRequestAndParsesEachType(t *testing.T) {
 		kind, text, reply string
 		in                domain.TrialInput
 	}{
-		{"chat", "我输入的课题", `{"choices":[{"finish_reason":"stop","message":{"content":"模型的回复"}}],"usage":{"prompt_tokens":8,"completion_tokens":3,"total_tokens":11}}`, domain.TrialInput{Texts: []string{"我输入的课题"}}},
+		{"chat", "我输入的课题", `{"id":"reply-42","cost_points":0,"choices":[{"finish_reason":"stop","message":{"content":"模型的回复"}}],"usage":{"prompt_tokens":8,"completion_tokens":3,"total_tokens":11}}`, domain.TrialInput{Texts: []string{"我输入的课题"}}},
 		{"embedding", "向量文本", `{"data":[{"index":1,"embedding":[0,1]},{"index":0,"embedding":[1,0]}]}`, domain.TrialInput{Texts: []string{"向量文本", "另一段"}}},
 		{"rerank", "想借书", `{"results":[{"index":1,"relevance_score":0.94},{"index":0,"relevance_score":0.1}]}`, domain.TrialInput{Query: "想借书", Documents: []string{"食堂", "图书馆"}}},
 	} {
@@ -36,6 +36,7 @@ func TestModelGatewayPostsOnlyTheEditedRequestAndParsesEachType(t *testing.T) {
 				if r.Method != "POST" || r.URL.Path != "/v1"+req.Path || r.Header.Get("Authorization") != "Bearer "+secret || !strings.Contains(string(b), tc.text) || strings.Contains(string(b), secret) || r.Header.Get("Cookie") != "" {
 					t.Error("unexpected inference request")
 				}
+				w.Header().Set("X-Request-Id", "gateway-call-7")
 				fmt.Fprint(w, tc.reply)
 			}))
 			defer s.Close()
@@ -45,12 +46,12 @@ func TestModelGatewayPostsOnlyTheEditedRequestAndParsesEachType(t *testing.T) {
 			url, _ := url.Parse(s.URL)
 			c.cookies.SetCookies(url, []*http.Cookie{{Name: "portal", Value: "management-cookie", Path: "/"}})
 			r, e := c.RunModelTrial(t.Context(), s.URL+"/v1", req, secret)
-			if e != nil || calls != 1 || r.Kind != tc.kind || r.Model != m.ID {
+			if e != nil || calls != 1 || r.Kind != tc.kind || r.Model != m.ID || r.RequestID != "gateway-call-7" {
 				t.Fatal(r, e, calls)
 			}
 			switch tc.kind {
 			case "chat":
-				if r.Answer != "模型的回复" || r.Usage == nil || *r.Usage.Total != 11 {
+				if r.ResponseID != "reply-42" || r.CostPoints == nil || *r.CostPoints != 0 || r.Answer != "模型的回复" || r.Usage == nil || *r.Usage.Total != 11 {
 					t.Fatal(r)
 				}
 			case "embedding":

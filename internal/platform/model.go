@@ -18,7 +18,7 @@ var entityFields = map[string]string{
 	"ExecutorService":          "eid name type uiType state healthState nodeEid nodeName clusterEid executorEid exposeOnHostNode exposeOnGw exposeOnUi meta ports",
 	"PortMap":                  "eid serviceEid label innerBind hostBind port hostPort gwIp gwPort gwEid",
 	"User":                     "eid uid uname displayName",
-	"UserPrjUserGroupRole":     "eid uid gid role state",
+	"UserPrjUserGroupRole":     "eid uid gid role state groupName projectName",
 	"Task":                     "eid id type state code createdAt updatedAt eaasIndex",
 	"UserOpRequest":            "eid uid type state tgtEid data createdAt updatedAt",
 	"UserQuota":                "eid uid userId domain cpu gpu memory appCount cpuUsed gpuUsed memoryUsed appCountUsed usedCpu usedGpu usedMemory usedAppCount blockStorage fileStorage blockStorageUsed fileStorageUsed",
@@ -314,7 +314,7 @@ func (g graph) instance(m map[string]any) domain.Instance {
 		if !desc[nid] && !desc[id(n["clusterEid"])] && id(n["appEid"]) != eid {
 			continue
 		}
-		node := domain.Node{ID: nid, Name: stringValue(n["name"]), Username: stringValue(n["uname"]), Type: stringValue(n["type"]), Role: stringValue(n["role"]), State: stringValue(n["state"]), GroupID: id(n["gid"]), Index: id(n["eaasIndex"]), Resources: cleanMap(object(n["resourceAlloc"]))}
+		node := domain.Node{Image: stringValue(n["imageName"]), ID: nid, Name: stringValue(n["name"]), Username: stringValue(n["uname"]), Type: stringValue(n["type"]), Role: stringValue(n["role"]), State: stringValue(n["state"]), GroupID: id(n["gid"]), Index: id(n["eaasIndex"]), Resources: cleanMap(object(n["resourceAlloc"]))}
 		for _, rid := range g.children(nid, "resourceAlloc") {
 			if alloc := g.entities["ResourceAlloc"][rid]; alloc != nil {
 				node.Resources = cleanMap(alloc)
@@ -385,7 +385,11 @@ func (s *eventSocket) snapshot(identity domain.Identity) domain.Snapshot {
 			continue
 		}
 		seenMemberships[key] = true
-		out.Identity.Memberships = append(out.Identity.Memberships, domain.ProjectMembership{GroupID: gid, Role: role, State: state})
+		name := stringValue(membership["groupName"])
+		if name == "" {
+			name = stringValue(membership["projectName"])
+		}
+		out.Identity.Memberships = append(out.Identity.Memberships, domain.ProjectMembership{GroupID: gid, Name: name, Role: role, State: state})
 	}
 	sort.Slice(out.Identity.Memberships, func(i, j int) bool {
 		a, b := out.Identity.Memberships[i], out.Identity.Memberships[j]

@@ -7,15 +7,56 @@ import (
 	"bupt.local/cli/internal/navigation"
 )
 
-func (w *workspace) tutorials() {
-	w.local("教程说明", "bupt help tutorial", func() content {
+func (w *workspace) helpHome() {
+	w.local(navigation.HelpTitle, "bupt help tutorial", func() content {
 		v := content{}
 		for _, l := range navigation.Lessons {
-			cmd := "bupt help tutorial " + l.ID
-			v.rows = append(v.rows, navLink(l.ID, l.Title, "", cmd, func() { w.textPage(l.Title, cmd, l.Text) }))
+			if l.ID == "keys" || l.ID == "api" {
+				v.rows = append(v.rows, w.lessonLink(l, true))
+			}
+		}
+		v.rows = append(v.rows, navLink("access", navigation.AccountTitle, "学校登录、顶栏、公告和控制器设置", "bupt status", func() { a, _ := navigation.Find("access"); w.openArea(a) }))
+		return v
+	})
+}
+func (w *workspace) tutorials() {
+	w.local("完整教程", "bupt help tutorial", func() content {
+		v := content{}
+		for _, l := range navigation.Lessons {
+			v.rows = append(v.rows, w.lessonLink(l, false))
 		}
 		v.rows = append(v.rows, navLink("reference", "CLI 命令参考", "按命令浏览用法和参数", "bupt help --all", w.commandReference))
 		return v
+	})
+}
+func (w *workspace) lessonLink(l navigation.Lesson, offerTutorials bool) row {
+	cmd := "bupt help tutorial " + l.ID
+	return navLink(l.ID, l.Title, "", cmd, func() {
+		w.local(l.Title, cmd, func() content {
+			lesson := w.textContent(l.Text)
+			switch l.ID {
+			case "start":
+				lesson.rows = append(lesson.rows, navLink("home", "回到首页开始设置", "查看此设备当前需要的步骤", "bupt tui", func() {
+					for len(w.pages) > 1 {
+						w.back()
+					}
+				}))
+			case "api":
+				lesson.rows = append(lesson.rows, navLink("try", "打开在线调试", "选择用途，输入自己的问题", "bupt api model", func() { w.chooseTrialModel(); w.current().area = "api" }))
+			case "compute":
+				title := "开始申请实例"
+				if w.Cached {
+					title = "浏览已保存的模板"
+				}
+				lesson.rows = append(lesson.rows, navLink("templates", title, "选择机器规格", "bupt compute catalog", func() { w.chooseTemplate(); w.current().area = "compute" }))
+			case "keys":
+				lesson.rows = append(lesson.rows, navLink("reference", "CLI 命令参考", "按命令浏览用法和参数", "bupt help --all", w.commandReference))
+			}
+			if offerTutorials {
+				lesson.rows = append(lesson.rows, navLink("tutorials", "查看完整教程", "首次使用、算力申请和常见问题", "bupt help tutorial", w.tutorials))
+			}
+			return lesson
+		})
 	})
 }
 

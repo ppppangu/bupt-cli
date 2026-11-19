@@ -336,7 +336,7 @@ func TestStatusDenialArrivingAfterLoginOrReconnect(t *testing.T) {
 				}
 				return domain.StatusReport{Gateway: "authenticated", Platform: "authenticated", Source: "live"}, nil
 			}})
-			page := &page{area: "compute", build: w.computeGroups}
+			page := &page{area: "compute", build: w.computeMenu}
 			w.push(page)
 			s := positiveFrame(w.Config.Selected)
 			w.acceptAccount(s)

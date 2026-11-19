@@ -16,13 +16,13 @@ type trialEditor struct {
 	done      bool
 	message   string
 	save      func(string)
-	send      func()
 }
 
-func (w *workspace) editTrialText(title, value string, save func(string), send func()) {
+func (w *workspace) editTrialText(title, value string, save func(string)) {
 	text := []rune(value)
-	w.composer = &trialEditor{title: title, text: text, pos: len(text), size: len(value), save: save, send: send}
+	w.current().editor = &trialEditor{title: title, text: text, pos: len(text), size: len(value), save: save}
 }
+
 func (e *trialEditor) insert(r rune) {
 	n := utf8.RuneLen(r)
 	if n < 1 {
@@ -43,6 +43,7 @@ func (e *trialEditor) remove(start, end int) {
 	e.size -= len(string(e.text[start:end]))
 	e.text = append(e.text[:start], e.text[end:]...)
 	e.pos = start
+	e.message = ""
 }
 func (e *trialEditor) lineStart(i int) int {
 	for i > 0 && e.text[i-1] != '\n' {
@@ -117,7 +118,8 @@ func (e *trialEditor) vertical(dir, width int) {
 	}
 }
 func (w *workspace) trialEditKey(key *tcell.EventKey) {
-	e := w.composer
+	p := w.current()
+	e := p.editor
 	k := key.Key()
 	if w.paste {
 		if e.done {
@@ -136,7 +138,7 @@ func (w *workspace) trialEditKey(key *tcell.EventKey) {
 		return
 	}
 	finish := func() {
-		w.composer = nil
+		p.editor = nil
 		e.save(string(e.text))
 	}
 	if e.done {
@@ -144,7 +146,7 @@ func (w *workspace) trialEditKey(key *tcell.EventKey) {
 		case tcell.KeyEnter, tcell.KeyCtrlJ:
 			finish()
 			return
-		case tcell.KeyTab, tcell.KeyUp, tcell.KeyLeft:
+		case tcell.KeyTab, tcell.KeyBacktab, tcell.KeyUp, tcell.KeyLeft:
 			e.done = false
 			return
 		case tcell.KeyCtrlC, tcell.KeyEscape, tcell.KeyCtrlS, tcell.KeyCtrlD:
@@ -158,19 +160,14 @@ func (w *workspace) trialEditKey(key *tcell.EventKey) {
 	case tcell.KeyEscape, tcell.KeyCtrlS:
 		finish()
 	case tcell.KeyCtrlD:
-		if e.send == nil {
-			e.message = "请先完成编辑，返回表单查看可用操作。"
-			return
-		}
-		finish()
-		e.send()
+		e.message = "Esc 保留草稿，回到工作台选择「发送请求」。"
 	case tcell.KeyEnter, tcell.KeyCtrlJ:
 		e.insert('\n')
 	case tcell.KeyRune:
 		if !unicode.IsControl(key.Rune()) {
 			e.insert(key.Rune())
 		}
-	case tcell.KeyTab:
+	case tcell.KeyTab, tcell.KeyBacktab:
 		e.done = true
 	case tcell.KeyBackspace, tcell.KeyBackspace2:
 		e.remove(graphemeStep(e.text, e.pos, -1), e.pos)
@@ -185,12 +182,16 @@ func (w *workspace) trialEditKey(key *tcell.EventKey) {
 	case tcell.KeyEnd, tcell.KeyCtrlE:
 		e.pos = e.lineEnd(e.pos)
 	case tcell.KeyUp, tcell.KeyDown:
-		width, _ := w.screen.Size()
+		width, height := w.screen.Size()
+		width -= 4
+		if p.bench != "" && height >= 14 && w.listRight > w.listLeft {
+			width = w.listRight - w.listLeft
+		}
 		dir := 1
 		if k == tcell.KeyUp {
 			dir = -1
 		}
-		e.vertical(dir, max(1, width-4))
+		e.vertical(dir, max(1, width))
 	case tcell.KeyCtrlU:
 		e.text = nil
 		e.pos = 0
@@ -199,34 +200,41 @@ func (w *workspace) trialEditKey(key *tcell.EventKey) {
 	}
 }
 func (w *workspace) drawTrialEditor(width, height int, c palette) {
-	e := w.composer
+	p := w.current()
+	e := p.editor
 	s := w.screen
-	limit := width - 4
-	put(s, 2, 0, limit, w.current().title+"  ›  "+e.title, c.title)
-	bar(s, 1, width, c.muted, '─')
+	left, limit, start := 2, width-4, 2
+	if p.bench != "" && height >= 14 {
+		left, limit = w.listLeft, w.listRight-w.listLeft
+		start = min(w.listTop+1, height-5)
+		for y := start - 1; y < height-3; y++ {
+			for x := left; x < left+limit; x++ {
+				s.SetContent(x, y, ' ', nil, c.base)
+			}
+		}
+	} else if height >= 14 {
+		w.drawHeader(p, 2, limit, c)
+		start = 5
+	}
+	put(s, left, start-1, limit, "编辑 · "+e.title, c.accent)
 	lines := e.lines(limit)
 	cx, cy := e.caret(lines)
-	available := height - 6
+	available := max(1, height-start-4)
 	top := max(0, cy-available+1)
 	for i := top; i < len(lines) && i < top+available; i++ {
 		line := lines[i]
-		put(s, 2, 2+i-top, limit, string(e.text[line.start:line.end]), c.base)
+		put(s, left, start+i-top, limit, string(e.text[line.start:line.end]), c.base)
+	}
+	if len(e.text) == 0 {
+		put(s, left, start, limit, "在这里输入…", c.muted)
 	}
 	put(s, 2, height-4, limit, e.message, c.warning)
-	style, action := c.base, "  完成编辑"
-	hint := "Enter 换行 · 末行 ↓ 完成"
 	if e.done {
-		style, action = c.selected, "› 完成编辑"
-		hint = "Enter 保存返回 · ↑ 编辑"
+		put(s, 2, height-3, limit, "› 完成编辑", c.selected)
 	} else {
-		s.ShowCursor(2+min(cx, limit-1), 2+cy-top)
+		s.ShowCursor(left+min(cx, limit-1), start+cy-top)
 	}
-	put(s, 1, height-3, width-2, action, style)
-	put(s, 1, height-2, width-2, hint, c.accent)
-	shortcuts := "Esc 存草稿 · Ctrl+S 保存"
-	if e.send != nil {
-		shortcuts = "Esc 存草稿 · Ctrl+D 发送"
-	}
-	put(s, 1, height-1, width-2, shortcuts, c.muted)
+	put(s, 2, height-2, limit, "Enter 换行  Esc 保留草稿并返回", c.base)
+	put(s, 2, height-1, limit, "Tab 完成编辑  Ctrl+U 清空", c.muted)
 	s.Show()
 }

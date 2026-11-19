@@ -11,6 +11,7 @@ import (
 	"path"
 	"strings"
 	"time"
+	"unicode"
 
 	"bupt.local/cli/internal/domain"
 )
@@ -98,6 +99,13 @@ func (c *Client) RunModelTrial(ctx context.Context, base string, trial domain.Tr
 		return result, domain.E("MODEL_RESULT_UNKNOWN", "模型网关的请求结果未知。请核对用量后再决定是否重新发送。")
 	}
 	defer resp.Body.Close()
+	gatewayID := resp.Header.Get("X-Request-Id")
+	if len(gatewayID) > 256 || strings.Contains(gatewayID, secret) || strings.IndexFunc(gatewayID, unicode.IsControl) >= 0 {
+		gatewayID = ""
+	}
+	responseError := func(code, message string) error {
+		return &domain.Error{Code: code, Message: message, RequestID: gatewayID}
+	}
 	switch {
 	case resp.StatusCode >= 300 && resp.StatusCode < 400:
 		if next, err := resp.Location(); c.gateway != nil && err == nil && next.Host == c.gateway.Host && strings.HasPrefix(next.Path, "/login") {
@@ -116,23 +124,24 @@ func (c *Client) RunModelTrial(ctx context.Context, base string, trial domain.Tr
 	case resp.StatusCode == 404:
 		return result, domain.E("MODEL_ENDPOINT_UNAVAILABLE", "网关未提供所选模型或该类型的调用接口。")
 	case resp.StatusCode < 200 || resp.StatusCode >= 300:
-		return result, domain.E("MODEL_GATEWAY_ERROR", "模型网关未完成调用（"+http.StatusText(resp.StatusCode)+"）。")
+		return result, responseError("MODEL_GATEWAY_ERROR", "模型网关未完成调用（"+http.StatusText(resp.StatusCode)+"）。")
 	}
 	const limit = 4 << 20
 	raw, e := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if e != nil {
-		return result, domain.E("MODEL_RESULT_UNKNOWN", "未收到完整模型结果，请核对用量后再决定是否重发。")
+		return result, responseError("MODEL_RESULT_UNKNOWN", "未收到完整模型结果，请核对用量后再决定是否重发。")
 	}
 	if len(raw) > limit {
-		return result, domain.E("MODEL_RESPONSE_LARGE", "试用响应超出 4 MiB 显示上限。")
+		return result, responseError("MODEL_RESPONSE_LARGE", "试用响应超出 4 MiB 显示上限。")
 	}
 	if bytes.Contains(raw, []byte(secret)) {
-		return result, domain.E("MODEL_PROTOCOL", "网关响应包含认证材料，无法显示。")
+		return result, responseError("MODEL_PROTOCOL", "网关响应包含认证材料，无法显示。")
 	}
 	result, e = parseTrialResponse(trial, raw)
 	if e != nil {
-		return domain.TrialResult{}, e
+		return domain.TrialResult{}, responseError("MODEL_PROTOCOL", e.Error())
 	}
+	result.RequestID = gatewayID
 	result.ElapsedMS = time.Since(start).Milliseconds()
 	return result, nil
 }
@@ -140,9 +149,11 @@ func parseTrialResponse(req domain.TrialRequest, b []byte) (domain.TrialResult, 
 	res := domain.TrialResult{Kind: req.Kind, Model: req.Model}
 	invalid := domain.E("MODEL_PROTOCOL", "网关返回的结果与所选模型的接口格式不符。")
 	var doc struct {
-		Error   json.RawMessage
-		Usage   *domain.TrialUsage
-		Choices []struct {
+		ID         string
+		CostPoints *float64 `json:"cost_points"`
+		Error      json.RawMessage
+		Usage      *domain.TrialUsage
+		Choices    []struct {
 			Finish  string `json:"finish_reason"`
 			Message *struct {
 				Content json.RawMessage
@@ -162,6 +173,12 @@ func parseTrialResponse(req domain.TrialRequest, b []byte) (domain.TrialResult, 
 		return res, invalid
 	}
 	res.Usage = doc.Usage
+	if len(doc.ID) <= 256 && strings.IndexFunc(doc.ID, unicode.IsControl) < 0 {
+		res.ResponseID = doc.ID
+	}
+	if doc.CostPoints != nil && *doc.CostPoints >= 0 {
+		res.CostPoints = doc.CostPoints
+	}
 	switch req.Kind {
 	case "chat":
 		if len(doc.Choices) == 0 || doc.Choices[0].Message == nil {

@@ -121,7 +121,7 @@ func (c *Client) ComputePage(ctx context.Context, section string, page, limit in
 	case "billing", "billing.storage", "billing.hpc", "billing.account", "billing.history", "billing.prepayment":
 		path = map[string]string{"billing": "/api/meter/billing/apps", "billing.storage": "/api/meter/billing/storages", "billing.hpc": "/api/hpc/billing/jobs", "billing.account": "/api/meter/billing/account-mgmt-bill", "billing.history": "/api/meter/billing/user-account-history", "billing.prepayment": "/api/meter/billing/prepayments"}[section]
 		uidField = "uid"
-		fields = []string{"id", "uid", "userId", "gid", "appName", "name", "appId", "amount", "balance", "balanceAfter", "accountType", "type", "reason", "appSpecName", "nodeName", "poolName", "usagePoints", "cpuUsage", "gpuUsage", "memoryUsage", "updatedAt", "cost", "sum", "state", "duration", "startAt", "endAt", "createdAt"}
+		fields = []string{"id", "uid", "userId", "gid", "appName", "name", "appId", "amount", "balance", "balanceAfter", "accountType", "type", "reason", "appSpecName", "nodeName", "poolName", "usagePoints", "cpuUsage", "gpuUsage", "memoryUsage", "updatedAt", "cost", "sum", "state", "duration", "durationUnit", "runningSeconds", "currency", "startAt", "endAt", "createdAt"}
 	case "admin", "admin.users", "admin.cluster", "admin.billing":
 		if e = c.verifyAdmin(ctx, me); e != nil {
 			return result, e

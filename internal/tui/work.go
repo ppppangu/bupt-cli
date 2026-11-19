@@ -72,7 +72,7 @@ func (w *workspace) runPage(id string) {
 				v.facts = append(v.facts, "作业  "+r.JobName)
 			}
 			if !w.Cached {
-				v.rows = append(v.rows, navLink("stdout", "查看作业输出", "程序标准输出", cmdline("job", "logs", id, "--stream", "stdout"), func() { w.logs(id, "stdout") }),
+				v.rows = append(v.rows, navLink("stdout", "查看这次作业的输出", "程序标准输出", cmdline("job", "logs", id, "--stream", "stdout"), func() { w.logs(id, "stdout") }),
 					navLink("stderr", "查看错误输出", "程序标准错误", cmdline("job", "logs", id, "--stream", "stderr"), func() { w.logs(id, "stderr") }))
 			}
 		} else if active(r) {
@@ -238,7 +238,11 @@ func (p *logPreview) Write(b []byte) (int, error) {
 }
 func (w *workspace) logs(id, stream string) {
 	cmd := cmdline("job", "logs", id, "--stream", stream)
-	p := &page{title: stream, command: cmd, load: func(ctx context.Context) (func() content, error) {
+	title := "作业输出（stdout）"
+	if stream == "stderr" {
+		title = "错误输出（stderr）"
+	}
+	p := &page{title: title, command: cmd, load: func(ctx context.Context) (func() content, error) {
 		var out logPreview
 		_, err := w.Backend.Stream(ctx, "job.logs", map[string]any{"target": id, "stream": stream}, nil, &out)
 		if err != nil && !errors.Is(err, errLogLimit) && out.Len() == 0 {
@@ -247,6 +251,9 @@ func (w *workspace) logs(id, stream string) {
 		text := out.String()
 		return func() content {
 			v := w.textContent(text)
+			if text == "" {
+				v.empty = "本次作业暂无这类输出。按 r 重新读取。"
+			}
 			if out.Len() >= 32*1024 {
 				v.facts = []string{"显示前 32 KiB，完整日志可用下方命令读取。"}
 			} else if err != nil {
@@ -272,7 +279,7 @@ func (w *workspace) textContent(text string) content {
 		var part strings.Builder
 		cells := 0
 		emit := func() {
-			v.rows = append(v.rows, row{key: fmt.Sprint(len(v.rows)), title: part.String()})
+			v.rows = append(v.rows, row{key: fmt.Sprint(len(v.rows)), title: part.String(), prose: true})
 			part.Reset()
 			cells = 0
 		}

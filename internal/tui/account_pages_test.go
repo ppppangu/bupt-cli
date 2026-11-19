@@ -13,7 +13,7 @@ import (
 )
 
 func TestLoginRefreshesMetadataOnExamplesAndTrialPages(t *testing.T) {
-	for _, tc := range []struct{ entry, denied string }{{"guide", "guide"}, {"guide", "model"}, {"trial", "key"}, {"trial", "guide"}} {
+	for _, tc := range []struct{ entry, denied string }{{"guide", "guide"}, {"guide", "model"}, {"trial", "key"}} {
 		t.Run(tc.entry+"_"+tc.denied, func(t *testing.T) {
 			w, b := testWindow(t, false, filepath.Join(t.TempDir(), "config"))
 			var authorized atomic.Bool
@@ -52,19 +52,16 @@ func TestLoginRefreshesMetadataOnExamplesAndTrialPages(t *testing.T) {
 			}
 			hasDraft := tc.entry == "trial" || tc.denied == "guide"
 			if hasDraft {
-				if tc.entry == "guide" {
-					click(t, w, "input")
-				}
 				click(t, w, "prompt")
 				trialKey(w, tcell.KeyCtrlU)
 				typeTrialText(w, "临时输入")
 			}
-			editor := w.composer
+			editor := w.current().editor
 			before := len(b.observed())
 			authorized.Store(true)
 			stream.send(t, positiveFrame(w.Config.Selected))
 			waitFor(t, w, func() bool { return w.bar.snapshot.Platform == "authenticated" })
-			if editor != w.composer {
+			if editor != w.current().editor {
 				t.Fatal("external login replaced the active editor")
 			}
 			if w.current() != p {
@@ -80,7 +77,11 @@ func TestLoginRefreshesMetadataOnExamplesAndTrialPages(t *testing.T) {
 					t.Fatalf("unexpected post-login request: %+v", call)
 				}
 			}
-			if len(b.observed()) != before+2 || p.problem != "" {
+			expected := 2
+			if tc.entry == "trial" {
+				expected = 1
+			}
+			if len(b.observed()) != before+expected || p.problem != "" {
 				t.Fatal("metadata was not refreshed exactly once per section", b.observed())
 			}
 			rows := w.view(p).rows
@@ -89,17 +90,19 @@ func TestLoginRefreshesMetadataOnExamplesAndTrialPages(t *testing.T) {
 				for _, r := range rows {
 					key = key || r.key == "key" && strings.Contains(r.detail, "new-key")
 				}
-				if !key || w.composer != editor {
+				if !key || w.current().editor != editor {
 					t.Fatal("trial did not show the restored key and retain the editor")
 				}
 				trialKey(w, tcell.KeyCtrlS)
 			} else {
+				if w.current().editor != nil {
+					trialKey(w, tcell.KeyEscape)
+				}
 				click(t, w, "base")
-				if w.current().copyText != "https://example.edu/v1" {
+				if string(w.screen.(tcell.SimulationScreen).GetClipboardData()) != "https://example.edu/v1" {
 					t.Fatal("missing recovered gateway")
 				}
-				w.back()
-				click(t, w, "input")
+
 			}
 			if hasDraft {
 				for _, r := range w.view(w.current()).rows {

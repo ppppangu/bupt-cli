@@ -174,6 +174,8 @@ func TestContactLookupRejectsContextChangeWhileInFlight(t *testing.T) {
 
 func TestActorIdentityBindingAndReadonlyMemberships(t *testing.T) {
 	v := &view{Entities: map[string]map[domain.ID]map[string]any{"User": {"70": {"eid": "70", "uid": "7", "uname": "student"}, "80": {"eid": "80", "uid": "8", "uname": "other"}}, "UserPrjUserGroupRole": {"101": {"eid": "101", "uid": "7", "gid": "31", "role": "member", "state": "active"}, "102": {"eid": "102", "uid": "7", "gid": "32", "role": "manager", "state": "active"}, "103": {"eid": "103", "uid": "8", "gid": "99", "role": "admin", "state": "active"}, "104": {"eid": "104", "uid": "7", "gid": "0", "role": "admin", "state": "active"}, "105": {"eid": "105", "uid": "7", "gid": "33", "role": "future_unknown", "state": "active"}}}}
+	v.Entities["UserPrjUserGroupRole"]["101"]["groupName"] = "课堂项目"
+	v.Entities["UserPrjUserGroupRole"]["101"] = filterEntity("UserPrjUserGroupRole", v.Entities["UserPrjUserGroupRole"]["101"])
 	s := &eventSocket{views: map[string]*view{"UserActor": v}, tasks: map[string]domain.TaskResult{}}
 	identity := domain.Identity{UID: "7"}
 	bound, e := s.graph().bindIdentity(identity)
@@ -181,7 +183,7 @@ func TestActorIdentityBindingAndReadonlyMemberships(t *testing.T) {
 		t.Fatal(bound, e)
 	}
 	snapshot := s.snapshot(bound)
-	if len(snapshot.Identity.Memberships) != 2 || snapshot.Identity.Memberships[0].GroupID != "31" || snapshot.Identity.Memberships[0].Role != "member" || snapshot.Identity.Memberships[1].Role != "manager" {
+	if len(snapshot.Identity.Memberships) != 2 || snapshot.Identity.Memberships[0].GroupID != "31" || snapshot.Identity.Memberships[0].Role != "member" || snapshot.Identity.Memberships[0].Name != "课堂项目" || snapshot.Identity.Memberships[1].Name != "" || snapshot.Identity.Memberships[1].Role != "manager" {
 		t.Fatal(snapshot.Identity.Memberships)
 	}
 	if len(snapshot.Identity.Groups) != 0 {

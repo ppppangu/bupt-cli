@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -21,16 +22,31 @@ func (w *workspace) resources() content {
 	return v
 }
 func (w *workspace) quotas() {
-	w.local("我的配额", "bupt quota", func() content {
-		v := content{facts: []string{"资源                       已用 / 上限"}, empty: "平台未提供这组配额数据。"}
-		for _, m := range w.report.Capacity {
+	var p *page
+	show := func(capacity []domain.Capacity) content {
+		v := content{facts: []string{"资源                       已用 / 上限"}}
+		if len(capacity) == 0 {
+			v.facts = []string{"尚未取得当前账号的配额。"}
+			if !w.Cached {
+				v.rows = append(v.rows, link("retry-quota", "重新查询配额", "从学校读取当前用量和上限", "bupt quota", func() { w.fetchPage(p, true) }))
+			} else {
+				v.empty = "在线打开算力服务可重新查询。"
+			}
+		}
+		for _, m := range capacity {
 			v.rows = append(v.rows, row{key: m.Scope + "/" + m.Resource, title: m.Resource, detail: m.Amounts() + " · " + m.Scope})
 		}
 		if !w.Cached {
 			v.rows = append(v.rows, link("request", "申请调整额度…", "选择个人算力或存储额度", "bupt compute quota request", w.quotaRequests))
 		}
 		return v
-	})
+	}
+	p = queryPage(w, "我的配额", "bupt quota", "quota.get", nil, true, func(raw map[string]any) content { return show(domain.CapacityFromQuota(raw)) })
+	p.build = func() content { return show(w.report.Capacity) }
+	if w.Cached {
+		p.load = nil
+	}
+	w.push(p)
 }
 
 func (w *workspace) quotaRequests() {
@@ -65,17 +81,24 @@ func (w *workspace) catalog()        { w.templateList(false) }
 func (w *workspace) chooseTemplate() { w.templateList(true) }
 
 func (w *workspace) templateList(create bool) {
-	title := "资源目录"
+	title := "资源与价格"
 	if create {
 		title = "选择实例模板"
 	}
-	p := queryPage(w, title, "bupt compute catalog", "resources.overview", map[string]any{"cached": w.Cached}, false, func(result domain.ResourceOverview) content {
+	var p *page
+	quotes := map[string]*instanceQuote{}
+	live := false
+	p = queryPage(w, title, "bupt compute catalog", "resources.overview", map[string]any{"cached": w.Cached}, false, func(result domain.ResourceOverview) content {
 		v := content{empty: "此账号暂无可见模板。", facts: slices.Clone(result.Warnings)}
 		online := !w.Cached && result.CatalogSource == "live"
 		if result.CatalogSource == "unavailable" {
 			v.empty = "还没有可用的模板目录。"
 		} else if !online {
 			v.facts = append(v.facts, "已保存的模板目录 · 完整规格和创建需要在线读取")
+		}
+		live = online
+		if !create && online {
+			v.facts = append(v.facts, "选中规格可查看默认日价。实际库存以学校分配为准。")
 		}
 		for _, pool := range result.Pools {
 			if len(pool.Templates) != 0 {
@@ -84,6 +107,9 @@ func (w *workspace) templateList(create bool) {
 			for _, t := range pool.Templates {
 				name := strings.TrimSpace(t.Name + " " + t.Version)
 				summary := resourceSummary(t.Resources)
+				if q := quotes[string(t.ID)]; q != nil {
+					summary = strings.TrimSpace(q.label() + " · " + summary)
+				}
 				cmd := cmdline("compute", "catalog", "show", string(t.ID))
 				r := navLink("spec/"+string(t.ID), name, summary, cmd, func() {
 					switch {
@@ -101,8 +127,74 @@ func (w *workspace) templateList(create bool) {
 				v.rows = append(v.rows, r)
 			}
 		}
+		if !create && len(v.rows) == 0 {
+			v.facts = append(v.facts, v.empty)
+		}
+		if !create && len(result.Capacity) > 0 {
+			v.rows = append(v.rows, link("quota", "查看我的配额", "已用数量与上限", "bupt compute quota", func() {
+				w.picker("我的配额 · 已用 / 上限", func() content {
+					view := content{}
+					for _, c := range result.Capacity {
+						view.rows = append(view.rows, info(c.Resource, c.Amounts()+" · "+c.Scope))
+					}
+					return view
+				})
+			}))
+		}
+		if !create {
+			v.rows = append(v.rows, w.computeToolsLink())
+		}
 		return v
 	})
+	if !create {
+		p.readNavigation = func() content {
+			if p.loading {
+				return content{}
+			}
+			return content{rows: []row{w.computeToolsLink()}}
+		}
+	}
+	if !create && !w.Cached {
+		var selected string
+		generation := -1
+		cancelPending := func() {
+			if q := quotes[selected]; q != nil {
+				select {
+				case <-q.ready:
+				default:
+					q.cancel()
+					delete(quotes, selected)
+				}
+			}
+		}
+		p.onLeave = cancelPending
+		p.onFocus = func(key string) {
+			if !live {
+				return
+			}
+			if p.generation != generation {
+				cancelPending()
+				clear(quotes)
+				selected = ""
+				generation = p.generation
+			}
+			id, ok := strings.CutPrefix(key, "spec/")
+			if !ok {
+				id = ""
+			}
+			if id == selected {
+				return
+			}
+			cancelPending()
+			selected = id
+			if id != "" && quotes[id] == nil {
+				d := &draft{spec: domain.Spec{ID: domain.ID(id)}}
+				w.loadDraftQuote(d)
+				quotes[id] = d.quote
+			}
+		}
+	}
+	p.createStep = create
 	w.push(p)
 }
 func object(v any) map[string]any {
@@ -124,7 +216,7 @@ type specGroup struct {
 	Constraints []struct{ Type, Value, Options string }
 }
 
-func constraintRows(v any) []row {
+func constraintGroups(v any) map[string]specGroup {
 	var b []byte
 	if s, ok := v.(string); ok {
 		b = []byte(s)
@@ -135,6 +227,10 @@ func constraintRows(v any) []row {
 	if json.Unmarshal(b, &groups) != nil {
 		return nil
 	}
+	return groups
+}
+func constraintRows(v any) []row {
+	groups := constraintGroups(v)
 	var rows []row
 	for _, k := range orderedKeys(groups) {
 		g := groups[k]
@@ -158,18 +254,22 @@ func constraintRows(v any) []row {
 func (w *workspace) specPage(s domain.Spec) {
 	cmd := cmdline("spec", "show", string(s.ID))
 	selectedID := s.ID
+	quote := &draft{spec: s}
 	p := queryPage(w, s.Name, cmd, "spec.show", map[string]any{"target": s.ID}, true, func(s domain.Spec) content {
 		if s.ID != selectedID {
 			return content{empty: "模板已变更，请返回资源目录重新选择。"}
 		}
 		v := content{facts: []string{strings.TrimSpace(s.Name+" "+s.Version) + "   ·   " + value(s.Options["poolDisplayName"]), resourceSummary(object(s.Options["resourceSummary"]))}}
 		v.rows = []row{navLink("create", "用此模板创建…", "下一步填写名称和资源", cmdline("instance", "create", "NAME", "--spec-id", string(s.ID)), func() { w.createForm(s, nil) }),
-			link("estimate", "估算模板默认价格", "读取平台估价", cmdline("estimate", "--spec-id", string(s.ID)), func() { w.estimate(&draft{spec: s}) })}
+			link("estimate", "刷新模板日价", "学校默认配置估价", cmdline("estimate", "--spec-id", string(s.ID)), func() { w.loadDraftQuote(quote) })}
 		v.rows = append(v.rows,
 			w.contextAction("自定义资源估价", "按所选 CPU、GPU 和内存查询价格", []string{"compute", "catalog", "estimate"}, "--spec-id="+string(s.ID)),
 			w.contextAction("保存模板预设", "为常用配置命名", []string{"compute", "preset", "set"}, "--spec-id="+string(s.ID)),
 		)
 		v.rows = append(v.rows, constraintRows(s.Options["resourceConstraints"])...)
+		if quote.quote != nil {
+			v.facts = append(v.facts, quote.quote.label())
+		}
 		if d := seconds(s.Options["expDuration"]); d != "" {
 			v.rows = append(v.rows, info("平台默认时长", d))
 		}
@@ -180,6 +280,7 @@ func (w *workspace) specPage(s domain.Spec) {
 		return v
 	})
 	w.push(p)
+	w.attachDraftQuote(p, quote)
 }
 func seconds(v any) string {
 	d, e := time.ParseDuration(value(v) + "s")
@@ -188,7 +289,7 @@ func seconds(v any) string {
 	}
 	return d.String()
 }
-func (w *workspace) estimate(d *draft) {
+func (d *draft) estimateRequest() (map[string]any, []string) {
 	params := map[string]any{"spec_id": d.spec.ID}
 	args := []string{"estimate", "--spec-id", string(d.spec.ID)}
 	if d.preset != nil {
@@ -202,7 +303,72 @@ func (w *workspace) estimate(d *draft) {
 			args = append(args, "--"+k, d.resources[k])
 		}
 	}
-	d.price = ""
+	return params, args
+}
+
+func dailyRate(data map[string]any) string {
+	raw := value(data["points_per_day"])
+	n, err := strconv.ParseFloat(raw, 64)
+	if err != nil || n < 0 || math.IsNaN(n) || math.IsInf(n, 0) {
+		return ""
+	}
+	return raw
+}
+
+// All readers of one resource selection share its read-only quote, including
+// the confirmation screen. The response is immutable once ready is closed.
+type instanceQuote struct {
+	ready  chan struct{}
+	cancel context.CancelFunc
+	rate   string
+}
+
+func (q *instanceQuote) label() string {
+	select {
+	case <-q.ready:
+		if q.rate != "" {
+			return "学校估价  " + q.rate + " 积分/天"
+		}
+		return "学校估价暂不可用，实际费用以学校账单为准。"
+	default:
+		return "正在查询当前配置的学校估价…"
+	}
+}
+
+func (w *workspace) attachDraftQuote(p *page, d *draft) {
+	if w.Cached || d.instance != nil {
+		return
+	}
+	w.loadDraftQuote(d)
+	p.priceDraft = d
+}
+
+func (w *workspace) loadDraftQuote(d *draft) {
+	if w.Cached || d.instance != nil {
+		return
+	}
+	if d.quote != nil {
+		d.quote.cancel()
+	}
+	params, _ := d.estimateRequest()
+	ctx, cancel := context.WithTimeout(w.ctx, w.Timeout)
+	q := &instanceQuote{ready: make(chan struct{}), cancel: cancel}
+	d.quote = q
+	go func() {
+		defer cancel()
+		var raw json.RawMessage
+		if err := w.Backend.Call(ctx, "spec.estimate", params, &raw); err == nil {
+			if data, err := readComputeJSON(raw); err == nil {
+				q.rate = dailyRate(object(data))
+			}
+		}
+		close(q.ready)
+		w.post(w.ctx, func() {}) // Repaint the form if the user is still viewing it.
+	}()
+}
+
+func (w *workspace) estimate(d *draft) {
+	params, args := d.estimateRequest()
 	w.push(queryPage(w, "学校估价", cmdline(args...), "spec.estimate", params, true, func(raw json.RawMessage) content {
 		result, err := readComputeJSON(raw)
 		if err != nil || object(result) == nil {
@@ -214,11 +380,9 @@ func (w *workspace) estimate(d *draft) {
 			name, val := k, value(data[k])
 			if k == "points_per_day" {
 				name = "积分 / 天"
+				val = dailyRate(data)
 				if val == "" {
 					val = "待学校确认"
-				}
-				if n, err := strconv.ParseFloat(val, 64); err == nil && n >= 0 && !math.IsInf(n, 0) {
-					d.price = val
 				}
 			}
 			v.rows = append(v.rows, info(name, val))

@@ -2,12 +2,41 @@ package tui
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
 	"bupt.local/cli/internal/domain"
 	"github.com/gdamore/tcell/v2"
 )
+
+func TestKeyReviewReachableFromLastFilteredModel(t *testing.T) {
+	var models []domain.PortalModel
+	for i := 1; i <= 24; i++ {
+		models = append(models, domain.PortalModel{ID: fmt.Sprintf("course-%02d", i), Kind: "chat"})
+	}
+	b := &fixtureBackend{reply: func(_ context.Context, m string, p map[string]any) (any, error) {
+		return domain.PortalPage{Section: "model", Models: models}, nil
+	}}
+	w := fixtureWorkspace(t, b)
+	w.screen.(tcell.SimulationScreen).SetSize(60, 24)
+	parent := w.current()
+	w.keyFormReturning(nil, parent, func(map[string]any) {})
+	waitFor(t, w, func() bool { return !w.current().loading })
+	click(t, w, "name")
+	typeTrialText(w, "课程")
+	trialKey(w, tcell.KeyEnter)
+	navType(w, "/course-24")
+	navPress(w, tcell.KeyEnter)
+	navPress(w, tcell.KeyEnter)
+	if !strings.Contains(strings.Join(w.view(w.current()).facts, " "), "已选 1 个模型") {
+		t.Fatal("missing pinned selection count")
+	}
+	navPress(w, tcell.KeyF2)
+	if w.current().title != "核对创建调用密钥" || !strings.Contains(strings.Join(w.view(w.current()).facts, " "), "course-24") || len(b.observed()) != 1 {
+		t.Fatal("review should show the fixed scope without creating a key")
+	}
+}
 
 func TestPortalAccountLabelsVerifiedCampusNumbers(t *testing.T) {
 	w := fixtureWorkspace(t, &fixtureBackend{})
@@ -78,9 +107,9 @@ func TestKeyManagementPreservesScopeAndReturnsToSelection(t *testing.T) {
 		t.Fatal("missing catalogue discarded known scope", ids)
 	}
 	w.back()
-	click(t, w, "disable")
-	for i, r := range w.view(w.current()).rows {
-		if r.key == "submit" {
+	detail := w.current()
+	for i, r := range w.view(detail).rows {
+		if r.key == "disable" {
 			w.move(i)
 			break
 		}
@@ -91,10 +120,65 @@ func TestKeyManagementPreservesScopeAndReturnsToSelection(t *testing.T) {
 			t.Fatal("Right submitted a key change")
 		}
 	}
-	click(t, w, "submit")
-	waitFor(t, w, func() bool { return w.current() == list && !list.loading })
+	click(t, w, "disable")
+	waitFor(t, w, func() bool { return !detail.submitting })
+	if w.current() != detail {
+		t.Fatal("status update left the current key")
+	}
+	w.back()
+	waitFor(t, w, func() bool { return !list.loading })
 	r, ok := findPortalRow(w.view(list), key.ID)
 	if !ok || !strings.Contains(r.detail, "已停用") || list.key != key.ID {
 		t.Fatal("updated key was not selected on the original list", r, list.key)
+	}
+}
+
+func TestNewKeyRevealNeedsStorageReceiptAndClosesOnOrigin(t *testing.T) {
+	const secret = "test-only-created-value"
+	for _, stored := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stored=%t", stored), func(t *testing.T) {
+			b := &fixtureBackend{reply: func(_ context.Context, m string, p map[string]any) (any, error) {
+				switch m {
+				case "portal.change":
+					return map[string]any{"id": "created", "item": domain.PortalKey{ID: "created", Stored: stored}}, nil
+				case "portal.export":
+					if p["target"] != "created" {
+						t.Errorf("wrong key %v", p)
+					}
+					return map[string]string{"secret": secret}, nil
+				}
+				return nil, fmt.Errorf("unexpected %s", m)
+			}}
+			w := fixtureWorkspace(t, b)
+			origin := w.current()
+			w.confirmPortalChange("创建密钥", nil, map[string]any{"action": "key.create"}, origin, func(map[string]any) {})
+			click(t, w, "submit")
+			waitFor(t, w, func() bool { return w.current() == origin })
+			if _, ok := objectRow(t, w, "new-secret"); ok != stored || len(b.observed()) != 1 {
+				t.Fatal("completion read a secret or offered a missing value")
+			}
+			if !stored {
+				return
+			}
+			click(t, w, "new-secret")
+			waitFor(t, w, func() bool { return !w.current().loading })
+			detail := w.current()
+			if !detail.overlay || !strings.Contains(strings.Join(w.view(detail).facts, ""), secret) {
+				t.Fatal("not a temporary reveal")
+			}
+			screen := w.screen.(tcell.SimulationScreen)
+			if len(screen.GetClipboardData()) > 0 {
+				t.Fatal("copied without an explicit action")
+			}
+			w.refresh()
+			click(t, w, "copy")
+			if string(screen.GetClipboardData()) != secret {
+				t.Fatal("explicit copy failed")
+			}
+			click(t, w, "done")
+			if w.current() != origin || origin.newKeyID != "" || len(b.observed()) != 2 {
+				t.Fatal("one-time reveal remained active or was re-read")
+			}
+		})
 	}
 }

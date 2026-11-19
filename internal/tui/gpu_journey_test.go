@@ -4,14 +4,116 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"bupt.local/cli/internal/domain"
 	"github.com/gdamore/tcell/v2"
 )
+
+func TestInstancesSSHUsesVerifiedInstanceAndNode(t *testing.T) {
+	b := &fixtureBackend{reply: func(_ context.Context, method string, _ map[string]any) (any, error) {
+		if method != "status.get" {
+			t.Errorf("unexpected call %s", method)
+		}
+		return domain.StatusReport{Source: "cached"}, nil
+	}}
+	w := fixtureWorkspace(t, b)
+	i := domain.Instance{ID: "101", Name: "gpu-dev", State: "running", Nodes: []domain.Node{{ID: "7", Name: "worker"}}}
+	route := domain.Route{InstanceID: i.ID, NodeID: "7", State: "ready"}
+	w.report.Instances = []domain.Instance{i}
+	w.report.Routes = []domain.Route{route, {InstanceID: i.ID, NodeID: "obsolete", State: "ready"}}
+	single := w.report
+	var args []string
+	w.Foreground = func(_ context.Context, argv []string) error { args = slices.Clone(argv); return nil }
+	w.computeHome()
+	click(t, w, "instances")
+	w.draw()
+	navType(w, "/连接 gpu-dev")
+	navPress(w, tcell.KeyEnter)
+	if r := w.current().selected(w.view(w.current())); r == nil || r.title != "连接 gpu-dev" || r.forward {
+		t.Fatal("expected one direct SSH action in the home filter", r)
+	}
+	navPress(w, tcell.KeyRight)
+	if args != nil {
+		t.Fatal("browsing started SSH")
+	}
+	navPress(w, tcell.KeyEnter)
+	waitFor(t, w, func() bool { return !w.refreshing })
+	if !slices.Equal(args, []string{"ssh", "101", "--node", "7"}) {
+		t.Fatal(args)
+	}
+	navPress(w, tcell.KeyBackspace2)
+	w.report = single
+	second := i
+	second.ID, second.Name = "202", "gpu-lab"
+	w.report.Instances = append(w.report.Instances, second)
+	w.report.Routes = append(w.report.Routes, domain.Route{InstanceID: second.ID, NodeID: "7", State: "ready"})
+	click(t, w, "ssh/choose")
+	navType(w, "/gpu-lab")
+	navPress(w, tcell.KeyEnter)
+	waitFor(t, w, func() bool { return !w.refreshing })
+	if !slices.Equal(args, []string{"ssh", "202", "--node", "7"}) {
+		t.Fatal("nodes with the same ID in different instances were confused", args)
+	}
+	w.back()
+	w.report = single
+	w.report.Instances[0].State = "stopped"
+	if r := w.sshTargets(); len(r.rows) != 0 {
+		t.Fatal("a stopped instance offered a connection", r.rows)
+	}
+	w.report.Instances[0].SSHState = "ready"
+	if got := w.instanceSSHState(w.report.Instances[0]); got == "ready" {
+		t.Fatal("the stopped instance was still advertised as SSH ready")
+	}
+	w.report = domain.StatusReport{Source: "cached", Routes: []domain.Route{route}}
+	if len(w.sshTargets().rows) != 1 {
+		t.Fatal("lost the controller's prepared route without a school snapshot")
+	}
+	w.Cached = true
+	if len(w.sshTargets().rows) != 0 {
+		t.Fatal("read-only browsing offered a terminal connection")
+	}
+}
+
+func TestInstanceListShowsSSHAndExpiryAtEveryWidth(t *testing.T) {
+	w := fixtureWorkspace(t, &fixtureBackend{})
+	expires := time.Now().Add(20 * time.Minute)
+	i := &w.report.Instances[0]
+	i.State, i.ExpiresAt, i.Nodes = "running", expires, []domain.Node{{ID: "7", Name: "worker"}}
+	w.report.Routes = []domain.Route{{InstanceID: i.ID, NodeID: "7", State: "ready"}}
+	w.computeHome()
+	click(t, w, "instances")
+	for _, cols := range []int{120, 80, 60} {
+		w.screen.(tcell.SimulationScreen).SetSize(cols, 24)
+		w.draw()
+		line := navLine(w, w.listTop)
+		if !strings.Contains(line, "SSH 就绪 · 平台预留剩余 20 分钟") || strings.Contains(line, "选中项摘要") != (cols == 120) {
+			t.Errorf("unexpected %d-column instance row: %s", cols, line)
+		}
+		if cols == 120 && !strings.Contains(navLine(w, w.listTop+4), "平台预留到期") {
+			t.Fatal("wide preview missing the absolute expiry")
+		}
+		if !w.redrawAt.Equal(expires.Add(-19 * time.Minute)) {
+			t.Fatal("the idle countdown would not update", w.redrawAt)
+		}
+	}
+	for _, tc := range []struct {
+		expiry time.Time
+		want   string
+	}{{time.Time{}, "到期待确认"}, {time.Now().Add(-time.Minute), "已到期"}} {
+		i.ExpiresAt = tc.expiry
+		w.draw()
+		if !strings.Contains(navLine(w, w.listTop), tc.want) || !w.redrawAt.IsZero() {
+			t.Fatal(navLine(w, w.listTop), w.redrawAt)
+		}
+	}
+}
 
 func TestCachedTemplateDirectoryNeverStartsCreation(t *testing.T) {
 	b := &fixtureBackend{reply: func(_ context.Context, m string, p map[string]any) (any, error) {
@@ -27,7 +129,7 @@ func TestCachedTemplateDirectoryNeverStartsCreation(t *testing.T) {
 	w.Cached = true
 	w.catalog()
 	waitFor(t, w, func() bool { return !w.current().loading })
-	if got := computeKeys(w.view(w.current()).rows); !slices.Equal(got, []string{"pool/P1", "spec/11", "pool/P2", "spec/22"}) {
+	if got := computeKeys(w.view(w.current()).rows); !slices.Equal(got, []string{"pool/P1", "spec/11", "pool/P2", "spec/22", "tools"}) {
 		t.Fatal(got)
 	}
 	click(t, w, "spec/22")
@@ -57,24 +159,36 @@ func TestEstimateUsesCurrentDraftAndKeepsExactSchoolRate(t *testing.T) {
 	const dayRate = "123.1234567890123456789"
 	b := &fixtureBackend{reply: func(_ context.Context, m string, p map[string]any) (any, error) {
 		res, ok := p["resources"].(map[string]any)
-		if m != "spec.estimate" || !ok || res["gpu"] != "0.1" || p["spec_id"] != "17" {
-			t.Errorf("%s, %v", m, p)
+		if m != "spec.estimate" || !ok || p["spec_id"] != "17" {
+			return nil, errors.New("unexpected quote")
+		}
+		if res["gpu"] == "0.2" {
+			return map[string]any{"points_per_day": 0}, nil
+		}
+		if res["gpu"] != "0.1" {
+			return nil, errors.New("unexpected resources")
 		}
 		return json.RawMessage(`{"points_per_day":` + dayRate + "}"), nil
 	}}
 	w := fixtureWorkspace(t, b)
 	d := &draft{spec: domain.Spec{ID: "17"}, resources: map[string]string{"gpu": "0.1"}}
-	w.estimate(d)
-	waitFor(t, w, func() bool { return !w.current().loading })
-	_ = w.view(w.current())
-	if d.price != dayRate {
-		t.Fatal(d.price)
+	w.resourceForm("创建实例", d)
+	first := d.quote
+	<-first.ready
+	if first.rate != dayRate {
+		t.Fatal(first.label())
 	}
-	w.back()
 	w.draftOptions(d)
 	click(t, w, "gpu")
-	if err := w.input.done("0.2"); err != nil || d.price != "" {
-		t.Fatal("changed selection retained stale estimate", err)
+	if err := w.input.done("0.2"); err != nil {
+		t.Fatal(err)
+	}
+	if d.quote == first {
+		t.Fatal("stale quote")
+	}
+	<-d.quote.ready
+	if d.quote.rate != "0" {
+		t.Fatal(d.quote.label())
 	}
 }
 
@@ -224,8 +338,7 @@ func TestRunProgressUsesTheMatchingNodeRouteAndExistingBound(t *testing.T) {
 	if request["dry_run"] != true || request["target"] != "42" || request["name"] != "demo" || request["node"] != "7" || request["until"] != deadline.Format(time.RFC3339Nano) || request["max_runtime"] != nil {
 		t.Fatal(request)
 	}
-	w.back() // Confirmation → node choice → scoped receipt.
-	w.back()
+	w.back() // The node picker applied its selection and closed.
 	if w.current().title != "运行详情" {
 		t.Fatal(w.current().title)
 	}
@@ -234,5 +347,339 @@ func TestRunProgressUsesTheMatchingNodeRouteAndExistingBound(t *testing.T) {
 	settle()
 	if _, ok := objectRow(t, w, "start"); ok || w.current().watch {
 		t.Fatal("offline receipt offered allocation or kept polling")
+	}
+}
+
+func TestManagedCountdownUsesCurrentCycleAndEarlierBoundary(t *testing.T) {
+	now := time.Now()
+	platform := now.Add(2 * time.Hour)
+	w := fixtureWorkspace(t, &fixtureBackend{})
+	current := domain.Run{ID: "current", InstanceID: "101", CreatedAt: now, State: "ready", Deadline: now.Add(30 * time.Minute), Policy: domain.RunPolicy{Cleanup: "release"}}
+	finished := current
+	finished.ID = "old"
+	finished.State = "completed"
+	finished.CreatedAt = now.Add(time.Minute)
+	other := current
+	other.InstanceID = "999"
+	other.ID = "other"
+	other.Deadline = now.Add(time.Minute)
+	w.report.Runs = []domain.Run{finished, other, current}
+	i := &w.report.Instances[0]
+	i.ExpiresAt = platform
+	i.State = "running"
+	i.RunID = current.ID
+	run := w.instanceRun(*i)
+	if run == nil || run.ID != current.ID {
+		t.Fatal("did not bind the current cycle")
+	}
+	for _, tc := range []struct {
+		expiry, deadline  time.Time
+		cleanup, contains string
+	}{
+		{platform, now.Add(30 * time.Minute), "release", "30 分钟后停止并释放"},
+		{now.Add(5 * time.Minute), now.Add(time.Hour), "delete", "平台预留剩余 5 分钟"},
+		{platform, now.Add(time.Minute), "none", "平台预留剩余 2 小时"},
+		{time.Time{}, now.Add(2 * time.Minute), "stop", "2 分钟后停止运行"},
+		{platform, now, "delete", "清理待核对"},
+	} {
+		r := *run
+		r.Deadline, r.Policy.Cleanup = tc.deadline, tc.cleanup
+		got, _ := instanceTiming(tc.expiry, &r, now)
+		if got != tc.contains && !strings.Contains(got, tc.contains) {
+			t.Fatal(got, tc.contains)
+		}
+	}
+	w.computeHome()
+	click(t, w, "instances")
+	w.screen.(tcell.SimulationScreen).SetSize(60, 24)
+	w.draw()
+	if !strings.Contains(navLine(w, w.listTop), "30 分钟后停止并释放") {
+		t.Fatal(navLine(w, w.listTop))
+	}
+	click(t, w, "101")
+	facts := strings.Join(w.view(w.current()).facts, " ")
+	if !strings.Contains(facts, "平台预留到期") || !strings.Contains(facts, "本次托管截止") {
+		t.Fatal(facts)
+	}
+	if row, ok := objectRow(t, w, "progress"); !ok || row.command != "bupt status current" {
+		t.Fatal(row)
+	}
+}
+
+func TestProjectSelectionAndDailyPriceReachCreationReview(t *testing.T) {
+	b := &fixtureBackend{reply: func(_ context.Context, m string, p map[string]any) (any, error) {
+		switch m {
+		case "compute.read":
+			if p["section"] != "project" {
+				return nil, errors.New("wrong project query")
+			}
+			return []domain.ProjectMembership{{GroupID: "5", Name: "旧项目", Role: "member", State: "disabled"}, {GroupID: "7", Name: "课堂项目", Role: "member", State: "active"}, {GroupID: "7", Role: "manager"}, {GroupID: "8", Role: "member"}}, nil
+		case "spec.estimate":
+			return map[string]any{"points_per_day": "12.500"}, nil
+		case "instance.create":
+			if p["dry_run"] != true || p["group_id"] != "7" {
+				return nil, errors.New("unexpected write or project")
+			}
+			return map[string]any{"dry_run": true, "run": domain.Run{Deadline: time.Now().Add(time.Hour), Policy: domain.RunPolicy{Cleanup: "release"}}}, nil
+		}
+		return nil, errors.New(m)
+	}}
+	w := fixtureWorkspace(t, b)
+	d := &draft{name: "实验", limit: "30m", spec: domain.Spec{ID: "91", Options: map[string]any{"scope": "group"}}}
+	w.resourceForm("创建实例", d)
+	owner := w.current()
+	<-d.quote.ready
+	if !strings.Contains(strings.Join(w.view(owner).facts, " "), "12.500 积分/天") {
+		t.Fatal("daily rate not visible on draft")
+	}
+	click(t, w, "preview")
+	if w.current() != owner || owner.key != "group" {
+		t.Fatal("required project was skipped")
+	}
+	click(t, w, "group")
+	waitFor(t, w, func() bool { return !w.current().loading })
+	rows := w.view(w.current()).rows
+	if len(rows) != 2 || rows[0].title != "课堂项目" || rows[1].title != "项目 8" {
+		t.Fatal(rows)
+	}
+	click(t, w, "project/7")
+	click(t, w, "preview")
+	waitFor(t, w, func() bool { return !w.current().loading })
+	if !strings.Contains(strings.Join(w.view(w.current()).facts, " "), "12.500 积分/天") || len(b.observed()) != 3 {
+		t.Fatal("confirmation lost or refetched the rate", b.observed())
+	}
+}
+
+func TestMissingQuotaCanBeReadAgainAndShowsRealZero(t *testing.T) {
+	b := &fixtureBackend{reply: func(_ context.Context, m string, _ map[string]any) (any, error) {
+		if m != "quota.get" {
+			return nil, errors.New(m)
+		}
+		return map[string]any{"UserQuota:11": map[string]any{"gpu": 0, "gpuUsed": 0, "domain": "课堂"}}, nil
+	}}
+	w := fixtureWorkspace(t, b)
+	w.quotas()
+	if !strings.Contains(strings.Join(w.view(w.current()).facts, " "), "尚未取得") {
+		t.Fatal("unknown quota not explained")
+	}
+	click(t, w, "retry-quota")
+	waitFor(t, w, func() bool { return !w.current().loading })
+	for _, r := range w.view(w.current()).rows {
+		if r.title == "GPU" && strings.Contains(r.detail, "0 / 0") {
+			return
+		}
+	}
+	t.Fatal("missing quota did not recover to published zero")
+}
+
+type journeyLogBackend struct{ *fixtureBackend }
+
+func (b journeyLogBackend) Stream(_ context.Context, method string, params any, _ io.Reader, out io.Writer) (map[string]any, error) {
+	p := params.(map[string]any)
+	if method != "job.logs" || p["target"] != "job-1" || p["stream"] != "stdout" {
+		return nil, errors.New("wrong job output")
+	}
+	_, err := io.WriteString(out, "训练完成")
+	return nil, err
+}
+
+func TestUploadRunAndReadOutputOnSelectedInstance(t *testing.T) {
+	i := domain.Instance{ID: "101", Name: "gpu-lab", RunID: "cycle", Managed: true, State: "running", Nodes: []domain.Node{{ID: "7", Name: "head"}, {ID: "8", Name: "worker"}}}
+	cycle := domain.Run{ID: "cycle", Kind: "session", State: "ready", InstanceID: i.ID, NodeID: "8", Deadline: time.Now().Add(time.Hour), Policy: domain.RunPolicy{Cleanup: "release"}}
+	report := domain.StatusReport{Source: "live", Instances: []domain.Instance{i}, Runs: []domain.Run{cycle}, Routes: []domain.Route{{InstanceID: i.ID, NodeID: "7", State: "ready"}, {InstanceID: i.ID, NodeID: "8", State: "ready"}}}
+	job := cycle
+	job.ID, job.Kind, job.JobName = "job-1", "job", "课程训练"
+	b := &fixtureBackend{reply: func(_ context.Context, m string, p map[string]any) (any, error) {
+		switch m {
+		case "status.get":
+			if p["target"] == job.ID {
+				return domain.StatusReport{Runs: []domain.Run{job}, Instances: report.Instances}, nil
+			}
+			return report, nil
+		case "job.run":
+			if p["target"] != "101" || p["inherit_policy"] != true || fmt.Sprint(p["command"]) != "[python train.py]" {
+				return nil, errors.New("incorrect target or arguments")
+			}
+			if p["dry_run"] == true {
+				return map[string]any{"dry_run": true, "run": job}, nil
+			}
+			return job, nil
+		}
+		return nil, errors.New(m)
+	}}
+	w := fixtureWorkspace(t, b)
+	w.Backend = journeyLogBackend{b}
+	w.report = report
+	var transfer []string
+	w.Foreground = func(_ context.Context, args []string) error { transfer = slices.Clone(args); return nil }
+	w.computeHome()
+	click(t, w, "instances")
+	click(t, w, "101")
+	origin := w.current()
+	click(t, w, "upload")
+	if target, _ := objectRow(t, w, "8"); !strings.Contains(target.detail, "作业节点") {
+		t.Fatal(target)
+	}
+	click(t, w, "8")
+	typeTrialText(w, "./train.py")
+	trialKey(w, tcell.KeyEnter)
+	typeTrialText(w, "train.py")
+	trialKey(w, tcell.KeyEnter)
+	if transfer != nil {
+		t.Fatal("browsing uploaded the file")
+	}
+	click(t, w, "apply")
+	waitFor(t, w, func() bool { return !w.refreshing })
+	if !slices.Equal(transfer, []string{"cp", "--node", "8", "--", "./train.py", "101:train.py"}) {
+		t.Fatal(transfer)
+	}
+	if w.current() != origin || origin.key != "job" {
+		t.Fatal("upload did not return to the next action on the target instance")
+	}
+	click(t, w, "job")
+	click(t, w, "0")
+	typeTrialText(w, "python")
+	trialKey(w, tcell.KeyEnter)
+	click(t, w, "add")
+	typeTrialText(w, "train.py")
+	trialKey(w, tcell.KeyEnter)
+	click(t, w, "preview")
+	waitFor(t, w, func() bool { return !w.current().loading })
+	click(t, w, "submit")
+	waitFor(t, w, func() bool { return w.current().title == "运行详情" && !w.current().loading && !w.refreshing })
+	click(t, w, "stdout")
+	waitFor(t, w, func() bool { return !w.current().loading })
+	if !strings.Contains(w.view(w.current()).rows[0].title, "训练完成") {
+		t.Fatal("missing output for submitted job")
+	}
+	count := 0
+	for _, call := range b.observed() {
+		if call.method == "job.run" && call.params["dry_run"] != true {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatal("submission count", count)
+	}
+}
+
+func TestAllocationWaitsForSnapshotThenTracksStopOnSameInstance(t *testing.T) {
+	var mu sync.Mutex
+	receipt := domain.Run{ID: "create-1", Name: "课程 GPU", Kind: "allocation", State: "preparing"}
+	report := domain.StatusReport{Source: "live", SnapshotAvailable: true, Runs: []domain.Run{receipt}}
+	task := domain.TaskRecord{ID: "stop-1", State: "submitted"}
+	backend := &fixtureBackend{reply: func(_ context.Context, m string, p map[string]any) (any, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch m {
+		case "instance.create":
+			if p["dry_run"] == true {
+				return map[string]any{"dry_run": true, "run": domain.Run{Deadline: time.Now().Add(time.Hour)}}, nil
+			}
+			return receipt, nil
+		case "status.get":
+			return report, nil
+		case "instance.stop":
+			if p["dry_run"] == true {
+				return map[string]any{"dry_run": true}, nil
+			}
+			return task, nil
+		case "task.get":
+			if p["target"] != "stop-1" {
+				t.Errorf("unexpected receipt %v", p)
+			}
+			return task, nil
+		}
+		return nil, errors.New(m)
+	}}
+	w := fixtureWorkspace(t, backend)
+	w.computeHome()
+	list := w.current()
+	w.review(change{title: "创建实例", method: "instance.create", params: map[string]any{"name": "课程 GPU"}})
+	waitFor(t, w, func() bool { return !w.current().loading })
+	click(t, w, "submit")
+	waitFor(t, w, func() bool { return w.current().bench == "instance" && !w.refreshing })
+	p := w.current()
+	if len(w.pages) != 3 || w.pages[1] != list || !strings.Contains(strings.Join(w.view(p).facts, " "), "等待学校") || !p.watch {
+		t.Fatal("missing scoped wait state", p, w.pages)
+	}
+	update := func(state string, alloc, stopped bool) {
+		mu.Lock()
+		receipt.InstanceID = "101"
+		receipt.State = "allocated"
+		report.Runs = []domain.Run{receipt}
+		if alloc {
+			report.Instances = []domain.Instance{{ID: "101", Name: receipt.Name, State: state}}
+		}
+		if stopped {
+			task.State = "complete"
+		}
+		mu.Unlock()
+		w.refresh()
+		waitFor(t, w, func() bool { return !w.refreshing && !p.loading })
+		w.view(p)
+	}
+	update("", false, false)
+	if p.instanceID != "101" || !p.watch {
+		t.Fatal("stopped polling between receipt and instance")
+	}
+	update("running", true, false)
+	if w.current() != p {
+		t.Fatal("allocation replaced the current work object")
+	}
+	click(t, w, "stop")
+	waitFor(t, w, func() bool { return !w.current().loading })
+	if !strings.Contains(strings.Join(func() []string {
+		var s []string
+		for _, r := range w.view(w.current()).rows {
+			s = append(s, r.title)
+		}
+		return s
+	}(), ""), "运行任务会中断") {
+		t.Fatal("stop did not disclose its impact")
+	}
+	click(t, w, "submit")
+	waitFor(t, w, func() bool { return w.current() == p && !p.loading && !w.refreshing })
+	update("running", true, true)
+	if !p.watch {
+		t.Fatal("receipt preceded school state; poll stopped")
+	}
+	update("stopped", true, true)
+	if p.watch || w.current() != p {
+		t.Fatal("confirmed state not reflected in the original detail")
+	}
+}
+
+func TestCatalogQuotesOnlyFocusedTemplatesAndKeepsPublishedZero(t *testing.T) {
+	b := &fixtureBackend{reply: func(_ context.Context, method string, p map[string]any) (any, error) {
+		switch method {
+		case "resources.overview":
+			return domain.ResourceOverview{CatalogSource: "live", Pools: []domain.ResourcePool{{ID: "pool", Templates: []domain.TemplateSummary{{ID: "1", Name: "免费"}, {ID: "2", Name: "付费"}}}}}, nil
+		case "spec.estimate":
+			if p["spec_id"] == "1" {
+				return map[string]any{"points_per_day": 0}, nil
+			}
+			return map[string]any{"points_per_day": 12.5}, nil
+		}
+		return nil, errors.New(method)
+	}}
+	w := fixtureWorkspace(t, b)
+	w.catalog()
+	p := w.current()
+	waitFor(t, w, func() bool { return !p.loading })
+	selectRate := func(key, want string) {
+		w.draw()
+		waitFor(t, w, func() bool { row, ok := objectRow(t, w, key); return ok && strings.Contains(row.detail, want) })
+	}
+	selectRate("spec/1", "0 积分/天")
+	if len(b.observed()) != 2 {
+		t.Fatal("loading the directory looked up other templates")
+	}
+	navPress(w, tcell.KeyDown)
+	selectRate("spec/2", "12.5 积分/天")
+	navPress(w, tcell.KeyUp)
+	selectRate("spec/1", "0 积分/天")
+	if len(b.observed()) != 3 {
+		t.Fatal("revisiting a priced template triggered another read")
 	}
 }
