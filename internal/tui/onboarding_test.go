@@ -2,9 +2,13 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -13,6 +17,76 @@ import (
 	"bupt.local/cli/internal/install"
 	"github.com/gdamore/tcell/v2"
 )
+
+func TestIdleWindowReflectsLocalEnrollmentWithoutAnotherAccountFrame(t *testing.T) {
+	w, backend := testWindow(t, false, filepath.Join(t.TempDir(), "config"))
+	w.Config.Paths.ConfigDir = filepath.Dir(w.Config.Paths.ConfigFile)
+	paths := w.Config.Paths
+	if err := os.MkdirAll(paths.StateDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	binary, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := map[string]any{
+		"manager": "process", "name": "bupt-agent", "pid": os.Getpid(), "config": paths.ConfigFile,
+		"executable": binary, "setup_pending": true,
+		"arguments": []string{"agent", "run", "--no-project", "--config", paths.ConfigFile, "--data-dir", paths.DataDir,
+			"--state-dir", paths.StateDir, "--socket", w.Config.Profiles[w.Config.Selected].ControllerSocket,
+			"--profile", w.Config.Selected, "--master-key-file", filepath.Join(paths.DataDir, "master.key")},
+	}
+	publish := func() {
+		t.Helper()
+		b, err := json.Marshal(record)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tmp := filepath.Join(paths.StateDir, "service.tmp")
+		if err := os.WriteFile(tmp, b, 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(tmp, filepath.Join(paths.StateDir, "service.json")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	publish()
+	w.StartWorkspace = func(context.Context, string) error {
+		t.Error("an observer attempted to start a controller")
+		return nil
+	}
+	screen := &statusScreen{tcell.NewSimulationScreen("UTF-8"), make(chan string, 32), 4}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() { defer close(done); _ = runScreen(ctx, w.Options, screen) }()
+	defer func() { cancel(); <-done }()
+	frame := domain.AccountStatus{Epoch: "initial", Revision: 1, Profile: w.Config.Selected, VPN: "expired", Platform: "blocked_by_gateway"}
+	backend.stream(t, true).send(t, frame)
+	waitForLine := func(want string) {
+		t.Helper()
+		timer := time.NewTimer(3 * time.Second)
+		defer timer.Stop()
+		for {
+			select {
+			case line := <-screen.line:
+				if strings.Contains(line, want) {
+					return
+				}
+			case <-timer.C:
+				t.Fatalf("idle terminal did not show %q", want)
+			}
+		}
+	}
+	waitForLine("完成个人工作区初始化")
+	record["setup_pending"] = false
+	publish()
+	waitForLine("登录学校账号")
+	for _, c := range backend.observed() {
+		if c.method != "status.get" || c.params["cached"] != true {
+			t.Fatalf("local setup observation triggered %s", c.method)
+		}
+	}
+}
 
 func TestOnboardingOffersScopedRecoveryAndPreservesUserFocus(t *testing.T) {
 	w := fixtureWorkspace(t, &fixtureBackend{})

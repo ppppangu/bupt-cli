@@ -294,10 +294,11 @@ func TestAccountLineUsesTwoStatesAndResponsiveOptionalFields(t *testing.T) {
 	}
 }
 
-// Capture the rendered top row inside the screen's owner goroutine.
+// Capture one rendered row inside the screen's owner goroutine.
 type statusScreen struct {
 	tcell.Screen
 	line chan string
+	y    int
 }
 
 func (s *statusScreen) Show() {
@@ -305,7 +306,7 @@ func (s *statusScreen) Show() {
 	width, _ := s.Size()
 	var b strings.Builder
 	for x := 0; x < width; {
-		r, comb, _, n := s.GetContent(x, 2)
+		r, comb, _, n := s.GetContent(x, s.y)
 		b.WriteRune(r)
 		b.WriteString(string(comb))
 		x += max(1, n)
@@ -318,7 +319,7 @@ func (s *statusScreen) Show() {
 
 func TestStaticHomeRedrawsWhenAuthenticationEvidenceExpires(t *testing.T) {
 	w, backend := testWindow(t, false, filepath.Join(t.TempDir(), "config"))
-	s := &statusScreen{tcell.NewSimulationScreen("UTF-8"), make(chan string, 16)}
+	s := &statusScreen{tcell.NewSimulationScreen("UTF-8"), make(chan string, 16), 2}
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan struct{})
 	go func() {

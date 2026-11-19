@@ -221,6 +221,8 @@ func (w *workspace) startWorkspace() {
 				// A concurrent window may already have installed the workspace.
 				w.connection.code = ""
 			} else {
+				w.controllerAvailable()
+				w.checkPendingSetup()
 				w.notice = "个人工作区已就绪"
 			}
 			w.reconnectController()

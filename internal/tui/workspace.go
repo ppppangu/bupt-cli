@@ -147,17 +147,32 @@ func runScreen(ctx context.Context, o Options, s tcell.Screen) error {
 	defer ticker.Stop()
 	expiry := time.NewTimer(0)
 	defer expiry.Stop()
+	var setupCheck <-chan time.Time
 	for !w.quit {
 		var expires <-chan time.Time
 		if until := w.bar.snapshot.NextExpiry(); !until.IsZero() {
 			expiry.Reset(time.Until(until))
 			expires = expiry.C
 		}
+		// Another terminal can finish local device enrollment without changing
+		// the school account revision. Recheck just the pending local record.
+		if setupCheck == nil && w.connection.pending && !w.connection.starting {
+			setupCheck = time.After(time.Second)
+		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-expires:
 			w.bar.snapshot = w.bar.snapshot.Effective(time.Now())
+		case <-setupCheck:
+			setupCheck = nil
+			if !w.connection.pending || w.connection.starting {
+				continue
+			}
+			w.checkPendingSetup()
+			if w.connection.pending {
+				continue
+			}
 		case <-ticker.C:
 			p := w.current()
 			if !p.watch || p.loading || p.problem != "" || p.submitting {
