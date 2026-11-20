@@ -35,6 +35,8 @@ sha256sum -c bupt-版本号.zip.sha256
 4. 先在小范围试用：观察学校系统是否触发风控或限流，收集登录、WebVPN 与各页面的问题，再扩大分发。
 5. 向使用者说明升级途径：解压新版 ZIP 后重新运行 `install.sh` 与 `bupt init`。
 
+如需更换反馈邮箱，修改 `internal/feedback/feedback.go` 中的 `Email` 常量，再执行 `go generate ./internal/feedback` 同步 README。
+
 ## 分发后的维护责任
 
 把安装包发给师生，同时意味着维护者承诺持续适配学校系统变化。统一身份认证页面、WebVPN 与平台接口改版后，登录或功能可能失效，需要及时修复并发布新版，再通知使用者升级。无法继续维护时应停止分发，并在说明中写明最后支持的版本。

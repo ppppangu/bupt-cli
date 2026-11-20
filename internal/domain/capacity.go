@@ -11,6 +11,7 @@ import (
 // Capacity is a reported usage/limit pair in display units. A missing side
 // remains nil, even when the other side is explicitly zero.
 type Capacity struct {
+	QuotaID  ID       `json:"quota_id,omitempty"`
 	Scope    string   `json:"scope"`
 	Resource string   `json:"resource"`
 	Used     *float64 `json:"used,omitempty"`
@@ -78,7 +79,8 @@ func CapacityFromQuota(raw map[string]any) []Capacity {
 			} else if used == nil {
 				used = row["used"+strings.ToUpper(f.key[:1])+f.key[1:]]
 			}
-			m := Capacity{Scope: scope, Resource: f.label, Unit: f.unit, Used: capacityNumber(used, f.divisor), Limit: capacityNumber(limit, f.divisor)}
+			_, id, _ := strings.Cut(key, ":")
+			m := Capacity{QuotaID: ID(id), Scope: scope, Resource: f.label, Unit: f.unit, Used: capacityNumber(used, f.divisor), Limit: capacityNumber(limit, f.divisor)}
 			if m.Used != nil || m.Limit != nil {
 				out = append(out, m)
 			}

@@ -4,6 +4,7 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -15,6 +16,7 @@ import (
 
 	"bupt.local/cli/internal/config"
 	"bupt.local/cli/internal/domain"
+	"bupt.local/cli/internal/feedback"
 	"bupt.local/cli/internal/navigation"
 	"github.com/gdamore/tcell/v2"
 )
@@ -26,13 +28,12 @@ type Backend interface {
 type Options struct {
 	StartWorkspace  func(context.Context, string) error
 	ReloadPresets   func() (*config.Config, error)
-	Commands        map[string]CommandForm
-	Capture         func(context.Context, []string) (string, error)
+	PresetAction    func(context.Context, string, map[string]any, bool) (json.RawMessage, error)
 	InitialArea     string
-	Explain         func(string) string
+	Version         string
 	Config          *config.Config
 	Backend         Backend
-	Foreground      func(context.Context, []string) error
+	Foreground      func(context.Context, TerminalAction) error
 	Cached, NoColor bool
 	Timeout         time.Duration
 }
@@ -52,6 +53,7 @@ func (r row) matches(query string) bool {
 }
 
 type content struct {
+	incident    feedback.Incident
 	panelTitle  string
 	panelFooter string
 	panel       []string
@@ -65,6 +67,7 @@ type content struct {
 	empty       string
 }
 type page struct {
+	incident          feedback.Incident
 	onLeave           func()
 	onFocus           func(string)
 	newKeyID          string
@@ -108,6 +111,7 @@ type page struct {
 	focus, scroll        int
 	key, filter, problem string
 	loading, submitting  bool
+	unsubmitted          bool
 	blockedByLogin       bool
 	readLoginRevision    uint64
 	readConsentRevision  uint64
@@ -122,6 +126,7 @@ type prompt struct {
 	problem string
 }
 type workspace struct {
+	statusIncident         feedback.Incident
 	trialDrafts            map[string]savedTrial
 	redrawAt               time.Time
 	statusArea, statusCode string
@@ -131,6 +136,8 @@ type workspace struct {
 	Options
 	ctx                                                context.Context
 	screen                                             tcell.Screen
+	inputEvents                                        chan tcell.Event
+	inputDone                                          chan struct{}
 	events                                             chan func()
 	pages                                              []*page
 	report                                             domain.StatusReport
@@ -166,10 +173,8 @@ func runScreen(ctx context.Context, o Options, s tcell.Screen) error {
 	w.startAccountView()
 	s.EnableMouse(tcell.MouseButtonEvents)
 	s.EnablePaste()
-	input := make(chan tcell.Event)
-	done := make(chan struct{})
-	defer close(done)
-	go s.ChannelEvents(input, done)
+	w.startInputEvents()
+	defer w.stopInputEvents()
 	if area, ok := navigation.Find(o.InitialArea); ok {
 		w.openArea(area)
 	}
@@ -222,7 +227,7 @@ func runScreen(ctx context.Context, o Options, s tcell.Screen) error {
 			w.loadPage(p)
 		case apply := <-w.events:
 			apply()
-		case event, ok := <-input:
+		case event, ok := <-w.inputEvents:
 			if !ok {
 				return nil
 			}
@@ -261,6 +266,7 @@ func (w *workspace) refreshStatus(initial bool) {
 	readLogin, readEpoch := w.bar.loginRevision, w.bar.snapshot.Epoch
 	w.refreshing = true
 	w.statusErr = ""
+	w.statusIncident = feedback.Incident{}
 	area := w.current().area
 	inCompute := area == "compute"
 	cachedOnly := !inCompute && area != "resources" && area != "work" && area != "files"
@@ -303,11 +309,13 @@ func (w *workspace) refreshStatus(initial bool) {
 						w.statusCode = computeLoginCode(report)
 						if w.statusCode != "" {
 							w.statusErr = "管理算力资源需要确认学校身份。已准备的 SSH 连接仍可使用。"
+							w.statusIncident = feedback.FromError("status.get", domain.E(w.statusCode, ""))
 						}
 					}
 				} else if final {
 					w.statusErr = w.controllerProblem(err)
 					w.statusArea, w.statusCode = area, errorCode(err)
+					w.statusIncident = feedback.FromError("status.get", err)
 				}
 				if final {
 					w.refreshing = false
@@ -344,6 +352,7 @@ func (w *workspace) back() {
 	w.notice = ""
 	if w.input != nil {
 		w.input = nil
+		w.notice = "已取消编辑，原值保留"
 		return
 	}
 	if w.filtering {
@@ -355,7 +364,7 @@ func (w *workspace) back() {
 	}
 	p := w.current()
 	if p.submitting {
-		w.notice = "正在提交，回执将显示在此页"
+		w.notice = "请求已经发出，等待回执。退出等待也不会撤销操作"
 		return
 	}
 	if p.onLeave != nil {
@@ -369,6 +378,9 @@ func (w *workspace) back() {
 		p.priceDraft.quote.cancel()
 	}
 	w.pages = w.pages[:len(w.pages)-1]
+	if p.unsubmitted {
+		w.notice = "已返回修改，操作未提交"
+	}
 	if parent := w.current(); !w.resumeProtectedRead(parent) && (parent.loading || parent.stale) {
 		w.loadPage(parent)
 	}
@@ -389,6 +401,7 @@ func (w *workspace) fetchPage(p *page, refresh bool) {
 	g := p.generation
 	p.problem = ""
 	p.problemCode = ""
+	p.incident = feedback.Incident{}
 	p.blockedByLogin = false
 	p.readLoginRevision = w.bar.loginRevision
 	p.readConsentRevision = w.bar.consentRevision
@@ -419,6 +432,7 @@ func (w *workspace) fetchPage(p *page, refresh bool) {
 			}
 			if err != nil {
 				p.problemCode = errorCode(err)
+				p.incident = feedback.FromError(p.queryMethod, err)
 				if p.queryMethod != "" && w.reconnectedSince(readEpoch, p.problemCode) {
 					if p == w.current() {
 						w.fetchPage(p, true)
@@ -484,7 +498,8 @@ func queryPage[T any](w *workspace, title, command, method string, params any, s
 func (w *workspace) edit(title, value string, done func(string) error) {
 	w.input = &prompt{title: title, value: []rune(value), pos: len([]rune(value)), done: done}
 }
-func (w *workspace) foreground(args ...string) bool {
+func (w *workspace) foreground(action TerminalAction) bool {
+	origin := w.current()
 	if w.Cached {
 		w.notice = "当前为缓存浏览模式"
 		return false
@@ -493,27 +508,62 @@ func (w *workspace) foreground(args ...string) bool {
 		w.notice = "此终端无法打开交互操作"
 		return false
 	}
+	reading := w.inputEvents != nil
+	w.stopInputEvents()
 	if err := w.screen.Suspend(); err != nil {
+		if reading {
+			w.startInputEvents()
+		}
 		w.notice = err.Error()
+		origin.incident = feedback.FromError(action.Name, err)
 		return false
 	}
-	err := w.Foreground(w.ctx, args)
+	err := w.Foreground(w.ctx, action)
 	if resume := w.screen.Resume(); resume != nil {
 		w.fatal = resume
 		w.quit = true
 		return false
 	}
+	if reading {
+		w.startInputEvents()
+	}
 	if err != nil {
 		w.notice = err.Error()
+		if !errors.Is(err, context.Canceled) {
+			issue := feedback.FromError(action.Name, err)
+			if action.Name == "ssh" && errorCode(err) != "" {
+				w.notice = ""
+				w.sshFailure(action, issue)
+				return false
+			}
+			origin.incident = issue
+		}
 	} else {
+		origin.incident = feedback.Incident{}
 		w.notice = "操作已完成"
-		if len(args) >= 3 && args[0] == "compute" && args[1] == "storage" && args[2] == "push" {
+		if action.Name == "compute storage push" {
 			w.invalidateStorage()
 		}
 	}
 	w.screen.Sync()
 	w.refreshStatus(false)
 	return err == nil
+}
+
+func (w *workspace) startInputEvents() {
+	w.inputEvents = make(chan tcell.Event)
+	w.inputDone = make(chan struct{})
+	go w.screen.ChannelEvents(w.inputEvents, w.inputDone)
+}
+
+func (w *workspace) stopInputEvents() {
+	if w.inputEvents == nil {
+		return
+	}
+	close(w.inputDone)
+	for range w.inputEvents {
+	}
+	w.inputEvents, w.inputDone = nil, nil
 }
 func (w *workspace) view(p *page) content {
 	var v content
@@ -534,6 +584,10 @@ func (w *workspace) view(p *page) content {
 		v.rows = append([]row{navLink("new-secret", "查看刚创建的密钥", "从此控制器读取一次，可复制", "", func() { w.revealCreatedKey(p, id) })}, v.rows...)
 	}
 	v = w.recoveryContent(p, v)
+	issue := w.pageIncident(p, v)
+	if issue.Code != "" && !p.loading {
+		v.rows = append(v.rows, w.feedbackAction(issue))
+	}
 	v = w.completeFields(p, v)
 	if len(v.groups) == 0 && p.filter != "" {
 		query := strings.ToLower(p.filter)
@@ -613,6 +667,7 @@ func (w *workspace) showHelp() {
 	if cmd != "" {
 		instructions += "\n\n对应命令\n" + cmd
 	}
+	issue := w.pageIncident(p, v)
 	w.local("本页帮助", "bupt help tutorial", func() content {
 		v := w.textContent(instructions)
 		v.facts = []string{p.title}
@@ -628,6 +683,10 @@ func (w *workspace) showHelp() {
 		if p.area == "compute" && p.title != "更多算力工具" {
 			v.rows = append(v.rows, w.computeToolsLink())
 		}
+		if issue.Code != "" {
+			v.rows = append(v.rows, w.feedbackAction(issue))
+		}
+		v.rows = append(v.rows, navLink("help-feedback", navigation.HelpTitle, "", "bupt feedback", w.helpHome))
 		v.rows = append(v.rows, navLink("tutorial", "查看完整教程", "", "bupt help tutorial", w.tutorials))
 		return v
 	})

@@ -36,7 +36,7 @@ func managedRunTerminal(s string) bool {
 }
 func platformRunParams(p Params) Params {
 	out := Params{}
-	for _, k := range []string{"target", "name", "preset", "preset_snapshot", "spec_id", "group_id", "bill_id", "email", "usage", "domain", "constraints", "resources", "duration"} {
+	for _, k := range []string{"target", "name", "preset", "preset_snapshot", "spec_id", "group_id", "bill_id", "email", "usage", "domain", "constraints", "resources", "duration", "expected_create_hash", "max_points_per_day", "restore_quote_hash"} {
 		if v, ok := p[k]; ok {
 			out[k] = v
 		}
@@ -100,6 +100,9 @@ func (c *Controller) GetRun(profile, target string) (domain.Run, error) {
 	matches := []domain.Run{}
 	active := []domain.Run{}
 	for _, r := range runs {
+		if r.Noop {
+			continue
+		}
 		if target == r.Name || target == string(r.InstanceID) {
 			matches = append(matches, r)
 			if !managedRunTerminal(r.State) {
@@ -130,7 +133,7 @@ func (c *Controller) Up(ctx context.Context, profile string, p Params) (any, err
 }
 func (c *Controller) ManagedOperation(ctx context.Context, profile, op string, p Params) (any, error) {
 	switch op {
-	case "create", "clone", "start", "restore", "adopt":
+	case "create", "clone", "start", "restore", "adopt", "restart":
 		return c.newManagedRun(ctx, profile, op, p, false)
 	default:
 		return nil, domain.E("UNKNOWN_OPERATION", "operation is not a managed allocation action")
@@ -205,6 +208,9 @@ func (c *Controller) prepareManagedRun(ctx context.Context, profile, op string, 
 		}
 	}
 	target := p.String("target")
+	if op == "create" && target != "" {
+		return domain.Run{}, domain.E("INVALID_INPUT", "创建需要新实例名称")
+	}
 	name := p.String("name")
 	if name == "" {
 		if preset := p.String("preset"); preset != "" {
@@ -227,7 +233,7 @@ func (c *Controller) prepareManagedRun(ctx context.Context, profile, op string, 
 		lookup = name
 	}
 	kind := "session"
-	if op == "create" || op == "clone" || op == "restore" {
+	if (op == "create" && p.Bool("allocate_only")) || op == "clone" || op == "restore" {
 		kind = "allocation"
 	}
 	if job {
@@ -237,6 +243,14 @@ func (c *Controller) prepareManagedRun(ctx context.Context, profile, op string, 
 	fingerprint := intentHash(profile, "managed/"+kind+"/"+op, p)
 	intent.RequestKey = key
 	intent.RequestHash = fingerprint
+	if op == "restart" && key != "" {
+		if old, err := c.restartReceipt(profile, TaskID(profile, "restart", key)); err == nil {
+			if old.RestartHash != fingerprint {
+				return old, domain.E("IDEMPOTENCY_CONFLICT", "重启请求参数已变更")
+			}
+			return old, nil
+		}
+	}
 	if key != "" {
 		rid := TaskID(profile, "managed-run", key)
 		var alias struct {
@@ -256,36 +270,91 @@ func (c *Controller) prepareManagedRun(ctx context.Context, profile, op string, 
 			return existing, nil
 		}
 	}
-	if job && key != "" && lookup != "" {
+	if (job || op == "start") && key != "" && lookup != "" {
 		if existing, e := c.GetRun(profile, lookup); e == nil {
-			if old, e := c.loadRunIntent(existing); e == nil && old.RequestKey == key && old.RequestHash == fingerprint {
-				if !p.Bool("dry_run") {
-					_ = c.Store.Put("run_keys", TaskID(profile, "managed-run", key), map[string]string{"run_id": existing.ID, "hash": fingerprint})
+			if existing.Kind != "allocation" {
+				if old, e := c.loadRunIntent(existing); e == nil && old.RequestKey == key {
+					if old.RequestHash != fingerprint {
+						return existing, domain.E("IDEMPOTENCY_CONFLICT", "run key was used for different arguments")
+					}
+					if !p.Bool("dry_run") {
+						_ = c.Store.Put("run_keys", TaskID(profile, "managed-run", key), map[string]string{"run_id": existing.ID, "hash": fingerprint})
+					}
+					return existing, nil
 				}
-				return existing, nil
 			}
 		}
 	}
+	var superseded domain.Run
+	if target != "" && op != "clone" {
+		snapshot, err := c.snapshot(ctx, profile)
+		if err != nil {
+			return domain.Run{}, err
+		}
+		i, err := c.resolveLifecycleTarget(snapshot, profile, target)
+		if err != nil {
+			return domain.Run{}, err
+		}
+		if task, err := c.pendingInstanceTask(ctx, profile, i); err != nil {
+			return domain.Run{}, err
+		} else if task.ID != "" {
+			return domain.Run{}, lifecycleBusy(task)
+		}
+		if active, err := c.GetRun(profile, string(i.ID)); err == nil && !managedRunTerminal(active.State) {
+			if active.Phase != "active" || active.CancelRequested {
+				return active, runBusy(active)
+			}
+			if op == "restore" && active.Kind == "allocation" && !instanceReserved(i) && instanceStopped(i) {
+				superseded = active
+			}
+		}
+		if op == "start" && i.State == "running" || op == "restore" && instanceStopped(i) && instanceReserved(i) {
+			now := time.Now().UTC()
+			r := domain.Run{ID: TaskID(profile, "managed-run", key), Profile: profile, Name: i.Name, InstanceID: i.ID,
+				Kind: kind, Phase: "terminal", State: "completed", Noop: true, IntentHash: fingerprint, CreatedAt: now, UpdatedAt: now}
+			if preview == nil {
+				err = c.Store.PutRun(r)
+			}
+			return r, err
+		}
+		target, lookup = string(i.ID), string(i.ID)
+	}
+	if op == "restart" {
+		if existing, err := c.GetRun(profile, lookup); err == nil && !managedRunTerminal(existing.State) {
+			return c.restartExistingRun(ctx, existing, p, fingerprint, preview)
+		}
+	}
 	if lookup != "" && op != "clone" && op != "create" {
-		if existing, e := c.GetRun(profile, lookup); e == nil && !managedRunTerminal(existing.State) {
-			if job && existing.Kind == "job" {
+		if existing, e := c.GetRun(profile, lookup); e == nil && !managedRunTerminal(existing.State) && existing.ID != superseded.ID {
+			if (job || op == "start") && existing.Kind == "job" {
 				return existing, domain.E("INSTANCE_IN_USE", "instance already has a tracked job; attach by run ID")
 			}
 			if existing.Phase == "manual_wait" || existing.CancelRequested || existing.State == "cleanup_pending" {
 				return existing, domain.E("CLEANUP_PENDING", "finish the current cleanup before starting another cycle")
+			}
+			if op == "restore" {
+				return existing, runBusy(existing)
+			}
+			if op == "start" {
+				if existing.Kind != "allocation" || existing.State != "allocated" {
+					return existing, domain.E("INSTANCE_IN_USE", "此实例已有托管操作，请先查看当前回执")
+				}
+				if err := c.checkStart(ctx, profile, string(existing.InstanceID)); err != nil {
+					return existing, err
+				}
 			}
 			if job || existing.Kind == "allocation" && kind == "session" {
 				old, e := c.loadRunIntent(existing)
 				if e != nil {
 					return existing, e
 				}
-				old.Operation = "up"
+				old.Operation = op
 				old.Command = command
 				old.Env = env
 				old.WorkDir = intent.WorkDir
 				old.PrepareSSH = intent.PrepareSSH
 				old.Node = intent.Node
-				if job {
+				if job || op == "start" {
 					old.RequestKey = key
 					old.RequestHash = fingerprint
 				}
@@ -320,7 +389,7 @@ func (c *Controller) prepareManagedRun(ctx context.Context, profile, op string, 
 						return existing, e
 					}
 				}
-				if job && key != "" && !p.Bool("dry_run") {
+				if (job || op == "start") && key != "" && !p.Bool("dry_run") {
 					if e = c.Store.Put("run_keys", TaskID(profile, "managed-run", key), map[string]string{"run_id": existing.ID, "hash": fingerprint}); e != nil {
 						return existing, e
 					}
@@ -373,12 +442,30 @@ func (c *Controller) prepareManagedRun(ctx context.Context, profile, op string, 
 			return domain.Run{}, e
 		}
 	}
-	if instance.ID == "" && (op == "start" || op == "restore" || op == "adopt") {
+	if instance.ID == "" && (op == "start" || op == "restore" || op == "adopt" || op == "restart") {
 		return domain.Run{}, domain.E("TARGET_REQUIRED", "this operation requires an existing instance")
+	}
+	if op == "start" {
+		if err := startable(instance); err != nil {
+			return domain.Run{}, err
+		}
+	}
+	if op == "restore" && (instance.Reserved || (instance.State != "stopped" && instance.State != "approved" && instance.State != "released")) {
+		return domain.Run{}, domain.E("INVALID_STATE", "此操作适用于停机且算力未分配的实例")
+	}
+	if op == "restore" {
+		hash, err := c.priceRestore(ctx, profile, p, instance, preview)
+		if err != nil {
+			return domain.Run{}, err
+		}
+		intent.Platform.Set("restore_quote_hash", hash)
+	}
+	if op == "restart" && instance.State != "running" {
+		return domain.Run{}, domain.E("INVALID_STATE", "重启要求实例处于运行状态")
 	}
 	if instance.ID != "" {
 		for _, other := range mustRuns(c, profile) {
-			if other.InstanceID == instance.ID && !managedRunTerminal(other.State) {
+			if other.InstanceID == instance.ID && other.ID != superseded.ID && !managedRunTerminal(other.State) {
 				return other, domain.E("INSTANCE_IN_USE", "instance already belongs to an active managed cycle")
 			}
 		}
@@ -414,6 +501,15 @@ func (c *Controller) prepareManagedRun(ctx context.Context, profile, op string, 
 		if err != nil {
 			return domain.Run{}, err
 		}
+		if err := c.priceCreate(ctx, profile, p, task, preview); err != nil {
+			return domain.Run{}, err
+		}
+		intent.Platform.Set("expected_create_hash", createRequestHash(task))
+		for _, pending := range mustRuns(c, profile) {
+			if pending.InstanceID == "" && pending.Name == name && !managedRunTerminal(pending.State) {
+				return pending, &domain.Error{Code: "NAME_CONFLICT", Message: "该名称已有待处理申请", RunID: pending.ID}
+			}
+		}
 		if constraints := task.Payload["resourceConstraints"]; preview != nil && constraints != nil {
 			preview["resource_constraints"] = constraints
 		}
@@ -423,8 +519,16 @@ func (c *Controller) prepareManagedRun(ctx context.Context, profile, op string, 
 		rid = TaskID(profile, "managed-run", key)
 	}
 	r := domain.Run{ID: rid, Profile: profile, Name: name, InstanceID: instance.ID, Kind: kind, Phase: "activate", State: "preparing", CreatedAt: now, UpdatedAt: now, Deadline: deadline, Policy: policy, PolicyRevision: 1, IntentHash: fingerprint, CreatedInstance: instance.ID == "", ConfigSources: c.runSources(p, profile)}
+	if op == "restart" {
+		r.Phase, r.State, r.RestartID, r.RestartHash = "restart_stop", "stopping", TaskID(profile, "restart", key), fingerprint
+	}
 	if p.Bool("dry_run") {
 		return r, nil
+	}
+	if superseded.ID != "" {
+		if _, err := c.finishRun(ctx, superseded, "reservation_released"); err != nil {
+			return r, err
+		}
 	}
 	if e = c.Vault.Put(runIntentKey(rid), intent); e != nil {
 		return r, domain.E("SECRET_STORE", "could not persist encrypted run intent")
@@ -439,8 +543,8 @@ func mustRuns(c *Controller, profile string) []domain.Run {
 	runs, _ := c.Store.ListRuns(profile)
 	return runs
 }
-func (c *Controller) kickRun(id string) {
-	c.spawn("run/"+id, func() {
+func (c *Controller) kickRun(id string) bool {
+	return c.spawn("run/"+id, func() {
 		ctx, cancel := context.WithTimeout(c.ctx, 2*time.Minute)
 		defer cancel()
 		for range 8 {
@@ -484,6 +588,12 @@ func (c *Controller) waitManaged(ctx context.Context, id string, cleanup bool) (
 		if e != nil {
 			return r, e
 		}
+		if r.Phase == "restart_failed" {
+			return r, &domain.Error{Code: "RUN_FAILED", Message: "重启未完成", RunID: r.RestartID, TaskID: r.LastTaskID}
+		}
+		if r.Noop {
+			return r, nil
+		}
 		if managedRunTerminal(r.State) {
 			if r.State == "failed" {
 				return r, &domain.Error{Code: "RUN_FAILED", Message: "managed run failed; inspect its lifecycle status", RunID: r.ID, TaskID: r.LastTaskID}
@@ -512,6 +622,37 @@ func (c *Controller) Down(ctx context.Context, profile string, p Params) (any, e
 	if profile == "" {
 		profile = c.Configuration().Selected
 	}
+	c.intentMu.Lock()
+	r, cleanup, err := c.prepareDown(ctx, profile, p)
+	c.intentMu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	if p.Bool("dry_run") {
+		return map[string]any{"dry_run": true, "run_id": r.ID, "cleanup": cleanup}, nil
+	}
+	c.kickRun(r.ID)
+	if p.Bool("no_wait") || (p.Has("wait") && !p.Bool("wait")) {
+		return c.Store.GetRun(r.ID)
+	}
+	return c.waitManaged(ctx, r.ID, true)
+}
+func (c *Controller) prepareDown(ctx context.Context, profile string, p Params) (domain.Run, string, error) {
+	key := p.String("idempotency_key")
+	fingerprint := intentHash(profile, "down", p)
+	receiptID := TaskID(profile, "cleanup", key)
+	if key != "" {
+		var receipt taskAlias
+		if err := c.Store.Get("cleanup_keys", receiptID, &receipt); err == nil {
+			if receipt.Hash != fingerprint {
+				return domain.Run{}, "", domain.E("IDEMPOTENCY_CONFLICT", "清理请求键已用于不同参数")
+			}
+			run, err := c.Store.GetRun(receipt.TaskID)
+			return run, run.Policy.Cleanup, err
+		} else if !state.IsNotFound(err) {
+			return domain.Run{}, "", err
+		}
+	}
 	target := p.String("target")
 	r, e := c.GetRun(profile, target)
 	newRun := false
@@ -523,22 +664,22 @@ func (c *Controller) Down(ctx context.Context, profile string, p Params) (any, e
 	if e != nil {
 		var de *domain.Error
 		if !errors.As(e, &de) || de.Code != "NOT_FOUND" {
-			return nil, e
+			return r, "", e
 		}
 		s, se := c.snapshot(ctx, profile)
 		if se != nil {
-			return nil, se
+			return r, "", se
 		}
 		i, se := Resolve(s, target)
 		if se != nil {
-			return nil, se
+			return r, "", se
 		}
 		if se = Owned(s, i); se != nil {
-			return nil, se
+			return r, "", se
 		}
 		policy, se := c.policy(p, profile)
 		if se != nil {
-			return nil, se
+			return r, "", se
 		}
 		now := time.Now().UTC()
 		r = domain.Run{ID: uuid.NewString(), Profile: profile, Name: i.Name, InstanceID: i.ID, Kind: "session", State: "cleanup_pending", Phase: "cleanup", CreatedAt: now, UpdatedAt: now, Deadline: now, Policy: policy, PolicyRevision: 1}
@@ -554,14 +695,30 @@ func (c *Controller) Down(ctx context.Context, profile string, p Params) (any, e
 	switch cleanup {
 	case "release", "stop", "none", "delete":
 	default:
-		return nil, domain.E("INVALID_POLICY", "unknown cleanup mode")
+		return r, "", domain.E("INVALID_POLICY", "unknown cleanup mode")
 	}
 	if p.Bool("dry_run") {
-		return map[string]any{"dry_run": true, "run_id": r.ID, "cleanup": cleanup}, nil
+		return r, cleanup, nil
+	}
+	if !newRun && r.Phase == "manual_wait" {
+		return r, "", runBusy(r)
+	}
+	if !newRun && r.Phase == "cleanup" && r.Policy.Cleanup != cleanup {
+		return r, "", runBusy(r)
+	}
+	if newRun && r.InstanceID != "" {
+		if active, err := c.GetRun(profile, string(r.InstanceID)); err == nil && !managedRunTerminal(active.State) {
+			return r, "", runBusy(active)
+		}
+		if task, err := c.pendingInstanceTask(ctx, profile, domain.Instance{ID: r.InstanceID, State: "unknown"}); err != nil {
+			return r, "", err
+		} else if task.ID != "" {
+			return r, "", lifecycleBusy(task)
+		}
 	}
 	if newRun {
 		if e = c.Store.PutRun(r); e != nil {
-			return nil, e
+			return r, "", e
 		}
 	}
 	e = c.Store.UpdateRun(r.ID, func(cur *domain.Run) error {
@@ -576,13 +733,12 @@ func (c *Controller) Down(ctx context.Context, profile string, p Params) (any, e
 		return nil
 	})
 	if e != nil {
-		return nil, e
+		return r, "", e
 	}
-	c.kickRun(r.ID)
-	if p.Bool("no_wait") || (p.Has("wait") && !p.Bool("wait")) {
-		return c.Store.GetRun(r.ID)
+	if key != "" {
+		e = c.Store.Put("cleanup_keys", receiptID, taskAlias{TaskID: r.ID, Hash: fingerprint})
 	}
-	return c.waitManaged(ctx, r.ID, true)
+	return r, cleanup, e
 }
 func (c *Controller) CancelRun(ctx context.Context, profile string, p Params) (any, error) {
 	r, e := c.GetRun(profile, p.String("target"))
@@ -715,7 +871,7 @@ func (c *Controller) ObserveManualOperation(ctx context.Context, profile, op str
 		profile = c.Configuration().Selected
 	}
 	switch op {
-	case "stop", "force-stop", "release", "delete":
+	case "stop", "force-stop", "release", "delete", "cancel-queue":
 	default:
 		return nil
 	}
@@ -745,6 +901,18 @@ func (c *Controller) ObserveManualOperation(ctx context.Context, profile, op str
 // runPhase reuses the recorded request even when a fresh snapshot has a newer
 // index. Only Operation's explicit stale-index rejection path may replace it.
 func (c *Controller) runPhase(ctx context.Context, r domain.Run, phase, op string, p Params) (domain.TaskRecord, bool, error) {
+	c.intentMu.Lock()
+	defer c.intentMu.Unlock()
+	current, err := c.Store.GetRun(r.ID)
+	if err != nil {
+		return domain.TaskRecord{}, false, err
+	}
+	if current.Phase != r.Phase || managedRunTerminal(current.State) {
+		return domain.TaskRecord{}, false, runBusy(current)
+	}
+	if current.PolicyRevision != r.PolicyRevision {
+		return domain.TaskRecord{}, false, domain.E("POLICY_CHANGED", "托管期限已变更，正在重新核对")
+	}
 	key := r.ID + "/" + phase
 	taskID := TaskID(r.Profile, op, key)
 	t, e := c.Store.GetTask(taskID)
@@ -758,6 +926,14 @@ func (c *Controller) runPhase(ctx context.Context, r domain.Run, phase, op strin
 	if !state.IsNotFound(e) {
 		return t, false, e
 	}
+	if r.InstanceID != "" {
+		if pending, err := c.pendingInstanceTask(ctx, r.Profile, domain.Instance{ID: r.InstanceID, State: "unknown"}); err != nil {
+			return t, false, err
+		} else if pending.ID != "" {
+			c.resumeTask(pending)
+			return t, false, lifecycleBusy(pending)
+		}
+	}
 	safe := platformRunParams(p)
 	for _, k := range []string{"seconds", "reason"} {
 		if p.Has(k) {
@@ -767,14 +943,11 @@ func (c *Controller) runPhase(ctx context.Context, r domain.Run, phase, op strin
 	safe.Set("idempotency_key", key)
 	safe.Set("no_wait", true)
 	safe.Set("wait", false)
-	result, e := c.Operation(ctx, r.Profile, op, safe)
+	t, e = c.prepareTaskLocked(ctx, r.Profile, op, safe, r.ID)
 	if e != nil {
 		return t, false, e
 	}
-	t, ok := result.(domain.TaskRecord)
-	if !ok {
-		return t, false, domain.E("TASK_PROTOCOL", "operation did not return a task record")
-	}
+	c.resumeTask(t)
 	_ = c.Store.UpdateRun(r.ID, func(cur *domain.Run) error { cur.LastTaskID = t.ID; return nil })
 	return t, terminalTask(t.State), nil
 }
@@ -809,6 +982,11 @@ func (c *Controller) advanceRun(ctx context.Context, id string) (bool, error) {
 			r, _ = c.Store.GetRun(r.ID)
 		}
 	}
+	if r.Phase == "cleanup" && r.InstanceID != "" {
+		if err := c.reconcileAllocatingTasks(r); err != nil {
+			return false, err
+		}
+	}
 	if r.Kind == "job" && r.InstanceID != "" && (r.Phase == "cleanup" || r.Phase == "active") {
 		if r.Phase == "cleanup" && r.ExitCode == nil {
 			if observed, err := c.invokeJob(ctx, r, "cancel"); err == nil && observed.ExitCode != nil && (observed.State == "complete" || observed.State == "failed") {
@@ -838,7 +1016,7 @@ func (c *Controller) advanceRun(ctx context.Context, id string) (bool, error) {
 			cancel()
 		}
 	}
-	s, e := c.snapshot(ctx, r.Profile)
+	s, e := c.syncSnapshot(ctx, r.Profile, r.Phase != "active" && r.LastTaskID != "")
 	if e != nil {
 		return false, e
 	}
@@ -882,6 +1060,9 @@ func (c *Controller) advanceRun(ctx context.Context, id string) (bool, error) {
 	instance, e := Resolve(s, string(r.InstanceID))
 	if e != nil {
 		if managedCode(e) == "NOT_FOUND" {
+			if r.Phase == "manual_wait" && r.ManualTaskID != "" {
+				return c.advanceManualTask(ctx, r, domain.Instance{})
+			}
 			if r.Phase == "cleanup" || r.Phase == "manual_wait" || r.Phase == "active" {
 				return c.finishRun(ctx, r, "absent")
 			}
@@ -893,20 +1074,53 @@ func (c *Controller) advanceRun(ctx context.Context, id string) (bool, error) {
 		return false, e
 	}
 	if r.Phase == "manual_wait" {
+		if r.ManualTaskID != "" {
+			return c.advanceManualTask(ctx, r, instance)
+		}
 		done := false
 		switch r.TerminalReason {
 		case "manual-stop", "manual-force-stop":
 			done = instance.State == "stopped" || instance.State == "approved"
+		case "manual-cancel-queue":
+			done = !strings.Contains(instance.State, "queuing")
 		case "manual-release":
 			done = !instance.Reserved && instance.State != "running" && instance.State != "starting"
 		}
 		if done {
 			return c.finishRun(ctx, r, "manual_complete")
 		}
+		if !r.Deadline.After(now) {
+			return true, c.Store.UpdateRun(r.ID, func(cur *domain.Run) error {
+				if cur.Phase == "manual_wait" {
+					cur.Phase, cur.State, cur.CleanupState, cur.TerminalReason = "cleanup", "cleanup_pending", "pending", "deadline"
+				}
+				return nil
+			})
+		}
 		return false, nil
 	}
 	if r.Phase == "cleanup" {
 		return c.cleanupRun(ctx, r, instance, s)
+	}
+	if r.Phase == "restart_failed" {
+		return false, nil
+	}
+	if r.Phase == "restart_stop" || r.Phase == "restart_start" {
+		intent, err := c.loadRunIntent(r)
+		if err != nil {
+			return false, err
+		}
+		progress, err := c.advanceRestart(ctx, r, instance, intent)
+		if err != nil && !managedRetryable(err) {
+			_ = c.Store.UpdateRun(r.ID, func(v *domain.Run) error {
+				if v.Phase == r.Phase {
+					v.Phase, v.State = "restart_failed", "restart_failed"
+					v.LastError = managedCode(err)
+				}
+				return nil
+			})
+		}
+		return progress, err
 	}
 	if r.Phase == "active" {
 		if r.Kind != "allocation" && instance.State != "running" && instance.State != "starting" {
@@ -923,24 +1137,41 @@ func (c *Controller) advanceRun(ctx context.Context, id string) (bool, error) {
 		return false, e
 	}
 	if r.Kind == "allocation" {
-		if intent.Operation == "restore" && !instance.Reserved && instance.ReserveType != "no" {
-			_, done, e := c.runPhase(ctx, r, "restore", "restore", Params{"target": domain.Result(string(instance.ID))})
+		if instance.State == "pending_approval" || strings.Contains(instance.State, "queuing") {
+			return false, c.Store.UpdateRun(r.ID, func(v *domain.Run) error { v.State = instance.State; return nil })
+		}
+		if intent.Operation != "adopt" && !instance.Reserved && instance.ReserveType != "no" {
+			args := Params{"target": domain.Result(string(instance.ID))}
+			if hash := intent.Platform.String("restore_quote_hash"); hash != "" {
+				args.Set("restore_quote_hash", hash)
+				args.Set("max_points_per_day", intent.Platform.String("max_points_per_day"))
+			}
+			_, _, e := c.runPhase(ctx, r, "restore", "restore", args)
 			if e != nil {
+				if intent.Operation == "restore" && !managedRetryable(e) {
+					_ = c.Store.UpdateRun(r.ID, func(cur *domain.Run) error {
+						if cur.Phase == "activate" {
+							cur.State, cur.Phase, cur.LastError = "failed", "terminal", managedCode(e)
+						}
+						return nil
+					})
+					return false, e
+				}
 				return false, c.activationFailed(r, e)
 			}
-			if !done {
-				return false, nil
-			}
-			return false, nil
+			return false, c.Store.UpdateRun(r.ID, func(v *domain.Run) error { v.State = "restoring"; return nil })
 		}
 		e = c.Store.UpdateRun(r.ID, func(cur *domain.Run) error { cur.State = "allocated"; cur.Phase = "active"; return nil })
 		return true, e
 	}
 	if instance.State != "running" {
 		if instance.State == "pending_approval" || strings.Contains(instance.State, "queuing") || instance.State == "starting" || instance.State == "stopping" {
-			return false, nil
+			return false, c.Store.UpdateRun(r.ID, func(v *domain.Run) error { v.State = instance.State; return nil })
 		}
 		if !instance.Reserved && instance.ReserveType != "no" {
+			if intent.Operation == "start" || !r.CreatedInstance {
+				return false, c.activationFailed(r, restoreRequired())
+			}
 			_, _, e = c.runPhase(ctx, r, "restore", "restore", Params{"target": domain.Result(string(instance.ID))})
 			if e != nil {
 				return false, c.activationFailed(r, e)
@@ -967,7 +1198,13 @@ func (c *Controller) advanceRun(ctx context.Context, id string) (bool, error) {
 		return false, nil
 	}
 	if intent.PrepareSSH {
-		repair := r.State == "starting" || r.State == "restoring"
+		_ = c.Store.UpdateRun(r.ID, func(v *domain.Run) error {
+			if v.Phase == "activate" {
+				v.State = "ssh_preparing"
+			}
+			return nil
+		})
+		repair := r.State == "starting" || r.State == "restoring" || r.State == "ssh_preparing"
 		prepareCtx, prepareCancel := context.WithDeadline(ctx, r.Deadline)
 		route, e := c.EnsureSSH(prepareCtx, r.Profile, string(r.InstanceID), intent.Node, repair)
 		prepareCancel()
@@ -988,6 +1225,26 @@ func (c *Controller) advanceRun(ctx context.Context, id string) (bool, error) {
 		return nil
 	})
 	return true, e
+}
+
+// A stopped, unreserved snapshot can precede the application of an in-flight
+// restore or start. Keep cleanup alive until the controller knows its outcome.
+func (c *Controller) reconcileAllocatingTasks(r domain.Run) error {
+	tasks, err := c.Store.ListTasks(r.Profile)
+	if err != nil {
+		return err
+	}
+	for _, task := range tasks {
+		if task.ParentID != "" || task.RunID != r.ID || !allocatingTask(task.Operation) || terminalTask(task.State) {
+			continue
+		}
+		c.resumeTask(task)
+		return &domain.Error{
+			Code: "TASK_PENDING", Message: "清理正在等待学校确认先前的资源操作",
+			RunID: r.ID, TaskID: task.ID, Retryable: true,
+		}
+	}
+	return nil
 }
 func associatedInstance(t domain.TaskRecord, s domain.Snapshot) domain.ID {
 	if t.Result != nil && t.Result.InstanceID != "" {

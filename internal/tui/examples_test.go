@@ -136,25 +136,16 @@ func TestOfflineExamplesRetainBaseAndReadOnlyTutorial(t *testing.T) {
 		t.Fatal(got)
 	}
 	w.back()
-	w.Commands = map[string]CommandForm{"api": {Path: []string{"api"}, Title: "api", Children: []CommandForm{{Path: []string{"api", "key", "delete"}, Title: "delete", Runnable: true}}}}
-	var explained string
-	w.Explain = func(name string) string { explained = name; return "只读命令参考" }
 	before := len(b.observed())
 	click(t, w, "tutorial")
+	click(t, w, "usage-help")
 	click(t, w, "keys")
 	if w.current().command != "bupt help tutorial keys" {
 		t.Fatal(w.current().command)
 	}
 	click(t, w, "reference")
-	click(t, w, "all")
-	if explained != "--all" {
-		t.Fatal(explained)
-	}
-	w.back()
-	click(t, w, "api")
-	click(t, w, "delete")
-	if explained != "api key delete --all" || len(b.observed()) != before {
-		t.Fatal("reference executed a command", explained)
+	if w.current().command != "bupt help --all" || len(b.observed()) != before {
+		t.Fatal("参考页发起了请求")
 	}
 	w.showHelp()
 	if !strings.Contains(w.current().title, "帮助") {

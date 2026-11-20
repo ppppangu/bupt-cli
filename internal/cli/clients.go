@@ -11,7 +11,7 @@ import (
 func (a *app) clientCommands() *cobra.Command {
 	g := &cobra.Command{Use: "client", Short: "Register and revoke profile-scoped controller clients for CI"}
 	list := a.simpleRPC("ls", "List registered controller clients", "client.list", 0, 0, nil)
-	list.Aliases = []string{"list"}
+
 	register := &cobra.Command{Use: "register NAME", Short: "Authorize a public key for selected profiles", Args: exactArgs(1)}
 	register.Flags().String("public-key-file", "", "OpenSSH public key file")
 	register.Flags().StringSlice("allow-profile", nil, "Allowed account profile (repeatable; defaults to selected profile)")

@@ -267,7 +267,7 @@ func (h *handler) setupRemote(ctx context.Context, cfg *config.Config, p map[str
 	remoteProfile.Relay.HostKey = hostKey
 	remoteProfile.Relay.InstanceAddress = first(paramString(p, "instance_address"), profile.Relay.InstanceAddress, address)
 	var remoteConfig bytes.Buffer
-	configDocument := map[string]any{"version": 1, "default_profile": cfg.Selected, "profiles": map[string]any{cfg.Selected: profileMap(remoteProfile)}, "policy": map[string]any{"cleanup": "release", "stop_grace": "60s", "force_stop": true, "auto_renew": false}}
+	configDocument := map[string]any{"version": 1, "default_profile": cfg.Selected, "profiles": map[string]any{cfg.Selected: profileMap(remoteProfile)}, "policy": map[string]any{"cleanup": "release", "stop_grace": "60s", "force_stop": false, "auto_renew": false}}
 	if err = toml.NewEncoder(&remoteConfig).Encode(configDocument); err != nil {
 		return nil, err
 	}
@@ -359,7 +359,7 @@ managed=no
 if [ -e /etc/bupt/managed-v1 ]; then
   test -f /etc/bupt/managed-v1 && test ! -L /etc/bupt/managed-v1
   test "$(stat -c %u /etc/bupt/managed-v1)" = 0
-  test "$(cat /etc/bupt/managed-v1)" = "bupt-installer-v1:$service" || { echo 'another bupt service already owns this installation' >&2; exit 1; }
+  test "$(cat /etc/bupt/managed-v1)" = "bupt-installer-v1:$service" || { echo 'another bupt compute service already owns this installation' >&2; exit 1; }
   managed=yes
 fi
 if getent passwd bupt >/dev/null; then

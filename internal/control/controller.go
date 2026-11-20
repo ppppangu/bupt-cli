@@ -21,6 +21,7 @@ import (
 )
 
 type Options struct {
+	Version        string
 	Config         *config.Config
 	Store          *state.Store
 	Vault          domain.SecretStore
@@ -48,6 +49,8 @@ type Controller struct {
 	lastAuth      map[string]time.Time
 	wg            sync.WaitGroup
 	configuration atomic.Pointer[config.Config]
+	connections   atomic.Int64
+	modelCalls    sync.Map // unresolved effect marker to active in-process invocation
 	closed        bool
 }
 
@@ -119,6 +122,10 @@ func (c *Controller) api(profile string) (domain.PlatformAPI, error) {
 	return a, nil
 }
 func (c *Controller) snapshot(ctx context.Context, p string) (domain.Snapshot, error) {
+	return c.syncSnapshot(ctx, p, false)
+}
+
+func (c *Controller) syncSnapshot(ctx context.Context, p string, reconcileReceipt bool) (domain.Snapshot, error) {
 	ticket := c.accountTicket(p)
 	a, e := c.api(p)
 	if e != nil {
@@ -130,7 +137,13 @@ func (c *Controller) snapshot(ctx context.Context, p string) (domain.Snapshot, e
 			return domain.Snapshot{}, err
 		}
 	}
-	s, e := a.Sync(ctx)
+	readSnapshot := a.Sync
+	if receipts, ok := a.(interface {
+		SyncTaskReceipts(context.Context) (domain.Snapshot, error)
+	}); reconcileReceipt && ok {
+		readSnapshot = receipts.SyncTaskReceipts
+	}
+	s, e := readSnapshot(ctx)
 	var de *domain.Error
 	if e != nil && errors.As(e, &de) && de.Code == "AUTH_EXPIRED" && c.Vault != nil {
 		c.mu.Lock()
@@ -146,7 +159,7 @@ func (c *Controller) snapshot(ctx context.Context, p string) (domain.Snapshot, e
 			}
 			if c.Vault.Get("platform/"+p+"/credentials", &cred) == nil && cred.Username != "" && cred.Password != "" {
 				if _, le := a.Login(ctx, cred.Username, cred.Password); le == nil {
-					s, e = a.Sync(ctx)
+					s, e = readSnapshot(ctx)
 				} else {
 					e = le
 				}
@@ -239,6 +252,7 @@ func (c *Controller) policy(p Params, profiles ...string) (domain.RunPolicy, err
 		}
 		v = pr.Policy
 	}
+	v.ForceStop = false
 	if e := p.Into("policy", &v); e != nil {
 		return v, e
 	}
@@ -395,7 +409,7 @@ func terminalTask(s string) bool {
 	return s == "complete" || s == "rejected" || s == "aborted" || s == "failed" || s == "need_repeat"
 }
 func taskError(t domain.TaskRecord) error {
-	if t.State == "complete" {
+	if t.State == "complete" && (t.Result == nil || t.Result.Code == 0) {
 		return nil
 	}
 	if t.Result != nil {
@@ -417,8 +431,8 @@ func (c *Controller) WaitTask(ctx context.Context, id string) (domain.TaskRecord
 		if t.State == "auth_required" {
 			return t, &domain.Error{Code: "AUTH_REQUIRED", Message: "task remains tracked; refresh school authentication", TaskID: id, Retryable: true}
 		}
-		if t.State == "uncertain" {
-			return t, taskError(t)
+		if t.State == "uncertain" && time.Since(t.UpdatedAt) >= time.Second {
+			c.resumeTask(t)
 		}
 		select {
 		case <-ctx.Done():
@@ -428,12 +442,17 @@ func (c *Controller) WaitTask(ctx context.Context, id string) (domain.TaskRecord
 	}
 }
 func (c *Controller) Instances(ctx context.Context, p string, cached bool) ([]domain.Instance, error) {
-	s, e := c.snapshot(ctx, p)
-	if e != nil {
-		if !cached {
-			return nil, e
+	var s domain.Snapshot
+	if cached {
+		if err := c.Store.Get("snapshots", p, &s); err != nil {
+			if state.IsNotFound(err) {
+				return nil, domain.E("NO_CACHE", "尚无本地实例快照，请先查询一次实例列表")
+			}
+			return nil, err
 		}
-		if ce := c.Store.Get("snapshots", p, &s); ce != nil {
+	} else {
+		var e error
+		if s, e = c.snapshot(ctx, p); e != nil {
 			return nil, e
 		}
 	}
@@ -446,11 +465,7 @@ func (c *Controller) Instances(ctx context.Context, p string, cached bool) ([]do
 				s.Instances[x].RunID = r.ID
 			}
 		}
-		for _, r := range routes {
-			if r.InstanceID == s.Instances[x].ID {
-				s.Instances[x].SSHState = r.State
-			}
-		}
+		s.Instances[x].SSHState = instanceSSHState(s.Instances[x], routes)
 	}
 	sort.Slice(s.Instances, func(a, b int) bool { return s.Instances[a].Name < s.Instances[b].Name })
 	return s.Instances, nil

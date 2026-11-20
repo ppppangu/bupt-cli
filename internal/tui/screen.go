@@ -249,8 +249,10 @@ func (w *workspace) draw() {
 			y++
 		}
 		if v.panelFooter != "" && y < bottom-3 {
-			put(s, margin, y, width, v.panelFooter, c.muted)
-			y++
+			for _, line := range panelPreview([]string{v.panelFooter}, width, bottom-y-3) {
+				put(s, margin, y, width, line, c.muted)
+				y++
+			}
 		}
 	}
 	if p.filter != "" || w.filtering && p == front {
@@ -333,8 +335,11 @@ func (w *workspace) draw() {
 			put(s, left, w.listTop, room, v.panelTitle, c.accent)
 			rows := w.listHeight - 1
 			if v.panelFooter != "" && rows > 2 {
-				put(s, left, w.listTop+rows, room, v.panelFooter, c.muted)
-				rows--
+				footer := panelPreview([]string{v.panelFooter}, room, rows-2)
+				rows -= len(footer)
+				for i, line := range footer {
+					put(s, left, w.listTop+1+rows+i, room, line, c.muted)
+				}
 			}
 			for i, line := range panelPreview(v.panel, room, rows) {
 				put(s, left, w.listTop+1+i, room, line, c.base)

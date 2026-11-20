@@ -164,7 +164,7 @@ func (w *workspace) computeTools() content {
 		g.items = append(g.items, item)
 	}
 	work := navGroup{key: "work", title: "我的工作", summary: "查看作业、日志和学校调度"}
-	work.items = append(work.items, section("runs", "运行与记录", "查看实验进度、作业输出或操作结果", "bupt compute run", w.work))
+	work.items = append(work.items, section("runs", "运行与记录", "查看实验进度、作业输出或操作结果", "bupt compute job", w.work))
 	optional(&work, "hpc", section("scheduler", "学校调度", "查询学校集群的队列和作业", "bupt compute job", func() content {
 		return content{rows: []row{
 			list("job", "调度作业", "状态与日志", "job"), list("job.request", "提交记录", "查看任务请求", "job request"), list("job.template", "作业模板", "查看模板和参数", "job template"), list("cluster", "计算集群", "集群与分区", "cluster"),
@@ -175,7 +175,7 @@ func (w *workspace) computeTools() content {
 		navLink("quota", "我的配额", "看我最多能用多少，申请提高上限", "bupt compute quota", w.quotas),
 		list("request", "平台申请", "查看我的申请批到哪一步", "request"),
 	}}
-	optional(&resources, "remoteApp", section("remote", "远程算力", "按订单报价租用或续期", "bupt compute remote", func() content {
+	optional(&resources, "remoteApp", section("remote", "远程算力", "按订单报价租用或续期", "bupt remote", func() content {
 		return content{rows: []row{
 			list("remote.catalog", "可租资源", "规格和报价", "remote catalog"), list("remote.instance", "远程实例", "查看详情和续期", "remote instance"), list("remote.order", "我的订单", "查看订单和支付状态", "remote order"),
 		}}

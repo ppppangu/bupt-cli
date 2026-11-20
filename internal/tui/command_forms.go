@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"slices"
 	"strings"
@@ -17,11 +18,10 @@ import (
 
 type FormFlag struct{ Name, Help, Type string }
 type CommandForm struct {
-	Path                              []string
-	Title, Summary, Usage             string
-	Flags                             []FormFlag
-	Children                          []CommandForm
-	Runnable, Query, Terminal, Export bool
+	Path                    []string
+	Summary, Usage          string
+	Flags                   []FormFlag
+	Query, Terminal, Export bool
 }
 
 // contextAction opens a single operation with the selected object's identity
@@ -29,20 +29,12 @@ type CommandForm struct {
 func (w *workspace) contextAction(title, detail string, path []string, bindings ...string) row {
 	display := cmdline(append(slices.Clone(path), bindings...)...)
 	return navLink("action/"+strings.Join(path, "/"), title, detail, display, func() {
-		form, ok := w.Commands[path[0]]
-		for _, part := range path[1:] {
-			i := slices.IndexFunc(form.Children, func(child CommandForm) bool { return child.Path[len(child.Path)-1] == part })
-			if i < 0 {
-				ok = false
-				break
-			}
-			form = form.Children[i]
-		}
-		if !ok || !form.Runnable {
+		op, ok := formOperations[strings.Join(path, " ")]
+		if !ok {
 			w.notice = "此版本未提供该操作"
 			return
 		}
-		w.boundCommandInputs(form, title, bindings)
+		w.boundCommandInputs(op.form(path), title, bindings)
 	})
 }
 
@@ -116,7 +108,7 @@ func (w *workspace) boundCommandInputs(f CommandForm, title string, bindings []s
 			}
 		}
 		// SSH and exec place the separator between the instance and program.
-		if (slices.Equal(f.Path, []string{"compute", "exec"}) || slices.Equal(f.Path, []string{"compute", "ssh"})) && len(args) > 0 {
+		if len(f.Path) == 1 && (f.Path[0] == "exec" || f.Path[0] == "ssh") && len(args) > 0 {
 			out = append(out, args[0])
 			if len(args) > 1 {
 				out = append(out, "--")
@@ -210,62 +202,61 @@ func (w *workspace) boundCommandInputs(f CommandForm, title string, bindings []s
 			button = "打开终端操作"
 		}
 		v.rows = append(v.rows, link("go", button, "", cmdline(argv()...), func() {
-			if f.Export && (vals["output"] == "" || vals["output"] == "-") {
+			if f.Export && (vals["file"] == "" || vals["file"] == "-") {
 				w.notice = "请在选项中选择一个新私有文件"
 				return
 			}
 			if f.Terminal || f.Export {
-				w.terminalReview(title, f.Summary, argv())
+				w.terminalReview(title, f.Summary, argv(), TerminalAction{Name: strings.Join(f.Path, " "), Args: slices.Clone(args), Options: maps.Clone(vals)})
 				return
 			}
-			w.runForm(argv(), !f.Query, title)
+			request, err := formParams(f, args, vals)
+			if err != nil {
+				w.notice = err.Error()
+				return
+			}
+			request.command = argv()
+			w.reviewForm(request, !f.Query, title)
 		}))
 		return v
 	})
 }
-func (w *workspace) runForm(args []string, preview bool, title string, facts ...string) {
-	if w.Capture == nil {
-		return
-	}
-	command := cmdline(args...)
-	// This loader only reads or previews. Reauthentication may retry it.
-	// Submission is a separate, explicit action on the resulting page.
-	p := &page{title: title, command: command, queryMethod: "command.read"}
-	if preview {
-		p.queryMethod = "command.preview"
-	}
-	requestKey := "--idempotency-key=" + uuid.NewString()
+func (w *workspace) reviewForm(request formRequest, preview bool, title string, facts ...string) {
+	command := cmdline(request.command...)
+	p := &page{title: title, command: command, queryMethod: request.method, needsSchool: true}
+	requestKey := uuid.NewString()
 	p.load = func(ctx context.Context) (func() content, error) {
-		call := slices.Clone(args)
 		binding := ""
-		if preview {
-			call = append([]string{"--dry-run", requestKey}, call...)
-			if len(args) >= 4 && args[0] == "compute" {
-				if args[1] == "remote" && args[2] == "order" && (args[3] == "create" || args[3] == "renew") {
-					binding = "quote"
-				}
-				if args[1] == "admin" && args[2] == "quota" && args[3] == "set" {
-					binding = "revision"
-				}
-				if binding != "" {
-					call = append([]string{"--json"}, call...)
-				}
-			}
+		if request.method == "compute.remote.checkout" {
+			binding = "quote"
 		}
-		out, e := w.Capture(ctx, call)
-		if e != nil {
-			return nil, e
+		if request.method == "compute.admin.update" {
+			binding = "revision"
 		}
-		submitArgs := slices.Clone(args)
+		raw, err := w.callForm(ctx, request, preview, requestKey)
+		if err != nil {
+			return nil, err
+		}
+		out := formText(raw)
+		submit := request
+		submit.params = maps.Clone(request.params)
 		summary := facts
 		canSubmit := true
-		if binding != "" {
+		if preview && request.method == "instance.clone" {
+			var quote domain.InstanceCreatePreview
+			if err := json.Unmarshal(raw, &quote); err != nil || quote.PointsPerDay == "" {
+				return nil, domain.E("COST_ESTIMATE_UNAVAILABLE", "学校尚未返回可核对的日价")
+			}
+			submit.params["max_points_per_day"] = quote.PointsPerDay
+			summary = append(summary, "规格 "+string(quote.SpecID), "学校估价  "+quote.PointsPerDay+" 积分/天", quote.BillingStart)
+		}
+		if preview && binding != "" {
 			var doc struct {
 				Quote, Revision string
 				Details         platform.RemoteQuote
 				ExpiresAt       string `json:"expires_at"`
 			}
-			if json.Unmarshal([]byte(out), &doc) != nil {
+			if json.Unmarshal(raw, &doc) != nil {
 				return nil, fmt.Errorf("控制器未返回可验证的预览")
 			}
 			token := doc.Revision
@@ -292,15 +283,7 @@ func (w *workspace) runForm(args []string, preview bool, title string, facts ...
 			if token == "" {
 				return nil, fmt.Errorf("预览缺少确认版本")
 			}
-			tail := args[4:]
-			boundary := slices.Index(tail, "--")
-			if boundary < 0 {
-				boundary = len(tail)
-			}
-			flags := slices.DeleteFunc(slices.Clone(tail[:boundary]), func(arg string) bool { return strings.HasPrefix(arg, "--"+binding+"=") })
-			submitArgs = append(slices.Clone(args[:4]), "--"+binding+"="+token)
-			submitArgs = append(submitArgs, flags...)
-			submitArgs = append(submitArgs, tail[boundary:]...)
+			submit.params[binding] = token
 		}
 		return func() content {
 			v := w.textContent(out)
@@ -314,12 +297,12 @@ func (w *workspace) runForm(args []string, preview bool, title string, facts ...
 					v.rows = append(v.rows, back)
 					return v
 				}
-				submit := link("submit", "确认"+title, "", cmdline(submitArgs...), func() { w.submitForm(p, requestKey, submitArgs) })
-				submit.verb = "确认提交"
+				confirm := link("submit", "确认"+title, "", command, func() { w.submitForm(p, requestKey, submit) })
+				confirm.verb = "确认提交"
 				if len(summary) > 0 {
-					v.rows = append(v.rows, back, submit, navLink("details", "查看完整预览", "", command, func() { w.textPage("完整预览", command, out) }))
+					v.rows = append(v.rows, back, confirm, navLink("details", "查看完整预览", "", command, func() { w.textPage("完整预览", command, out) }))
 				} else {
-					v.rows = append([]row{back, submit}, v.rows...)
+					v.rows = append([]row{back, confirm}, v.rows...)
 				}
 			}
 			return v
@@ -328,7 +311,7 @@ func (w *workspace) runForm(args []string, preview bool, title string, facts ...
 	w.push(p)
 }
 
-func (w *workspace) submitForm(p *page, key string, args []string) {
+func (w *workspace) submitForm(p *page, key string, request formRequest) {
 	if p.submitting || w.current() != p {
 		return
 	}
@@ -336,12 +319,13 @@ func (w *workspace) submitForm(p *page, key string, args []string) {
 	go func() {
 		ctx, cancel := context.WithTimeout(w.ctx, w.Timeout)
 		defer cancel()
-		out, err := w.Capture(ctx, append([]string{key}, args...))
+		raw, err := w.callForm(ctx, request, false, key)
+		out := formText(raw)
 		interrupted := err != nil && (ctx.Err() != nil || uncertainFormResult(err))
 		w.post(w.ctx, func() {
 			p.submitting = false
-			storage := len(args) > 2 && args[0] == "compute" && args[1] == "storage"
-			checkout := len(args) >= 4 && slices.Equal(args[:3], []string{"compute", "remote", "order"}) && (args[3] == "create" || args[3] == "renew")
+			storage := request.method == "data.edit"
+			checkout := request.method == "compute.remote.checkout"
 			orders := func() { w.computeList("remote.order", "我的订单", "remote order", 1) }
 			if err != nil {
 				w.notice = whenError(err)
@@ -363,7 +347,7 @@ func (w *workspace) submitForm(p *page, key string, args []string) {
 					case interrupted || errorCode(err) == "ORDER_RESULT_UNCERTAIN":
 						p.load = nil
 						p.build = func() content {
-							return content{facts: []string{"订单提交结果待核对。"}, rows: []row{navLink("orders", "查看我的订单", "", "bupt compute remote order", orders)}}
+							return content{facts: []string{"订单提交结果待核对。"}, rows: []row{navLink("orders", "查看我的订单", "", "bupt remote order", orders)}}
 						}
 					case errorCode(err) == "QUOTE_CHANGED" || errorCode(err) == "QUOTE_EXPIRED":
 						p.build = func() content {
@@ -377,8 +361,8 @@ func (w *workspace) submitForm(p *page, key string, args []string) {
 			p.build = func() content {
 				v := w.textContent(out)
 				if checkout {
-					v.rows = append([]row{navLink("orders", "查看我的订单", "核对学校订单与付款状态", "bupt compute remote order", orders)}, v.rows...)
-				} else if len(args) >= 3 && slices.Equal(args[:3], []string{"compute", "quota", "request"}) {
+					v.rows = append([]row{navLink("orders", "查看我的订单", "核对学校订单与付款状态", "bupt remote order", orders)}, v.rows...)
+				} else if request.method == "compute.quota.request" {
 					v.rows = append([]row{navLink("requests", "查看我的申请", "查询学校审批进度", "bupt compute request", func() { w.computeList("request", "我的申请", "request", 1) })}, v.rows...)
 				}
 				return v
@@ -386,7 +370,7 @@ func (w *workspace) submitForm(p *page, key string, args []string) {
 			w.notice = "操作已完成"
 			if storage {
 				w.invalidateStorage()
-			} else if len(args) > 2 && args[0] == "compute" && args[1] == "preset" {
+			} else if strings.HasPrefix(request.method, "preset.") {
 				w.refreshPresets()
 			}
 		})

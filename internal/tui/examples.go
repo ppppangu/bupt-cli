@@ -201,10 +201,10 @@ func (w *workspace) integrationExamples(seed *trialForm) {
 					}
 					v.rows = append(v.rows, link("copy", "复制"+caption, "c · 全文", cmd, func() { w.copySnippet(body) }), link("save", "另存"+caption, "s · 写入新文件", cmd, func() { w.saveSnippet(body) }), link("preview", "展开或收起全文", format.label, cmd, func() { expanded = !expanded }))
 				}
-				v.rows = append(v.rows, navLink("trial", "在线调试", "带当前模型和输入打开调试工作台", "bupt help api model try --all", func() { w.switchWorkbench("trial", f) }))
+				v.rows = append(v.rows, navLink("trial", "在线调试", "带当前模型和输入打开调试工作台", "bupt help api model invoke --all", func() { w.switchWorkbench("trial", f) }))
 			}
 			if base != "" {
-				v.rows = append(v.rows, link("base", "复制 Base URL", base, "bupt api guide -q", func() { w.copySnippet(base) }))
+				v.rows = append(v.rows, link("base", "复制 Base URL", base, "bupt api guide", func() { w.copySnippet(base) }))
 			}
 			if expanded && p.copyText != "" {
 				v.panel = nil
@@ -256,7 +256,7 @@ func keySetup(profile string, exportKey bool, id string) string {
 	text := "export BUPT_PROFILE=" + shellquote.Literal(profile) + "\nexport BUPT_KEY_ID=" + shellquote.Literal(id)
 	if exportKey {
 		text += `
-BUPT_API_KEY=$(bupt api key export --output - -- "$BUPT_KEY_ID") && export BUPT_API_KEY`
+BUPT_API_KEY=$(bupt api key export --file - -- "$BUPT_KEY_ID") && export BUPT_API_KEY`
 	}
 	return text
 }

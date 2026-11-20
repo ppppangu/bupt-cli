@@ -77,8 +77,8 @@ func demoSpec() domain.Spec {
 		ID: "tpl-pytorch", Name: "PyTorch 2.3 · CUDA 12.1", Version: "v2",
 		Description: "预装 PyTorch 2.3 与 CUDA 12.1 驱动，适合模型微调与推理实验。",
 		Options: map[string]any{
-			"scope":       "user",
-			"storageName": "系统盘 100 GiB",
+			"scope":           "user",
+			"storageName":     "系统盘 100 GiB",
 			"resourceSummary": map[string]any{"gpu": "1×A100-80G", "cpu": 8, "memory": 65536},
 			"resourceConstraints": map[string]any{"gpu": map[string]any{"nodeName": "GPU 节点", "constraints": []map[string]any{
 				{"type": "GPU", "value": "1×A100-80G", "options": "1×A100-80G,2×A100-80G"},
@@ -95,7 +95,7 @@ func demoReply(method string, p map[string]any) (any, error) {
 		now := time.Now()
 		return domain.StatusReport{
 			Profile: "默认", Controller: "本机", Platform: "authenticated", Gateway: "authenticated",
-			API: domain.PortalSummary{State: "authenticated", Balance: fptr(1234.5), Keys: iptr(3), Models: iptr(9), CheckedAt: now},
+			API:               domain.PortalSummary{State: "authenticated", Balance: fptr(1234.5), Keys: iptr(3), Models: iptr(9), CheckedAt: now},
 			Catalog:           &domain.CatalogCounts{Pools: 2, Templates: 5, ObservedAt: now},
 			SnapshotAvailable: true, Source: "live", CheckedAt: now,
 			Instances: []domain.Instance{
@@ -104,7 +104,7 @@ func demoReply(method string, p map[string]any) (any, error) {
 				{ID: "102", Name: "gpu-dev", SpecID: "tpl-pytorch", State: "stopped", Reserved: false, CreatedAt: now.Add(-26 * time.Hour)},
 				{ID: "104", Name: "web-demo", SpecID: "tpl-vllm", State: "stopped", Reserved: false, CreatedAt: now.Add(-2 * 24 * time.Hour)},
 			},
-			Runs: []domain.Run{{ID: "run-9f21", Kind: "session", State: "running", InstanceID: "101"}, {ID: "run-7c31", Kind: "session", State: "running", InstanceID: "103"}},
+			Runs:   []domain.Run{{ID: "run-9f21", Kind: "session", State: "running", InstanceID: "101"}, {ID: "run-7c31", Kind: "session", State: "running", InstanceID: "103"}},
 			Routes: []domain.Route{{InstanceID: "101", NodeID: "7", State: "ready"}, {InstanceID: "103", NodeID: "3", State: "ready"}},
 		}, nil
 	case "portal.read":
@@ -120,6 +120,8 @@ func demoReply(method string, p map[string]any) (any, error) {
 			Capacity:    []domain.Capacity{{Scope: "个人", Resource: "GPU", Used: fptr(2), Limit: fptr(4), Unit: "卡"}, {Scope: "个人", Resource: "CPU", Used: fptr(12), Limit: fptr(32), Unit: "核"}, {Scope: "个人", Resource: "存储", Used: fptr(240), Limit: fptr(500), Unit: "GiB"}, {Scope: "项目", Resource: "算力积分", Used: fptr(36.5), Limit: fptr(100), Unit: "分/天"}},
 			QuotaSource: "学校", Pools: demoPools, CatalogSource: "live", CatalogAt: &[]time.Time{time.Now().Add(-9 * time.Minute)}[0],
 		}, nil
+	case "spec.estimate":
+		return map[string]any{"points_per_day": 84.5}, nil
 	case "spec.show":
 		return demoSpec(), nil
 	case "portal.trial":
@@ -163,7 +165,7 @@ func demoWorkspace(home string) (*workspace, error) {
 				{ID: "102", Name: "gpu-dev", SpecID: "tpl-pytorch", State: "stopped", Reserved: false, CreatedAt: now.Add(-26 * time.Hour)},
 				{ID: "104", Name: "web-demo", SpecID: "tpl-vllm", State: "stopped", Reserved: false, CreatedAt: now.Add(-2 * 24 * time.Hour)},
 			},
-			Runs:  []domain.Run{{ID: "run-9f21", Kind: "session", State: "running", InstanceID: "101"}, {ID: "run-7c31", Kind: "session", State: "running", InstanceID: "103"}},
+			Runs:   []domain.Run{{ID: "run-9f21", Kind: "session", State: "running", InstanceID: "101"}, {ID: "run-7c31", Kind: "session", State: "running", InstanceID: "103"}},
 			Routes: []domain.Route{{InstanceID: "101", NodeID: "7", State: "ready"}, {InstanceID: "103", NodeID: "3", State: "ready"}},
 		},
 	}
@@ -371,10 +373,16 @@ func GenerateDemoFrames(dir string) error {
 	if e := j.key(tcell.KeyDown, "focus-limit"); e != nil {
 		return e
 	}
+	if e := j.key(tcell.KeyDown, "focus-create-mode"); e != nil {
+		return e
+	}
 	if e := j.key(tcell.KeyDown, "focus-estimate"); e != nil {
 		return e
 	}
 	if e := j.key(tcell.KeyDown, "focus-preview"); e != nil {
+		return e
+	}
+	if e := j.key(tcell.KeyDown, "focus-force-stop"); e != nil {
 		return e
 	}
 	if e := j.key(tcell.KeyDown, "focus-options"); e != nil {

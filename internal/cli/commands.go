@@ -17,9 +17,7 @@ func addListFlags(cmd *cobra.Command) {
 	cmd.Flags().StringSlice("columns", nil, "Select output fields")
 }
 func addTaskFlags(cmd *cobra.Command) {
-	cmd.Flags().Bool("wait", true, "Wait for the operation to finish")
-	cmd.Flags().Bool("no-wait", false, "Return the operation receipt without waiting")
-	cmd.Flags().Bool("force", false, "Explicitly permit the operation's force behavior")
+	cmd.Flags().Bool("wait", false, "等待操作完成")
 }
 func addResourceFlags(cmd *cobra.Command) {
 	f := cmd.Flags()
@@ -46,7 +44,7 @@ func addPolicyFlags(cmd *cobra.Command) {
 	f.Bool("no-renew", false, "Disable future renewal requests")
 	f.String("cleanup", "", "none, stop, release, or delete")
 	f.String("stop-grace", "", "Grace period before forced stop")
-	f.Bool("force-stop", true, "Allow forced stop after the grace period")
+	f.Bool("force-stop", false, "Allow forced stop after the grace period")
 }
 func (a *app) policy(cmd *cobra.Command, preset string, required bool) (domain.RunPolicy, error) {
 	p := a.cfg.Policy
@@ -57,6 +55,7 @@ func (a *app) policy(cmd *cobra.Command, preset string, required bool) (domain.R
 		}
 		p = pr.Policy
 	}
+	p.ForceStop = false
 	f := cmd.Flags()
 	changed := func(n string) bool { v := f.Lookup(n); return v != nil && v.Changed }
 	if changed("max-runtime") {
@@ -166,9 +165,7 @@ func (a *app) resourceParams(cmd *cobra.Command, required bool) (map[string]any,
 	}
 	p["config_sources"] = sources
 	if cmd.Flags().Lookup("wait") != nil {
-		wait, _ := cmd.Flags().GetBool("wait")
-		noWait, _ := cmd.Flags().GetBool("no-wait")
-		p["wait"] = wait && !noWait
+		p["wait"] = waitSelected(cmd)
 	}
 	return p, nil
 }
@@ -241,14 +238,6 @@ func policyPatch(cmd *cobra.Command) (map[string]any, error) {
 	return patch, nil
 }
 
-func (a *app) specCommands() *cobra.Command {
-	g := &cobra.Command{Use: "spec", Short: "Discover available application templates"}
-	list := a.simpleRPC("ls", "List available templates", "spec.list", 0, 0, nil)
-	list.Aliases = []string{"list"}
-	list.Flags().String("group-id", "", "Project/group ID")
-	g.AddCommand(list, a.simpleRPC("show SPEC", "Show template constraints and capabilities", "spec.show", 1, 1, targetParams))
-	return g
-}
 func (a *app) estimateCommand() *cobra.Command {
 	cmd := &cobra.Command{Use: "estimate", Short: "Estimate platform charges without allocating resources", Args: exactArgs(0)}
 	addResourceFlags(cmd)
@@ -262,24 +251,13 @@ func (a *app) estimateCommand() *cobra.Command {
 	return cmd
 }
 func (a *app) instanceCommands() *cobra.Command {
-	g := &cobra.Command{Use: "instance", Aliases: []string{"instances"}, Short: "Manage instance lifecycle primitives"}
+	g := &cobra.Command{Use: "instance", Short: "Manage instance lifecycle primitives"}
 	list := a.simpleRPC("ls", "List instances", "instance.list", 0, 0, nil)
-	list.Aliases = []string{"list"}
+
 	addListFlags(list)
 	g.AddCommand(list)
 	g.AddCommand(a.simpleRPC("inspect INSTANCE", "Inspect an instance", "instance.inspect", 1, 1, targetParams))
-	create := &cobra.Command{Use: "create NAME", Short: "Create an instance with an explicit run limit", Args: exactArgs(1)}
-	addResourceFlags(create)
-	addTaskFlags(create)
-	create.RunE = func(cmd *cobra.Command, args []string) error {
-		p, e := a.resourceParams(cmd, true)
-		if e != nil {
-			return e
-		}
-		p["name"] = args[0]
-		return a.callAndPrint(cmd, "instance.create", p)
-	}
-	g.AddCommand(create)
+	g.AddCommand(a.createInstanceCommand())
 	adopt := &cobra.Command{Use: "adopt INSTANCE", Short: "Explicitly put an existing instance under lifecycle management", Args: exactArgs(1)}
 	adopt.Flags().String("name", "", "Logical name")
 	addPolicyFlags(adopt)
@@ -292,106 +270,64 @@ func (a *app) instanceCommands() *cobra.Command {
 		return a.callAndPrint(cmd, "instance.adopt", p)
 	}
 	g.AddCommand(adopt)
-	for _, op := range []string{"start", "stop", "release", "restore", "delete"} {
-		op := op
-		short := map[string]string{"start": "Start a stopped instance", "stop": "Stop without assuming resources were released", "release": "Release a stopped instance into the platform recycle bin", "restore": "Restore allocation for a released instance", "delete": "Permanently delete the explicitly selected instance and its instance data"}[op]
-		cmd := &cobra.Command{Use: op + " INSTANCE", Short: short, Args: exactArgs(1)}
+	for op, label := range map[string]string{
+		"start": "启动已有停机实例", "restart": "温和重启当前实例", "stop": "停机并保留预留和磁盘",
+		"release": "归还已停机实例的算力，磁盘按回收策略保留", "restore": "为已有实例重新分配算力，随后可启动并连接 SSH",
+		"delete": "永久删除已释放的实例和本机磁盘", "cancel-queue": "取消排队申请",
+	} {
+		cmd := &cobra.Command{Use: op + " INSTANCE", Short: label, Args: exactArgs(1)}
 		addTaskFlags(cmd)
-		if op == "start" || op == "restore" {
+		switch op {
+		case "start", "restore", "restart":
 			addPolicyFlags(cmd)
+			cmd.Flags().String("node", "", "选择 SSH 节点")
+			if op == "restore" {
+				cmd.Flags().String("max-points-per-day", "", "授权分配算力的积分日价上限")
+			}
+		case "delete":
+			cmd.Flags().String("confirm", "", "核对后输入实例 ID")
+		case "stop":
+			cmd.Flags().Bool("force", false, "立即强制停机")
 		}
 		cmd.RunE = func(cmd *cobra.Command, args []string) error {
 			p := targetParams(args)
 			copyChangedFlags(cmd, p)
-			wait, _ := cmd.Flags().GetBool("wait")
-			nw, _ := cmd.Flags().GetBool("no-wait")
-			p["wait"] = wait && !nw
-			if op == "start" || op == "restore" {
-				pol, e := a.policy(cmd, "", true)
-				if e != nil {
-					return e
+			switch op {
+			case "start", "restart", "restore":
+				pol, err := a.policy(cmd, "", op == "restore")
+				if err != nil {
+					return err
 				}
-				p["policy"] = pol
-				p["config_sources"] = a.cfg.Sources
+				p["policy"], p["config_sources"] = pol, a.cfg.Sources
+				if op == "restore" {
+					if err := a.authorizeRestore(cmd, p); err != nil {
+						return err
+					}
+				}
+			case "delete":
+				p["confirm"], _ = cmd.Flags().GetString("confirm")
+				if !a.dryRun && p["confirm"] == "" {
+					return usage("需要 --confirm INSTANCE_ID")
+				}
 			}
-			return a.callAndPrint(cmd, "instance."+op, p)
+			return a.submitInstance(cmd, "instance."+op, p)
 		}
 		g.AddCommand(cmd)
 	}
-	wait := a.simpleRPC("wait INSTANCE", "Wait for an instance state", "instance.wait", 1, 1, targetParams)
-	wait.Flags().String("state", "running", "Required instance state")
+	wait := &cobra.Command{Use: "wait [INSTANCE]", Short: "等待实例 SSH 就绪或跟踪指定回执", Args: rangeArgs(0, 1)}
+	wait.Flags().String("state", "ssh-ready", "等待指定平台状态")
+	completeValues(wait, "state", "ssh-ready", "pending_approval", "approved", "queuing", "reserve_queuing", "starting", "running", "stopping", "stopped", "released")
+	wait.Flags().String("node", "", "选择 SSH 节点")
+	wait.Flags().String("operation", "", "等待指定操作 ID")
+	wait.RunE = a.waitInstance
 	g.AddCommand(wait)
-	events := a.simpleRPC("events INSTANCE", "Read instance events", "instance.events", 1, 1, targetParams)
+	events := a.simpleRPC("events INSTANCE", "查看学校可见回执与控制器记录", "instance.events", 1, 1, targetParams)
 	events.Flags().Int("limit", 100, "Maximum event count")
+	events.Flags().Bool("cached", false, "仅查看缓存的学校回执和本地记录")
 	g.AddCommand(events)
-	cancelQueue := a.simpleRPC("cancel-queue INSTANCE", "Cancel a pending start or allocation queue entry", "instance.cancel-queue", 1, 1, targetParams)
-	addTaskFlags(cancelQueue)
-	g.AddCommand(cancelQueue)
 	return g
 }
-func (a *app) upCommand() *cobra.Command {
-	cmd := &cobra.Command{Use: "up NAME", Short: "Ensure an instance is running, SSH-ready, and managed", Args: exactArgs(1)}
-	addResourceFlags(cmd)
-	addTaskFlags(cmd)
-	cmd.Flags().String("adopt", "", "Explicit existing instance ID to adopt")
-	cmd.Flags().Bool("ssh", false, "Open SSH after readiness succeeds")
-	cmd.Flags().String("node", "", "Node selector for SSH readiness")
-	cmd.RunE = func(cmd *cobra.Command, args []string) error {
-		open, _ := cmd.Flags().GetBool("ssh")
-		if open && (a.json || a.jsonl || a.quiet) {
-			return usage("--ssh cannot be combined with formatted output; use bupt ssh separately")
-		}
-		if open {
-			wait, _ := cmd.Flags().GetBool("wait")
-			nw, _ := cmd.Flags().GetBool("no-wait")
-			if !wait || nw {
-				return usage("--ssh requires waiting for instance readiness")
-			}
-		}
-		p, e := a.resourceParams(cmd, false)
-		if e != nil {
-			return e
-		}
-		p["name"] = args[0]
-		if f := cmd.Flags().Lookup("adopt"); f.Changed {
-			v, _ := cmd.Flags().GetString("adopt")
-			p["target"] = v
-			p["adopt"] = true
-		}
-		var result any
-		if result, e = a.managedCall(cmd, "up", p, "ready"); e != nil {
-			return e
-		}
-		if open && !a.dryRun {
-			return a.session(cmd, args[0], nil, true, false, "")
-		}
-		return a.emitRun(result)
-	}
-	return cmd
-}
-func (a *app) downCommand() *cobra.Command {
-	cmd := &cobra.Command{Use: "down INSTANCE", Short: "Stop and apply the configured cleanup policy (release by default)", Args: exactArgs(1)}
-	addTaskFlags(cmd)
-	addPolicyFlags(cmd)
-	cmd.RunE = func(cmd *cobra.Command, args []string) error {
-		p := targetParams(args)
-		copyChangedFlags(cmd, p)
-		pol, e := a.policy(cmd, "", false)
-		if e != nil {
-			return e
-		}
-		p["policy"] = pol
-		wait, _ := cmd.Flags().GetBool("wait")
-		nw, _ := cmd.Flags().GetBool("no-wait")
-		p["wait"] = wait && !nw
-		result, e := a.managedCall(cmd, "down", p, "finished")
-		if e != nil {
-			return e
-		}
-		return a.emitRun(result)
-	}
-	return cmd
-}
+
 func (a *app) leaseCommands() *cobra.Command {
 	g := &cobra.Command{Use: "lease", Short: "Inspect or update finite runtime and renewal policy"}
 	g.AddCommand(a.simpleRPC("status INSTANCE", "Show requested, approved, and maximum expiry", "lease.status", 1, 1, targetParams))
@@ -412,7 +348,27 @@ func (a *app) leaseCommands() *cobra.Command {
 	renew := a.simpleRPC("renew INSTANCE", "Submit and track a normal-user renewal request", "lease.renew", 1, 1, targetParams)
 	renew.Flags().String("duration", "", "Requested additional duration")
 	renew.Flags().String("reason", "", "Reason sent to the platform approver")
-	g.AddCommand(set, renew)
+	end := &cobra.Command{Use: "end INSTANCE", Short: "按指定策略结束托管周期", Args: exactArgs(1)}
+	end.Flags().String("cleanup", "", "none、stop、release 或 delete")
+	addTaskFlags(end)
+	end.RunE = func(cmd *cobra.Command, args []string) error {
+		mode, _ := cmd.Flags().GetString("cleanup")
+		switch mode {
+		case "none", "stop", "release", "delete":
+		default:
+			return usage("需要指定 --cleanup none、stop、release 或 delete")
+		}
+		result, err := a.managedCall(cmd, "down", map[string]any{"target": args[0], "cleanup": mode, "wait": cmd.Flags().Changed("wait") && waitSelected(cmd)}, "finished")
+		if err != nil {
+			return err
+		}
+		return a.emitRun(result)
+	}
+	wait := a.waitCommand()
+	wait.Short = "等待托管周期就绪或结束"
+	list := a.simpleRPC("ls", "列出托管周期", "run.list", 0, 0, nil)
+	addListFlags(list)
+	g.AddCommand(list, set, renew, end, wait)
 	return g
 }
 func (a *app) resizeCommand() *cobra.Command {
@@ -422,7 +378,7 @@ func (a *app) resizeCommand() *cobra.Command {
 	cmd.Flags().String("gpu", "", "GPU constraint")
 	cmd.Flags().String("memory", "", "Memory size")
 	cmd.Flags().String("disk", "", "Block storage constraint")
-	cmd.Flags().Int("size-gb", 0, "Grow a QEMU disk to this total GB capacity")
+	cmd.Flags().Int64("size-gb", 0, "Grow a QEMU disk to this total GB capacity")
 	addTaskFlags(cmd)
 	cmd.RunE = func(cmd *cobra.Command, args []string) error {
 		p := targetParams(args)
@@ -441,12 +397,25 @@ func (a *app) resizeCommand() *cobra.Command {
 			if len(resources) > 0 {
 				return usage("--size-gb cannot be combined with resource constraints")
 			}
-			v, _ := cmd.Flags().GetInt("size-gb")
+			v, _ := cmd.Flags().GetInt64("size-gb")
 			if v <= 0 {
 				return usage("--size-gb must be positive")
 			}
-			p["size_gb"] = v
-			return a.callAndPrint(cmd, "instance.disk-grow", p)
+			node, _ := cmd.Flags().GetString("node")
+			settings := domain.OperationOptions{DryRun: a.dryRun, IdempotencyKey: a.idempotencyKey}
+			if cmd.Flags().Changed("wait") {
+				wait := waitSelected(cmd)
+				settings.Wait = &wait
+			}
+			request := domain.GrowDiskRequest{
+				InstanceTaskRequest: domain.InstanceTaskRequest{Target: args[0], Node: domain.ID(node), OperationOptions: settings},
+				TargetCapacityGB:    v,
+			}
+			var result json.RawMessage
+			if err := a.rpcRequest(cmd.Context(), "instance.disk-grow", request, &result); err != nil {
+				return err
+			}
+			return a.emit(result)
 		}
 		if len(resources) == 0 {
 			return usage("provide a resource change or --size-gb")
@@ -460,13 +429,20 @@ func (a *app) cloneCommand() *cobra.Command {
 	cmd := &cobra.Command{Use: "clone SOURCE NAME", Short: "Create a separately managed clone when supported", Args: exactArgs(2)}
 	addResourceFlags(cmd)
 	addTaskFlags(cmd)
+	rate := cmd.Flags().String("max-points-per-day", "", "克隆实例时授权的积分日价上限")
 	cmd.RunE = func(cmd *cobra.Command, args []string) error {
+		if !a.dryRun && *rate == "" {
+			return usage("请先用 --dry-run 估价，再指定 --max-points-per-day RATE")
+		}
 		p, e := a.resourceParams(cmd, true)
 		if e != nil {
 			return e
 		}
 		p["target"] = args[0]
 		p["name"] = args[1]
+		if *rate != "" {
+			p["max_points_per_day"] = *rate
+		}
 		return a.callAndPrint(cmd, "instance.clone", p)
 	}
 	return cmd
@@ -546,7 +522,7 @@ func (a *app) serviceCommands() *cobra.Command {
 func (a *app) taskCommands() *cobra.Command {
 	g := &cobra.Command{Use: "task", Short: "Inspect durable platform operation receipts"}
 	list := a.simpleRPC("ls", "List recorded operations", "task.list", 0, 0, nil)
-	list.Aliases = []string{"list"}
+
 	g.AddCommand(list, a.simpleRPC("show TASK", "Show an operation receipt", "task.get", 1, 1, targetParams), a.simpleRPC("wait TASK", "Wait for a recorded operation", "task.wait", 1, 1, targetParams))
 	return g
 }
@@ -566,8 +542,25 @@ func (a *app) doctorCommand() *cobra.Command {
 		return nil
 	})
 	cmd.Flags().Bool("offline", false, "Check local configuration without contacting the controller")
+	cmd.Flags().Bool("report", false, "生成可附加到反馈邮件的脱敏诊断")
+	cmd.Annotations = map[string]string{"skip_config": "true"}
 	cmd.RunE = func(cmd *cobra.Command, args []string) error {
 		offline, _ := cmd.Flags().GetBool("offline")
+		report, _ := cmd.Flags().GetBool("report")
+		if report {
+			if len(args) != 0 {
+				return usage("bupt doctor --report 可加 --offline")
+			}
+			r := a.supportReport(cmd, offline)
+			if a.json || a.jsonl {
+				return a.emit(r)
+			}
+			_, err := fmt.Fprint(a.options.Out, r.Text())
+			return err
+		}
+		if err := a.loadConfig(cmd); err != nil {
+			return err
+		}
 		if offline {
 			p, e := a.cfg.SelectedProfile()
 			if e != nil {

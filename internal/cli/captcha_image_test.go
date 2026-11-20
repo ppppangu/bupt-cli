@@ -177,7 +177,7 @@ func TestInlineLoginDisplaysEachNewCaptchaWithoutOpeningViewer(t *testing.T) {
 	opts.ReadSecret = func(string) (string, error) { return "test-password", nil }
 	opts.In = strings.NewReader("first-answer\nsecond-answer\n")
 	opts.OpenImage = func(context.Context, string) error { t.Fatal("inline display launched an external viewer"); return nil }
-	if code := executeTest(t, opts, "auth", "login", "--local", "--username", "student", "--json"); code != 0 {
+	if code := executeTest(t, opts, "login", "--local", "--username", "student", "--json"); code != 0 {
 		t.Fatalf("exit=%d", code)
 	}
 	if !json.Valid(out.Bytes()) || strings.Contains(out.String(), "\x1b") {

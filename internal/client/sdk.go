@@ -50,7 +50,7 @@ func (c *Client) ListRuns(ctx context.Context) ([]domain.Run, error) {
 }
 func (c *Client) GetRun(ctx context.Context, target string) (domain.Run, error) {
 	var v domain.Run
-	e := c.Call(ctx, "job.get", map[string]string{"target": target}, &v)
+	e := c.Call(ctx, "run.get", map[string]string{"target": target}, &v)
 	return v, e
 }
 func (c *Client) GetTask(ctx context.Context, id string) (domain.TaskRecord, error) {

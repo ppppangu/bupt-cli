@@ -27,8 +27,7 @@ func (a *app) interactive() bool {
 	if a.options.Interactive != nil {
 		return a.options.Interactive()
 	}
-	f, ok := a.options.In.(*os.File)
-	return ok && term.IsTerminal(int(f.Fd()))
+	return !a.json && !a.jsonl && !a.ids && isTerminal(a.options.In) && isTerminal(a.options.Out) && isTerminal(a.options.Err)
 }
 func (a *app) secretInput(prompt string) (string, error) {
 	if !a.interactive() {
@@ -76,7 +75,7 @@ func (a *app) authCommands() *cobra.Command {
 	}
 	g.AddCommand(probe)
 	g.AddCommand(a.simpleRPC("refresh", "Refresh sessions using protected stored credentials", "auth.refresh", 0, 0, nil))
-	g.AddCommand(a.loginCommand(), a.logoutCommand())
+
 	device := &cobra.Command{Use: "device", Short: "Start WebVPN device approval only (does not complete university SSO)", Args: exactArgs(0)}
 	device.Flags().Bool("wait", false, "Wait for device approval")
 	device.Flags().String("qr-file", "", "Save the QR image to a private file")
@@ -218,7 +217,7 @@ func (a *app) loginLocal(cmd *cobra.Command, _ []string) error {
 	}
 	if profile.GatewayURL != "" && (device || !authenticated(status.Gateway)) {
 		if !device && !a.interactive() {
-			return domain.E("AUTH_REQUIRED", "school approval is required; run bupt auth login --device --wait")
+			return domain.E("AUTH_REQUIRED", "school approval is required; run bupt login --device --wait")
 		}
 		follow := (wait || a.interactive()) && !noWait
 		challenge, err := a.runAuthChallenge(cmd, "auth.gateway.start", "auth.gateway.poll", follow, "webvpn", nil)
@@ -332,7 +331,7 @@ func (a *app) loginWithCaptcha(cmd *cobra.Command, params map[string]any) error 
 			return err
 		}
 		if attempts >= 3 {
-			return domain.E("CAPTCHA_REQUIRED", "CAPTCHA verification did not complete after three attempts; run auth login again")
+			return domain.E("CAPTCHA_REQUIRED", "CAPTCHA verification did not complete after three attempts; run bupt login again")
 		}
 		var challenge captchaChallenge
 		if err = a.rpc(cmd.Context(), "auth.captcha", nil, &challenge); err != nil {
@@ -463,11 +462,11 @@ func decodeCaptchaImage(encoded string) ([]byte, string, error) {
 
 func (a *app) captchaCommand() *cobra.Command {
 	cmd := &cobra.Command{Use: "captcha", Short: "Fetch a platform CAPTCHA for manual completion", Args: exactArgs(0)}
-	cmd.Flags().String("output", "", "Save the CAPTCHA image to a new private file")
+	cmd.Flags().String("file", "", "Save the CAPTCHA image to a new private file")
 	cmd.RunE = func(cmd *cobra.Command, _ []string) error {
-		filename, _ := cmd.Flags().GetString("output")
+		filename, _ := cmd.Flags().GetString("file")
 		if filename == "" && !a.json && !a.jsonl {
-			return usage("use --output FILE to save the CAPTCHA image, or --json to read its encoded data")
+			return usage("use --file FILE to save the CAPTCHA image, or --json to read its encoded data")
 		}
 		if a.dryRun {
 			return a.emit(map[string]any{"operation": "auth.captcha", "output": filename, "dry_run": true})
@@ -508,7 +507,7 @@ func (a *app) logoutCommand() *cobra.Command {
 	cmd.RunE = func(cmd *cobra.Command, _ []string) error {
 		params := map[string]any{}
 		copyChangedFlags(cmd, params)
-		if a.quiet {
+		if a.ids {
 			return a.rpc(cmd.Context(), "auth.logout", params, nil)
 		}
 		return a.callAndPrint(cmd, "auth.logout", params)

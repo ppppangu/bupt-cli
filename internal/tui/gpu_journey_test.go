@@ -29,8 +29,8 @@ func TestInstancesSSHUsesVerifiedInstanceAndNode(t *testing.T) {
 	w.report.Instances = []domain.Instance{i}
 	w.report.Routes = []domain.Route{route, {InstanceID: i.ID, NodeID: "obsolete", State: "ready"}}
 	single := w.report
-	var args []string
-	w.Foreground = func(_ context.Context, argv []string) error { args = slices.Clone(argv); return nil }
+	var action TerminalAction
+	w.Foreground = func(_ context.Context, request TerminalAction) error { action = request; return nil }
 	w.computeHome()
 	click(t, w, "instances")
 	w.draw()
@@ -40,13 +40,13 @@ func TestInstancesSSHUsesVerifiedInstanceAndNode(t *testing.T) {
 		t.Fatal("expected one direct SSH action in the home filter", r)
 	}
 	navPress(w, tcell.KeyRight)
-	if args != nil {
+	if action.Name != "" {
 		t.Fatal("browsing started SSH")
 	}
 	navPress(w, tcell.KeyEnter)
 	waitFor(t, w, func() bool { return !w.refreshing })
-	if !slices.Equal(args, []string{"ssh", "101", "--node", "7"}) {
-		t.Fatal(args)
+	if action.Name != "ssh" || !slices.Equal(action.Args, []string{"101"}) || action.Options["node"] != "7" {
+		t.Fatal(action)
 	}
 	navPress(w, tcell.KeyBackspace2)
 	w.report = single
@@ -58,8 +58,8 @@ func TestInstancesSSHUsesVerifiedInstanceAndNode(t *testing.T) {
 	navType(w, "/gpu-lab")
 	navPress(w, tcell.KeyEnter)
 	waitFor(t, w, func() bool { return !w.refreshing })
-	if !slices.Equal(args, []string{"ssh", "202", "--node", "7"}) {
-		t.Fatal("nodes with the same ID in different instances were confused", args)
+	if action.Name != "ssh" || !slices.Equal(action.Args, []string{"202"}) || action.Options["node"] != "7" {
+		t.Fatal("nodes with the same ID in different instances were confused", action)
 	}
 	w.back()
 	w.report = single
@@ -112,6 +112,93 @@ func TestInstanceListShowsSSHAndExpiryAtEveryWidth(t *testing.T) {
 		if !strings.Contains(navLine(w, w.listTop), tc.want) || !w.redrawAt.IsZero() {
 			t.Fatal(navLine(w, w.listTop), w.redrawAt)
 		}
+	}
+}
+
+func TestReallocateComputeExplainsPriceAndNextSSHStep(t *testing.T) {
+	instance := domain.Instance{ID: "101", Name: "gpu-dev", State: "stopped", ReserveType: "manual"}
+	run := domain.Run{ID: "allocate-101", InstanceID: instance.ID, Kind: "allocation", Phase: "active", State: "allocated", Deadline: time.Now().Add(20 * time.Minute)}
+	backend := &fixtureBackend{reply: func(_ context.Context, method string, p map[string]any) (any, error) {
+		switch method {
+		case "instance.restore":
+			if p["dry_run"] == true {
+				return domain.InstanceCreatePreview{
+					DryRun: true, PointsPerDay: "2.40", BillingStart: "分配算力后可能产生费用", Run: &run,
+				}, nil
+			}
+			return run, nil
+		case "status.get":
+			return domain.StatusReport{Source: "live", Instances: []domain.Instance{instance}, Runs: []domain.Run{run}}, nil
+		default:
+			return nil, errors.New("unexpected RPC " + method)
+		}
+	}}
+	w := fixtureWorkspace(t, backend)
+	w.report.Instances = []domain.Instance{instance}
+	w.computeHome()
+	click(t, w, "instances")
+	screen := w.screen.(tcell.SimulationScreen)
+	for _, width := range []int{60, 80} {
+		screen.SetSize(width, 24)
+		w.draw()
+		if line := navLine(w, w.listTop); !strings.Contains(line, "算力未分配") {
+			t.Fatalf("allocation status hidden at %d columns: %q", width, line)
+		}
+	}
+	click(t, w, string(instance.ID))
+	page := w.current()
+
+	w.report.Instances[0].ReserveType = "no"
+	if _, ok := objectRow(t, w, "restore"); ok {
+		t.Fatal("an on-demand instance already offers direct startup")
+	}
+	if _, ok := objectRow(t, w, "start"); !ok {
+		t.Fatal("on-demand instance lacks startup")
+	}
+
+	w.report.Instances[0] = instance
+	v := w.view(page)
+	if len(v.rows) == 0 || v.rows[0].title != "重新分配算力" ||
+		!strings.Contains(v.rows[0].detail, "分配后可启动并连接 SSH") || !strings.Contains(v.facts[0], "算力未分配") {
+		t.Fatalf("instance detail does not show the first step: %+v", v)
+	}
+	click(t, w, "restore")
+	if preview, ok := objectRow(t, w, "preview"); !ok || preview.title != "核对价格与时限" {
+		t.Fatal("allocation form does not offer price review")
+	}
+	click(t, w, "preview")
+	waitFor(t, w, func() bool { return !w.current().loading })
+	var reviewLines []string
+	for _, row := range w.view(w.current()).rows {
+		reviewLines = append(reviewLines, row.title)
+	}
+	review := strings.Join(reviewLines, "\n")
+	for _, want := range []string{"2.40 积分/天", "可能产生费用", "原磁盘保留", "启动并准备 SSH"} {
+		if !strings.Contains(review, want) {
+			t.Fatalf("allocation review missing %q: %q", want, review)
+		}
+	}
+	calls := backend.observed()
+	if len(calls) != 1 || calls[0].method != "instance.restore" || calls[0].params["target"] != string(instance.ID) || calls[0].params["dry_run"] != true {
+		t.Fatalf("review should only quote the selected instance: %+v", calls)
+	}
+
+	click(t, w, "submit")
+	waitFor(t, w, func() bool { return w.current() == page && !w.refreshing })
+	v = w.view(page)
+	if !page.watch || !strings.Contains(strings.Join(v.facts, "\n"), "正在核对可用算力") {
+		t.Fatal("allocation reported completion before the instance snapshot caught up")
+	}
+	if _, ok := objectRow(t, w, "restore"); ok {
+		t.Fatal("allocation is still being verified")
+	}
+	w.report.Instances[0].Reserved = true
+	if start, ok := objectRow(t, w, "start"); !ok || start.title != "启动并准备 SSH" {
+		t.Fatal("verified allocation did not expose the next step")
+	}
+	calls = backend.observed()
+	if len(calls) < 2 || calls[1].method != "instance.restore" || calls[1].params["max_points_per_day"] != "2.40" {
+		t.Fatalf("allocation did not use the confirmed price: %+v", calls)
 	}
 }
 
@@ -211,7 +298,7 @@ func TestFirstInstanceFromKeyboardKeepsTemplateAndPreviewsBeforeCreating(t *test
 			if params["dry_run"] != true {
 				writes++
 			}
-			return map[string]any{"dry_run": true, "run": domain.Run{Deadline: limit, Policy: domain.RunPolicy{Cleanup: "release"}},
+			return map[string]any{"dry_run": true, "points_per_day": "1.25", "billing_start": "从预留开始可能计费", "run": domain.Run{Deadline: limit, Policy: domain.RunPolicy{Cleanup: "release"}},
 				"resource_constraints": map[string]any{"g": []map[string]string{{"type": "GPU", "value": "0.2:A100:8192"}, {"type": "CPU", "value": "4"}, {"type": "Memory", "value": "12288"}}}}, nil
 		default:
 			return nil, errors.New("unexpected RPC " + method)
@@ -295,9 +382,9 @@ func TestRunProgressUsesTheMatchingNodeRouteAndExistingBound(t *testing.T) {
 				t.Errorf("run poll must use its local receipt: %v", p)
 			}
 			return domain.StatusReport{Runs: []domain.Run{r}, Instances: []domain.Instance{i}, Routes: routes}, nil
-		case "up":
+		case "instance.start":
 			request = p
-			return map[string]any{"dry_run": true, "run": r}, nil
+			return map[string]any{"dry_run": true, "points_per_day": "1.25", "billing_start": "从预留开始可能计费", "run": r}, nil
 		default:
 			return nil, errors.New(m)
 		}
@@ -420,7 +507,7 @@ func TestProjectSelectionAndDailyPriceReachCreationReview(t *testing.T) {
 			if p["dry_run"] != true || p["group_id"] != "7" {
 				return nil, errors.New("unexpected write or project")
 			}
-			return map[string]any{"dry_run": true, "run": domain.Run{Deadline: time.Now().Add(time.Hour), Policy: domain.RunPolicy{Cleanup: "release"}}}, nil
+			return map[string]any{"dry_run": true, "points_per_day": "12.750", "billing_start": "从预留开始可能计费", "run": domain.Run{Deadline: time.Now().Add(time.Hour), Policy: domain.RunPolicy{Cleanup: "release"}}}, nil
 		}
 		return nil, errors.New(m)
 	}}
@@ -445,7 +532,7 @@ func TestProjectSelectionAndDailyPriceReachCreationReview(t *testing.T) {
 	click(t, w, "project/7")
 	click(t, w, "preview")
 	waitFor(t, w, func() bool { return !w.current().loading })
-	if !strings.Contains(strings.Join(w.view(w.current()).facts, " "), "12.500 积分/天") || len(b.observed()) != 3 {
+	if !strings.Contains(strings.Join(computeRowTitles(w.view(w.current()).rows), " "), "12.750 积分/天") || len(b.observed()) != 3 {
 		t.Fatal("confirmation lost or refetched the rate", b.observed())
 	}
 }
@@ -501,7 +588,7 @@ func TestUploadRunAndReadOutputOnSelectedInstance(t *testing.T) {
 				return nil, errors.New("incorrect target or arguments")
 			}
 			if p["dry_run"] == true {
-				return map[string]any{"dry_run": true, "run": job}, nil
+				return map[string]any{"dry_run": true, "points_per_day": "1.25", "billing_start": "从预留开始可能计费", "run": job}, nil
 			}
 			return job, nil
 		}
@@ -510,8 +597,8 @@ func TestUploadRunAndReadOutputOnSelectedInstance(t *testing.T) {
 	w := fixtureWorkspace(t, b)
 	w.Backend = journeyLogBackend{b}
 	w.report = report
-	var transfer []string
-	w.Foreground = func(_ context.Context, args []string) error { transfer = slices.Clone(args); return nil }
+	var transfer TerminalAction
+	w.Foreground = func(_ context.Context, action TerminalAction) error { transfer = action; return nil }
 	w.computeHome()
 	click(t, w, "instances")
 	click(t, w, "101")
@@ -525,12 +612,12 @@ func TestUploadRunAndReadOutputOnSelectedInstance(t *testing.T) {
 	trialKey(w, tcell.KeyEnter)
 	typeTrialText(w, "train.py")
 	trialKey(w, tcell.KeyEnter)
-	if transfer != nil {
+	if transfer.Name != "" {
 		t.Fatal("browsing uploaded the file")
 	}
 	click(t, w, "apply")
 	waitFor(t, w, func() bool { return !w.refreshing })
-	if !slices.Equal(transfer, []string{"cp", "--node", "8", "--", "./train.py", "101:train.py"}) {
+	if transfer.Name != "cp" || transfer.Options["node"] != "8" || !slices.Equal(transfer.Args, []string{"./train.py", "101:train.py"}) {
 		t.Fatal(transfer)
 	}
 	if w.current() != origin || origin.key != "job" {
@@ -574,7 +661,7 @@ func TestAllocationWaitsForSnapshotThenTracksStopOnSameInstance(t *testing.T) {
 		switch m {
 		case "instance.create":
 			if p["dry_run"] == true {
-				return map[string]any{"dry_run": true, "run": domain.Run{Deadline: time.Now().Add(time.Hour)}}, nil
+				return map[string]any{"dry_run": true, "points_per_day": "1.25", "billing_start": "从预留开始可能计费", "run": domain.Run{Deadline: time.Now().Add(time.Hour)}}, nil
 			}
 			return receipt, nil
 		case "status.get":
@@ -682,4 +769,12 @@ func TestCatalogQuotesOnlyFocusedTemplatesAndKeepsPublishedZero(t *testing.T) {
 	if len(b.observed()) != 3 {
 		t.Fatal("revisiting a priced template triggered another read")
 	}
+}
+
+func computeRowTitles(rows []row) []string {
+	var titles []string
+	for _, r := range rows {
+		titles = append(titles, r.title)
+	}
+	return titles
 }

@@ -3,10 +3,12 @@ package control
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"slices"
+	"strings"
 
 	"bupt.local/cli/internal/domain"
 	"bupt.local/cli/internal/state"
@@ -21,6 +23,8 @@ type preparedTrial struct {
 	gateway      modelRunner
 	base, secret string
 	request      domain.TrialRequest
+	effect       string
+	id           string
 }
 
 func (c *Controller) modelTrial(ctx context.Context, profile string, p Params) (domain.TrialResult, error) {
@@ -29,23 +33,48 @@ func (c *Controller) modelTrial(ctx context.Context, profile string, p Params) (
 		return domain.TrialResult{}, e
 	}
 	// Do not hold the profile login lock while the model is generating output.
-	return call.gateway.RunModelTrial(ctx, call.base, call.request, call.secret)
+	result, err := call.gateway.RunModelTrial(ctx, call.base, call.request, call.secret)
+	defer c.modelCalls.CompareAndDelete(call.effect, call.id)
+	if definiteModelResult(err) {
+		// The next request can reuse the input after a definite result. The
+		// original idempotency key is still consumed even after success.
+		defer c.lockLogin(profile)()
+		_ = c.Vault.Delete(call.effect)
+	}
+	return result, err
+}
+
+func definiteModelResult(err error) bool {
+	if err == nil {
+		return true
+	}
+	switch managedCode(err) {
+	case "MODEL_BALANCE_INSUFFICIENT", "MODEL_KEY_REJECTED", "MODEL_ACCESS_DENIED",
+		"MODEL_RATE_LIMITED", "MODEL_ENDPOINT_UNAVAILABLE", "MODEL_GATEWAY_UNTRUSTED",
+		"MODEL_TRIAL_UNSUPPORTED", "KEY_NOT_STORED", "GATEWAY_AUTH_EXPIRED":
+		return true
+	}
+	return false
 }
 func (c *Controller) prepareTrial(ctx context.Context, profile string, p Params) (preparedTrial, error) {
 	var call preparedTrial
 	if p.Bool("cached") || p.Bool("dry_run") {
 		return call, domain.E("TRIAL_PREVIEW", "离线浏览和预览只展示请求。")
 	}
-	modelID, keyID := p.String("model"), p.String("key_id")
+	var invocation domain.ModelInvocation
+	if err := json.Unmarshal(domain.Result(p), &invocation); err != nil || !p.Has("input") {
+		return call, domain.E("INVALID_TRIAL_INPUT", "模型输入格式有误。")
+	}
+	modelID, keyID := invocation.Model, invocation.KeyID
 	if modelID == "" || keyID == "" {
 		return call, domain.E("INPUT_REQUIRED", "请选择模型和已启用的 API Key。")
 	}
-	var in domain.TrialInput
-	if !p.Has("input") || p.Into("input", &in) != nil {
-		return call, domain.E("INVALID_TRIAL_INPUT", "模型输入格式有误。")
+	if id := invocation.IdempotencyKey; strings.TrimSpace(id) == "" || len(id) > 256 {
+		return call, domain.E("IDEMPOTENCY_REQUIRED", "计费调用必须提供有效的请求编号")
 	}
+	in := invocation.Input
 	if c.Vault == nil {
-		return call, domain.E("SECRET_STORE", "模型试用需要控制器的加密凭据库。")
+		return call, domain.E("SECRET_STORE", "模型调用需要控制器的加密凭据库。")
 	}
 	defer c.lockLogin(profile)()
 	b, e := c.portalBackend(profile)
@@ -107,22 +136,38 @@ func (c *Controller) prepareTrial(ctx context.Context, profile string, p Params)
 	if call.secret == "" {
 		return call, domain.E("KEY_NOT_STORED", "此控制器缺少完整 Key。")
 	}
-	if id := p.String("idempotency_key"); id != "" {
-		marker := portalCacheKey(ns, account.SID, "trial/"+id)
-		fingerprint := fmt.Sprintf("%x", sha256.Sum256(domain.Result([]any{modelID, keyID, in})))
-		var previous string
-		if e = c.Vault.Get(marker, &previous); e == nil {
-			if previous != fingerprint {
-				return call, domain.E("IDEMPOTENCY_CONFLICT", "同一试用标识已用于其他输入。")
-			}
-			return call, domain.E("TRIAL_ALREADY_SUBMITTED", "该次试用已提交。请先核对用量，再决定是否发起新调用。")
-		} else if !state.IsNotFound(e) && !errors.Is(e, os.ErrNotExist) {
-			return call, e
+	id := invocation.IdempotencyKey
+	marker := portalCacheKey(ns, account.SID, "trial/"+id)
+	fingerprint := fmt.Sprintf("%x", sha256.Sum256(domain.Result([]any{modelID, keyID, in})))
+	var previous string
+	if e = c.Vault.Get(marker, &previous); e == nil {
+		if previous != fingerprint {
+			return call, domain.E("IDEMPOTENCY_CONFLICT", "同一调用标识已用于其他输入。")
 		}
-		if e = c.Vault.Put(marker, fingerprint); e != nil {
-			return call, e
-		}
+		return call, &domain.Error{Code: "TRIAL_ALREADY_SUBMITTED", Message: "该次调用已提交。请先核对用量，再决定是否发起新调用。", RequestID: id}
+	} else if !state.IsNotFound(e) && !errors.Is(e, os.ErrNotExist) {
+		return call, e
 	}
-	call.gateway = runner
+	effect := portalCacheKey(ns, account.SID, "trial-effect/"+fingerprint)
+	var pending string
+	if e = c.Vault.Get(effect, &pending); e == nil {
+		_, running := c.modelCalls.Load(effect)
+		if running || invocation.ResendAfter != pending {
+			return call, &domain.Error{Code: "MODEL_RECONCILIATION_REQUIRED", Message: "同一请求仍在执行或结果待核查，请先核对用量。", RequestID: pending}
+		}
+	} else if !state.IsNotFound(e) && !errors.Is(e, os.ErrNotExist) {
+		return call, e
+	}
+	if e = ctx.Err(); e != nil {
+		return call, e
+	}
+	if e = c.Vault.Put(marker, fingerprint); e != nil {
+		return call, e
+	}
+	if e = c.Vault.Put(effect, id); e != nil {
+		return call, e
+	}
+	c.modelCalls.Store(effect, id)
+	call.gateway, call.effect, call.id = runner, effect, id
 	return call, nil
 }

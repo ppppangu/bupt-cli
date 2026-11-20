@@ -21,6 +21,14 @@ type TrialInput struct {
 	MaxTokens int      `json:"max_tokens,omitempty"`
 	TopN      int      `json:"top_n,omitempty"`
 }
+type ModelInvocation struct {
+	Model          string     `json:"model"`
+	KeyID          string     `json:"key_id"`
+	Input          TrialInput `json:"input"`
+	IdempotencyKey string     `json:"idempotency_key"`
+	ResendAfter    string     `json:"resend_after,omitempty"`
+}
+
 type ModelTrial struct {
 	Kind   string
 	Title  string
@@ -83,7 +91,7 @@ func TrialFor(m PortalModel) (ModelTrial, error) {
 func (in TrialInput) ModelArgs(model, key string, send bool, options ...string) []string {
 	verb := "example"
 	if send {
-		verb = "try"
+		verb = "invoke"
 	}
 	args := []string{"api", "model", verb}
 	args = append(args, options...)
@@ -121,7 +129,7 @@ func (m PortalModel) ExampleCode(in TrialInput, format, base string) (string, er
 	if format != "bupt" {
 		return request.Code(format, base)
 	}
-	argv := in.appendFlags([]string{"api", "model", "try"})
+	argv := in.appendFlags([]string{"api", "model", "invoke"})
 	return shellquote.Command("bupt", argv...) + ` --key "${BUPT_KEY_ID:?请设置选中模型的 Key ID}" -- ` + shellquote.Arg(m.ID), nil
 }
 

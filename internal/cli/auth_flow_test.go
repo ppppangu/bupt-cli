@@ -56,9 +56,9 @@ func TestDefaultLoginFollowsBothQRStagesWithoutPassword(t *testing.T) {
 				t.Fatal("QR flow launched the local-password CAPTCHA viewer")
 				return nil
 			}
-			args := []string{"auth", "login", "--json"}
+			args := []string{"login", "--json"}
 			if !interactive {
-				args = append(args, "--device", "--wait", "--non-interactive")
+				args = append(args, "--wait", "--non-interactive")
 			}
 			if code := executeTest(t, opts, args...); code != 0 {
 				t.Fatalf("exit=%d stderr=%s", code, errOut)
@@ -85,7 +85,7 @@ type failOnRead struct{ t *testing.T }
 func (r failOnRead) Read([]byte) (int, error) { r.t.Fatal("QR login read stdin"); return 0, io.EOF }
 
 func TestLoginNoWaitAndFullFlowPoll(t *testing.T) {
-	for _, command := range [][]string{{"auth", "login", "--no-wait", "--json"}, {"auth", "poll", "--json"}} {
+	for _, command := range [][]string{{"login", "--no-wait", "--json"}, {"auth", "poll", "--json"}} {
 		t.Run(command[1], func(t *testing.T) {
 			b := &fakeBackend{call: func(_ context.Context, method string, _ map[string]any) (any, error) {
 				want := "auth.start"
@@ -112,7 +112,7 @@ func TestRefreshRequiredStopsFullFlowPolling(t *testing.T) {
 		return domain.AuthChallenge{Stage: "university_sso", State: "refresh_required", RequiredAction: "refresh_qr"}, nil
 	}}
 	opts, out, errOut := testOptions(t, b)
-	if code := executeTest(t, opts, "auth", "login", "--device", "--wait", "--json"); code != 1 || out.Len() != 0 || len(b.calls) != 1 || !strings.Contains(errOut.String(), "AUTH_REFRESH_REQUIRED") {
+	if code := executeTest(t, opts, "login", "--wait", "--json"); code != 1 || out.Len() != 0 || len(b.calls) != 1 || !strings.Contains(errOut.String(), "AUTH_REFRESH_REQUIRED") {
 		t.Fatalf("refresh state was hidden or polled: exit=%d calls=%d out=%q err=%q", code, len(b.calls), out, errOut)
 	}
 }
@@ -182,7 +182,7 @@ func TestInstanceAccessOnlyStoresExplicitConsoleCredential(t *testing.T) {
 func TestSSHEnsureOnlyRequestsRepairOfSelectedExistingNode(t *testing.T) {
 	b := &fakeBackend{}
 	opts, _, errOut := testOptions(t, b)
-	if code := executeTest(t, opts, "ssh", "ensure", "existing-instance", "--node", "worker", "--dry-run", "--json"); code != 0 {
+	if code := executeTest(t, opts, "compute", "instance", "prepare-ssh", "existing-instance", "--node", "worker", "--dry-run", "--json"); code != 0 {
 		t.Fatalf("exit=%d err=%s", code, errOut)
 	}
 	if len(b.calls) != 1 || b.calls[0].method != "route.get" {
@@ -272,7 +272,7 @@ func TestCampusPasswordLoginWaitsForGatewayAndSubmitsOnce(t *testing.T) {
 				if mode == "resume" {
 					args = []string{"auth", "poll", "--wait", "--json"}
 				} else {
-					args = []string{"auth", "login", "--sso-password", "--json"}
+					args = []string{"login", "--sso-password", "--json"}
 				}
 				args = append(args, "--non-interactive", "--credentials-stdin")
 				opt.In = strings.NewReader(`{"username":"my-campus-id","password":"` + secret + `","captcha_code":"` + captcha + `"}`)

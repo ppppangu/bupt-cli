@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"bupt.local/cli/internal/domain"
@@ -99,7 +101,9 @@ func (a *app) authPollCommand() *cobra.Command {
 }
 
 func (a *app) runAuthChallenge(cmd *cobra.Command, firstMethod, pollMethod string, wait bool, fallbackStage string, firstParams map[string]any) (domain.AuthChallenge, error) {
-	ctx, cancel := context.WithTimeout(cmd.Context(), a.timeout)
+	signalCtx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	ctx, cancel := context.WithTimeout(signalCtx, a.timeout)
 	defer cancel()
 	qrFile, _ := cmd.Flags().GetString("qr-file")
 	renderer := newAuthChallengeRenderer(a.options.Err, a.interactive(), qrFile, fallbackStage)
@@ -167,7 +171,7 @@ func (a *app) runAuthChallenge(cmd *cobra.Command, firstMethod, pollMethod strin
 			if ctx.Err() == context.Canceled {
 				return challenge, ctx.Err()
 			}
-			return challenge, domain.E("AUTH_REQUIRED", "login is still pending; use bupt auth poll --wait or start bupt auth login again")
+			return challenge, domain.E("AUTH_REQUIRED", "login is still pending; use bupt auth poll --wait or start bupt login again")
 		case <-timer.C:
 		}
 		var next domain.AuthChallenge
@@ -265,9 +269,9 @@ func authChallengeError(c domain.AuthChallenge) error {
 	case "confirmation_required":
 		return domain.E("AUTH_CONFIRM_REQUIRED", "school login requires confirmation to replace another WebVPN session; run bupt auth confirm --take-over only if you want to replace that login")
 	case "refresh_required":
-		return domain.E("AUTH_REFRESH_REQUIRED", "school login needs a fresh QR code; run bupt auth login again")
+		return domain.E("AUTH_REFRESH_REQUIRED", "school login needs a fresh QR code; run bupt login again")
 	case "expired", "denied", "rejected", "failed", "cancelled", "canceled":
-		return domain.E("AUTH_REQUIRED", "school login "+c.State+"; run bupt auth login again")
+		return domain.E("AUTH_REQUIRED", "school login "+c.State+"; run bupt login again")
 	}
 	return nil
 }
@@ -319,7 +323,7 @@ func (r *authChallengeRenderer) Show(c domain.AuthChallenge) error {
 		case "confirm_on_phone":
 			fmt.Fprintln(r.out, "请在手机上完成确认。")
 		case "scan_new_university_qr", "restart_login", "refresh_qr":
-			fmt.Fprintln(r.out, "请重新运行 bupt auth login 获取新的二维码。")
+			fmt.Fprintln(r.out, "请重新运行 bupt login 获取新的二维码。")
 		}
 	}
 	r.lastStage, r.lastState, r.lastAction, r.lastMessage = stage, c.State, c.RequiredAction, c.Message

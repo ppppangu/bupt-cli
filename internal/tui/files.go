@@ -13,7 +13,7 @@ import (
 
 func (w *workspace) files() content {
 	return content{rows: []row{
-		navLink("stores", "平台持久存储", "把文件保存到学校存储空间", "bupt data stores", w.stores),
+		navLink("stores", "平台持久存储", "把文件保存到学校存储空间", "bupt compute storage stores", w.stores),
 		navLink("transfer", "实例文件传输", "在本机和实例之间上传或下载文件", "bupt cp --help", w.transferTargets),
 	}}
 }
@@ -123,7 +123,7 @@ func (w *workspace) fileDetails(location platform.StoragePath, f platform.File) 
 					if strings.TrimSpace(dest) == "" || dest == "-" {
 						return fmt.Errorf("请输入文件路径")
 					}
-					w.terminalReview("下载文件", location.Path+" → "+dest, storageCommand("pull", location, location.Path, dest))
+					w.terminalReview("下载文件", location.Path+" → "+dest, storageCommand("pull", location, location.Path, dest), TerminalAction{Name: "compute storage pull", Args: []string{location.Path, dest}, Options: map[string]string{"store": location.Store, "group-id": string(location.GroupID)}})
 					return nil
 				})
 			}))
@@ -296,7 +296,7 @@ func (w *workspace) copyForm(id, node string, upload bool, after func(string)) {
 			}
 			args := []string{"cp", "--node", node, "--", src, dst}
 			w.terminalConfirmation("传输文件", src+" → "+dst, args, func() {
-				if w.foreground(args...) && after != nil {
+				if w.foreground(TerminalAction{Name: "cp", Args: []string{src, dst}, Options: map[string]string{"node": node}}) && after != nil {
 					after(destination)
 				}
 			})

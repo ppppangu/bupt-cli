@@ -20,12 +20,14 @@ import (
 )
 
 type lifecyclePlatform struct {
+	sshFixture *domain.Route
 	domain.PlatformAPI
 	mu              sync.Mutex
 	snap            domain.Snapshot
 	requests        []domain.TaskRequest
 	authExpired     bool
 	normalStopWorks bool
+	price           string
 	failSyncAfter   int
 	syncCalls       int
 	cfg             domain.PlatformConfig
@@ -61,6 +63,10 @@ func (a *lifecyclePlatform) Submit(ctx context.Context, request domain.TaskReque
 	if request.Type == "CreateAppTask" {
 		name, _ := request.Payload["appName"].(string)
 		i := domain.Instance{ID: "20", Name: name, OperateTaskID: request.ID, OwnerID: "7", UserID: "7", GroupID: "0", SpecID: "9", Index: "10", State: "approved", ReserveType: "manual", DurationSeconds: 3600}
+		i.Nodes = []domain.Node{{ID: "40", Role: "workStation", Resources: map[string]any{"cpu": "2"}}}
+		if route := a.sshFixture; route != nil {
+			i.Nodes = []domain.Node{{ID: "40", Role: "workStation", Resources: map[string]any{"cpu": "2"}, Username: route.Username, Services: []domain.Service{{ID: "10", Name: "console"}, {ID: "11", Name: "ssh", Host: route.Host, Port: route.Port, InnerPort: 22}}}}
+		}
 		a.snap.Instances = append(a.snap.Instances, i)
 		r.InstanceID = i.ID
 	} else if request.Type == "CreateUserOpRequestTask" {
@@ -85,6 +91,8 @@ func (a *lifecyclePlatform) Submit(ctx context.Context, request domain.TaskReque
 				if a.normalStopWorks {
 					i.State = "stopped"
 				}
+			case "CancelAppQueuingTask", "CancelAppReserveQueuingTask":
+				i.State = "stopped"
 			case "ForceStopAppTask":
 				i.State = "stopped"
 			case "AppUnreserveTask":
@@ -215,7 +223,7 @@ func fixtureActiveRun(t *testing.T, c *Controller, a *lifecyclePlatform, job boo
 
 func TestManagedCreateRestoreStartReuseAndVerifiedRelease(t *testing.T) {
 	c, a, _ := lifecycleController(t)
-	p := lifecycleParams(map[string]any{"name": "cycle", "spec_id": "9", "max_runtime": "2h", "no_ssh": true, "no_wait": true})
+	p := lifecycleParams(map[string]any{"name": "cycle", "spec_id": "9", "max_runtime": "2h", "max_points_per_day": "1.25", "no_ssh": true, "no_wait": true})
 	result, e := c.Up(context.Background(), "test", p)
 	if e != nil {
 		t.Fatal(e)
@@ -448,9 +456,34 @@ func TestRenewalRecoversMissingTaskAndRequiresApprovalPlusExpiry(t *testing.T) {
 }
 func fmtInt(n int64) string { return string(domain.Result(n)) }
 
+func TestUnconfirmedManualStopKeepsOriginalDeadline(t *testing.T) {
+	c, school, _ := lifecycleController(t)
+	ctx := t.Context()
+	run := fixtureActiveRun(t, c, school, false)
+	if err := c.ObserveManualOperation(ctx, "test", "stop", lifecycleParams(map[string]any{"target": "20"})); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.advanceRun(ctx, run.ID); err != nil {
+		t.Fatal(err)
+	}
+	if school.count("AppUnreserveTask") != 0 {
+		t.Fatal("manual stop applied the later cleanup early")
+	}
+	if err := c.Store.UpdateRun(run.ID, func(r *domain.Run) error {
+		r.Deadline = time.Now().Add(-time.Second)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	final := lifecycleWait(t, c, run.ID, func(r domain.Run) bool { return managedRunTerminal(r.State) })
+	if final.TerminalReason != "deadline" || school.count("StopAppTask") != 1 {
+		t.Fatal(final, school.count("StopAppTask"))
+	}
+}
+
 func TestCreateAuthFailureIsResumableAndNoDuplicateCreate(t *testing.T) {
 	c, a, _ := lifecycleController(t)
-	p := lifecycleParams(map[string]any{"name": "auth-cycle", "spec_id": "9", "max_runtime": "2h", "no_ssh": true, "no_wait": true})
+	p := lifecycleParams(map[string]any{"name": "auth-cycle", "spec_id": "9", "max_runtime": "2h", "max_points_per_day": "1.25", "no_ssh": true, "no_wait": true})
 	c.intentMu.Lock()
 	r, e := c.prepareManagedRun(context.Background(), "test", "up", p, false, nil)
 	c.intentMu.Unlock()

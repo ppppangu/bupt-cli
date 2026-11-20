@@ -60,8 +60,8 @@ func TestPortalAccountLabelsVerifiedCampusNumbers(t *testing.T) {
 
 func TestKeyExportIsAnExplicitTerminalOperation(t *testing.T) {
 	w := fixtureWorkspace(t, &fixtureBackend{})
-	form := CommandForm{Path: []string{"api", "key", "export"}, Query: true, Export: true, Flags: []FormFlag{{Name: "output"}}}
-	w.boundCommandInputs(form, "导出 Key", []string{"--output=key.txt", "demo"})
+	form := CommandForm{Path: []string{"api", "key", "export"}, Query: true, Export: true, Flags: []FormFlag{{Name: "file"}}}
+	w.boundCommandInputs(form, "导出 Key", []string{"--file=key.txt", "demo"})
 	click(t, w, "go")
 	p := w.current()
 	if _, ok := findPortalRow(w.view(p), "apply"); !ok || p.load != nil {

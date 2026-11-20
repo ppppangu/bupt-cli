@@ -25,6 +25,7 @@ func local(ctx context.Context, cfg *config.Config, method string, p map[string]
 		}
 		ctx, cancel := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 		defer cancel()
+		p["controller_version"] = version
 		return nil, control.RunAgent(ctx, cfg, p, errOut)
 	case "agent.gateway":
 		get := func(k string) string { s, _ := p[k].(string); return s }

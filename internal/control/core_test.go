@@ -55,7 +55,7 @@ func (a *corePlatform) Spec(context.Context, domain.ID) (domain.Spec, error) {
 	return domain.Spec{ID: "9", Options: map[string]any{"resourceConstraints": `{"900":{"role":"workStation","constraints":[{"type":"CPU","value":"2","options":"2,4"},{"type":"Memory","value":"6144","options":"6144,12288"},{"type":"GPU","value":"0.1","options":"0.1,0.2"}]}}`}}, nil
 }
 func (a *corePlatform) Estimate(context.Context, domain.ID, map[string]any) (map[string]any, error) {
-	return nil, nil
+	return map[string]any{"points_per_day": "1.25"}, nil
 }
 func (a *corePlatform) Sync(ctx context.Context) (domain.Snapshot, error) {
 	a.mu.Lock()

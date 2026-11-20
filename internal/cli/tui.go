@@ -1,8 +1,8 @@
 package cli
 
 import (
-	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"maps"
 	"os"
@@ -40,7 +40,7 @@ func (a *app) tuiCommand() *cobra.Command {
 	return cmd
 }
 func (a *app) openTUI(cmd *cobra.Command, cached bool, area string) error {
-	if a.json || a.jsonl || a.quiet || a.nonInteractive {
+	if a.json || a.jsonl || a.ids || a.nonInteractive {
 		return usage("tui requires an interactive terminal; use bupt status --json for scripts")
 	}
 	if a.dryRun || a.idempotencyKey != "" {
@@ -59,7 +59,6 @@ func (a *app) openTUI(cmd *cobra.Command, cached bool, area string) error {
 	// An unrelated edit on disk must not change a pending command's preview.
 	var session atomic.Pointer[config.Config]
 	session.Store(a.cfg)
-	sessionConfig := func(config.Options) (*config.Config, error) { return session.Load(), nil }
 	reloadPresets := func() (*config.Config, error) {
 		local := *a
 		local.profile = a.cfg.Selected
@@ -74,38 +73,15 @@ func (a *app) openTUI(cmd *cobra.Command, cached bool, area string) error {
 	}
 	// After temporarily releasing the screen, use the same terminal handlers
 	// (QR, SSH, password input and file copies) and the same selected account.
-	foreground := func(ctx context.Context, args []string) error {
-		opts := a.options
-		opts.LoadConfig = sessionConfig
-		opts.Hooks.NewClient = func(*config.Config, string) (Backend, error) { return b, nil }
-		child := NewRoot(opts)
-		prefix := []string{}
-		if a.noColor {
-			prefix = append(prefix, "--no-color")
-		}
-		if cmd.Flags().Changed("timeout") {
-			prefix = append(prefix, "--timeout", a.timeout.String())
-		}
-		child.SetArgs(append(prefix, args...))
-		return child.ExecuteContext(ctx)
+	foreground := func(ctx context.Context, request tui.TerminalAction) error {
+		local := *a
+		local.cfg, local.backend = session.Load(), b
+		return local.runTerminalAction(ctx, request, cmd.Flags().Changed("timeout"))
 	}
-	explain := func(name string) string {
-		var text bytes.Buffer
-		opts := a.options
-		opts.Out = &text
-		opts.Err = &text
-		root := NewRoot(opts)
-		root.SetArgs(append([]string{"help"}, strings.Fields(name)...))
-		if err := root.ExecuteContext(ctx); err != nil {
-			return err.Error()
-		}
-		return text.String()
-	}
-	capture := func(ctx context.Context, args []string) (string, error) {
-		opts := a.options
-		opts.LoadConfig = sessionConfig
-		opts.Hooks.NewClient = func(*config.Config, string) (Backend, error) { return b, nil }
-		return captureCommand(ctx, opts, args)
+	presetAction := func(ctx context.Context, method string, values map[string]any, dryRun bool) (json.RawMessage, error) {
+		local := *a
+		local.cfg, local.backend = session.Load(), b
+		return local.applyPresetForm(ctx, method, values, dryRun)
 	}
 	var startWorkspace func(context.Context, string) error
 	if hook := a.options.Hooks.Local; hook != nil {
@@ -114,5 +90,5 @@ func (a *app) openTUI(cmd *cobra.Command, cached bool, area string) error {
 			return err
 		}
 	}
-	return tui.Run(ctx, tui.Options{StartWorkspace: startWorkspace, ReloadPresets: reloadPresets, Commands: a.tuiCommands(cmd), Capture: capture, InitialArea: area, Explain: explain, Config: a.cfg, Backend: b, Foreground: foreground, Cached: cached, NoColor: a.noColor || strings.TrimSpace(os.Getenv("NO_COLOR")) != "", Timeout: a.timeout})
+	return tui.Run(ctx, tui.Options{StartWorkspace: startWorkspace, ReloadPresets: reloadPresets, PresetAction: presetAction, InitialArea: area, Version: a.options.Version, Config: a.cfg, Backend: b, Foreground: foreground, Cached: cached, NoColor: a.noColor || strings.TrimSpace(os.Getenv("NO_COLOR")) != "", Timeout: a.timeout})
 }

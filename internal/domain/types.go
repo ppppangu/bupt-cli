@@ -44,13 +44,14 @@ func (i ID) Number() json.Number {
 }
 
 type Error struct {
-	RequestID string `json:"request_id,omitempty"`
-	Code      string `json:"code"`
-	Message   string `json:"message"`
-	Retryable bool   `json:"retryable,omitempty"`
-	TaskID    string `json:"task_id,omitempty"`
-	RunID     string `json:"run_id,omitempty"`
-	Hint      string `json:"hint,omitempty"`
+	RequestID      string `json:"request_id,omitempty"`
+	Code           string `json:"code"`
+	Message        string `json:"message"`
+	Retryable      bool   `json:"retryable,omitempty"`
+	TaskID         string `json:"task_id,omitempty"`
+	RunID          string `json:"run_id,omitempty"`
+	Hint           string `json:"hint,omitempty"`
+	IdempotencyKey string `json:"idempotency_key,omitempty"`
 }
 
 func (e *Error) Error() string     { return e.Code + ": " + e.Message }
@@ -200,6 +201,11 @@ type TaskResult struct {
 	Message    string         `json:"message,omitempty"`
 	InstanceID ID             `json:"instance_id,omitempty"`
 	Data       map[string]any `json:"data,omitempty"`
+	TargetID   ID             `json:"target_id,omitempty"`
+	Kind       string         `json:"kind,omitempty"`
+	EventIndex int64          `json:"event_index,omitempty"`
+	// Unsent is set only by an adapter that can prove it has not written TASK.
+	Unsent bool `json:"-"`
 }
 type PlatformEvent struct {
 	Index         int64          `json:"index"`
@@ -294,6 +300,9 @@ type Preset struct {
 	Policy      RunPolicy      `json:"policy" toml:"policy"`
 }
 type Run struct {
+	Noop                    bool              `json:"noop,omitempty"`
+	RestartHash             string            `json:"restart_hash,omitempty"`
+	RestartID               string            `json:"restart_id,omitempty"`
 	JobName                 string            `json:"job_name,omitempty"`
 	Kind                    string            `json:"kind,omitempty"`
 	Phase                   string            `json:"phase,omitempty"`
@@ -329,21 +338,29 @@ type Run struct {
 	CreatedInstance         bool              `json:"created_instance"`
 	CancelRequested         bool              `json:"cancel_requested,omitempty"`
 	LastTaskID              string            `json:"last_task_id,omitempty"`
+	ManualTaskID            string            `json:"manual_task_id,omitempty"`
+	ManualPreviousPhase     string            `json:"manual_previous_phase,omitempty"`
+	ManualPreviousState     string            `json:"manual_previous_state,omitempty"`
 	ConfigSources           map[string]string `json:"config_sources,omitempty"`
 }
 type TaskRecord struct {
-	ID         string      `json:"id"`
-	Profile    string      `json:"profile"`
-	Operation  string      `json:"operation"`
-	Request    TaskRequest `json:"request"`
-	Hash       string      `json:"hash"`
-	IntentHash string      `json:"intent_hash,omitempty"`
-	ParentID   string      `json:"parent_id,omitempty"`
-	AttemptIDs []string    `json:"attempt_ids,omitempty"`
-	State      string      `json:"state"`
-	Result     *TaskResult `json:"result,omitempty"`
-	CreatedAt  time.Time   `json:"created_at"`
-	UpdatedAt  time.Time   `json:"updated_at"`
+	ID               string      `json:"id"`
+	Profile          string      `json:"profile"`
+	Operation        string      `json:"operation"`
+	Request          TaskRequest `json:"request"`
+	Hash             string      `json:"hash"`
+	IntentHash       string      `json:"intent_hash,omitempty"`
+	ParentID         string      `json:"parent_id,omitempty"`
+	AttemptIDs       []string    `json:"attempt_ids,omitempty"`
+	RunID            string      `json:"run_id,omitempty"`
+	Manual           bool        `json:"manual,omitempty"`
+	Verified         bool        `json:"verified,omitempty"`
+	Noop             bool        `json:"noop,omitempty"`
+	SubmissionUnsent bool        `json:"submission_unsent,omitempty"`
+	State            string      `json:"state"`
+	Result           *TaskResult `json:"result,omitempty"`
+	CreatedAt        time.Time   `json:"created_at"`
+	UpdatedAt        time.Time   `json:"updated_at"`
 }
 type Route struct {
 	Profile       string      `json:"profile"`

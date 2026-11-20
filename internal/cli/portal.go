@@ -59,11 +59,11 @@ func (a *app) portalQuery(use, label, section string) *cobra.Command {
 func (a *app) apiCommand() *cobra.Command {
 	g := a.portalQuery("api", "大模型 API 服务总览", "overview")
 	models := a.portalQuery("model", "查询全部可见模型、能力、上下文、价格和健康状态", "model")
-	models.Aliases = []string{"models"}
+
 	models.AddCommand(a.modelTrialCommand(false), a.modelTrialCommand(true))
 	models.AddCommand(a.portalQuery("show ID", "查看模型指标和采样历史", "model"), a.portalQuery("ls", "列出模型", "model"))
 	keys := a.portalQuery("key", "管理 API Key、模型范围和控制器保管状态", "key")
-	keys.Aliases = []string{"keys"}
+
 	keys.AddCommand(a.portalQuery("ls", "列出 API Key", "key"), a.portalQuery("show ID", "查看 Key 的状态和模型范围", "key"))
 	create := a.portalMutation("create NAME", "为指定模型创建 Key", "key.create")
 	create.Flags().StringSlice("model", nil, "允许的真实模型 ID，可重复")
@@ -71,12 +71,14 @@ func (a *app) apiCommand() *cobra.Command {
 	for _, op := range []struct{ name, label string }{{"enable", "启用 Key"}, {"disable", "停用 Key"}, {"delete", "永久删除 Key"}} {
 		keys.AddCommand(a.portalMutation(op.name+" ID", op.label, "key."+op.name))
 	}
-	keys.AddCommand(a.exportPortalKey())
+	keys.AddCommand(advancedCommand(a.exportPortalKey()))
+	defaultTo(models, "ls")
+	defaultTo(keys, "ls")
 	pref := a.portalQuery("display", "查看本人在排行榜中的展示方式", "preference")
 	pref.AddCommand(a.portalMutation("set MODE", "设置 anonymous、partial 或 real", "preference.set"))
 	leaderboard := a.portalQuery("leaderboard", "查看门户排行榜", "leaderboard")
 	leaderboard.AddCommand(pref)
-	g.AddCommand(models, keys, a.portalQuery("admin", "查看学校门户授予的后台权限", "admin"), a.portalQuery("usage", "查询余额、调用次数和按模型统计的用量", "usage"), a.portalQuery("guide", "取得公网网关地址及 Python、curl 接入示例", "guide"), leaderboard)
+	g.AddCommand(models, keys, a.portalQuery("usage", "查询余额、调用次数和按模型统计的用量", "usage"), advancedCommand(a.portalQuery("guide", "取得公网网关地址及 Python、curl 接入示例", "guide")), leaderboard)
 	return g
 }
 func (a *app) portalCommonCommands() []*cobra.Command {
@@ -119,14 +121,14 @@ func (a *app) portalMutation(use, label, op string) *cobra.Command {
 }
 func (a *app) exportPortalKey() *cobra.Command {
 	cmd := &cobra.Command{Use: "export ID", Short: "将控制器保管的 Key 写入新私有文件或显式管道", Args: exactArgs(1)}
-	dest := cmd.Flags().StringP("output", "o", "", "新文件路径，或用 - 写入管道")
+	dest := cmd.Flags().StringP("file", "o", "", "新文件路径，或用 - 写入管道")
 	cmd.RunE = func(cmd *cobra.Command, args []string) error {
 		if *dest == "" {
-			return usage("key export requires --output FILE or --output -")
+			return usage("key export requires --file FILE or --file -")
 		}
 		pipe := *dest == "-"
-		if pipe && (isTerminal(a.options.Out) || a.json || a.jsonl || a.quiet) {
-			return usage("--output - requires a pipe or redirected stdout, without output-format flags")
+		if pipe && (isTerminal(a.options.Out) || a.json || a.jsonl || a.ids) {
+			return usage("--file - requires a pipe or redirected stdout, without output-format flags")
 		}
 		if a.dryRun {
 			return a.emit(map[string]any{"dry_run": true, "id": args[0], "output": *dest})
@@ -178,34 +180,45 @@ func point(n *float64) string {
 	return fmt.Sprint(*n)
 }
 func (a *app) displayPortal(v domain.PortalPage, target string) error {
-	if target != "" && (v.Section == "model" || v.Section == "key") {
-		for _, m := range v.Models {
-			if m.ID == target {
-				return a.emit(m)
-			}
+	if a.field == "balance" {
+		if v.Account == nil || v.Account.Balance == nil {
+			return domain.E("FIELD_UNAVAILABLE", "学校尚未返回余额")
 		}
-		for _, k := range v.Keys {
-			if k.ID == target {
-				return a.emit(k)
+		_, err := fmt.Fprintln(a.options.Out, *v.Account.Balance)
+		return err
+	}
+	if target != "" && (v.Section == "model" || v.Section == "key") {
+		if v.Section == "model" {
+			for _, m := range v.Models {
+				if m.ID == target {
+					return a.emit(m)
+				}
+			}
+		} else {
+			for _, k := range v.Keys {
+				if k.ID == target {
+					return a.emit(k)
+				}
 			}
 		}
 		return domain.E("NOT_FOUND", "当前账号没有该 ID。")
 	}
-	if a.jsonl || a.quiet {
+	if a.jsonl || a.ids {
 		if v.Section == "model" {
+			if len(v.Models) == 0 {
+				return nil
+			}
 			return a.emit(v.Models)
 		}
 		if v.Section == "key" {
+			if len(v.Keys) == 0 {
+				return nil
+			}
 			return a.emit(v.Keys)
 		}
-		if a.quiet && v.Section == "guide" {
-			return a.emit(v.Data["base_url"])
-		}
-		if a.quiet && v.Section == "account" && v.Account != nil {
-			return a.emit(v.Account.SID)
-		}
+
 	}
-	if a.json || a.jsonl || a.quiet {
+	if a.json || a.jsonl || a.ids {
 		return a.emit(v)
 	}
 	for _, warning := range v.Warnings {
@@ -240,7 +253,8 @@ func (a *app) displayPortal(v domain.PortalPage, target string) error {
 			fmt.Fprintln(out, "用量数据暂不可用")
 		}
 		if v.Section == "overview" {
-			fmt.Fprintf(out, "API Key\t%d\n\nbupt api model   查询模型\nbupt api usage   查询余额与用量\nbupt api key     管理密钥\n", len(v.Keys))
+			fmt.Fprintf(out, "API Key\t%d\n", len(v.Keys))
+			a.humanHint("下一步  bupt api model 查询模型，bupt api usage 查询用量，bupt api key 管理密钥")
 		}
 	case "guide":
 		fmt.Fprintln(out, "Base URL\t"+scalar(v.Data["base_url"]))

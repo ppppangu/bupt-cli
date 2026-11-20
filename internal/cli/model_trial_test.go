@@ -41,13 +41,13 @@ func TestModelExamplesAndExplicitCLITrial(t *testing.T) {
 	if c := invoke("example", "user-model", "--text", "我写的句子", "--format", "curl"); c != 0 || !strings.Contains(out.String(), "我写的句子") || !strings.Contains(out.String(), "/chat/completions") || submitted != 0 {
 		t.Fatal(c, out, diag)
 	}
-	if c := invoke("try", "user-model", "--sample", "--dry-run", "--json"); c != 0 || !strings.Contains(out.String(), `"dry_run":true`) || strings.Contains(out.String(), "[redacted]") || submitted != 0 {
+	if c := invoke("invoke", "user-model", "--sample", "--dry-run", "--json"); c != 0 || !strings.Contains(out.String(), `"dry_run":true`) || strings.Contains(out.String(), "[redacted]") || submitted != 0 {
 		t.Fatal(c, out, diag)
 	}
-	if c := invoke("try", "user-model", "--key", "key-id", "--text", "我写的句子", "--max-tokens", "24", "--json"); c != 0 || submitted != 1 || !strings.Contains(out.String(), "assistant reply") || !strings.Contains(out.String(), `"prompt_tokens":8`) {
+	if c := invoke("invoke", "user-model", "--key", "key-id", "--text", "我写的句子", "--max-tokens", "24", "--json"); c != 0 || submitted != 1 || !strings.Contains(out.String(), "assistant reply") || !strings.Contains(out.String(), `"prompt_tokens":8`) {
 		t.Fatal(c, out, diag)
 	}
-	if c := invoke("try", "user-model", "--key", "key-id", "--cached", "--sample"); c == 0 || submitted != 1 {
+	if c := invoke("invoke", "user-model", "--key", "key-id", "--cached", "--sample"); c == 0 || submitted != 1 {
 		t.Fatal("cached execution was accepted")
 	}
 }

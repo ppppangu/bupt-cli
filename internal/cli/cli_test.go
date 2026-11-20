@@ -142,14 +142,14 @@ func TestInvalidLifecycleRequestsDoNotReachController(t *testing.T) {
 		args []string
 		code int
 	}{
-		{"missing creation cap", []string{"instance", "create", "demo"}, 1},
-		{"missing job cap", []string{"run", "--", "true"}, 1},
+		{"missing creation cap", []string{"compute", "instance", "create", "demo"}, 1},
+		{"missing job cap", []string{"compute", "job", "run", "--", "true"}, 1},
 		{"format conflicts with ssh", []string{"up", "demo", "--ssh", "--json"}, 2},
 		{"readiness required for ssh", []string{"up", "demo", "--ssh", "--no-wait"}, 2},
-		{"ambiguous deadline", []string{"lease", "set", "demo", "--max-runtime", "1h", "--until", "2099-01-01T00:00:00Z"}, 2},
-		{"ambiguous renewal", []string{"job", "update", "demo", "--renew", "--no-renew"}, 2},
-		{"invalid grace", []string{"lease", "set", "demo", "--stop-grace", "-1s"}, 2},
-		{"secret argv is unsupported", []string{"auth", "login", "--password", "secret"}, 2},
+		{"ambiguous deadline", []string{"compute", "lease", "set", "demo", "--max-runtime", "1h", "--until", "2099-01-01T00:00:00Z"}, 2},
+		{"ambiguous renewal", []string{"compute", "job", "update", "demo", "--renew", "--no-renew"}, 2},
+		{"invalid grace", []string{"compute", "lease", "set", "demo", "--stop-grace", "-1s"}, 2},
+		{"secret argv is unsupported", []string{"login", "--password", "secret"}, 2},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -169,7 +169,7 @@ func TestConfiguredCapAndExplicitFalseArePreserved(t *testing.T) {
 	b := &fakeBackend{}
 	opts, _, errOut := testOptions(t, b)
 	opts.ConfigOptions.Overrides = map[string]any{"policy.max_runtime": "2h", "policy.auto_renew": true, "policy.force_stop": true}
-	if code := executeTest(t, opts, "instance", "create", "demo", "--no-renew", "--force-stop=false", "--wait=false", "--json"); code != 0 {
+	if code := executeTest(t, opts, "compute", "instance", "create", "demo", "--max-points-per-day", "10", "--no-renew", "--force-stop=false", "--wait=false", "--json"); code != 0 {
 		t.Fatalf("exit=%d err=%s", code, errOut)
 	}
 	if len(b.calls) != 1 {
@@ -185,21 +185,18 @@ func TestConfiguredCapAndExplicitFalseArePreserved(t *testing.T) {
 	}
 }
 
-func TestExistingUpDoesNotInventNewRunLimit(t *testing.T) {
-	b := &fakeBackend{}
-	opts, _, errOut := testOptions(t, b)
-	if code := executeTest(t, opts, "up", "demo", "--json"); code != 0 {
-		t.Fatalf("exit=%d err=%s", code, errOut)
-	}
-	if _, ok := b.calls[0].params["policy"]; ok {
-		t.Fatalf("up overwrote existing cycle policy: %+v", b.calls)
+func TestStartDoesNotAllocate(t *testing.T) {
+	backend := &fakeBackend{}
+	opts, _, diag := testOptions(t, backend)
+	if code := executeTest(t, opts, "compute", "instance", "start", "demo", "--json"); code != 0 || len(backend.calls) != 1 || backend.calls[0].method != "instance.start" {
+		t.Fatal(code, diag.String(), backend.calls)
 	}
 }
 
 func TestLeaseUpdateSendsOnlyExplicitPolicyFields(t *testing.T) {
 	b := &fakeBackend{}
 	opts, _, errOut := testOptions(t, b)
-	if code := executeTest(t, opts, "lease", "set", "demo", "--no-renew", "--json"); code != 0 {
+	if code := executeTest(t, opts, "compute", "lease", "set", "demo", "--no-renew", "--json"); code != 0 {
 		t.Fatalf("exit=%d err=%s", code, errOut)
 	}
 	want := map[string]any{"auto_renew": false}
@@ -226,7 +223,7 @@ func TestPasswordStdinIsNeverRendered(t *testing.T) {
 	}}
 	opts, out, errOut := testOptions(t, b)
 	opts.In = strings.NewReader(secret + "\n")
-	if code := executeTest(t, opts, "auth", "login", "--username", "student", "--password-stdin", "--non-interactive", "--json"); code != 0 {
+	if code := executeTest(t, opts, "login", "--username", "student", "--password-stdin", "--non-interactive", "--json"); code != 0 {
 		t.Fatalf("exit=%d err=%s", code, errOut)
 	}
 	if strings.Contains(out.String()+errOut.String(), secret) {
@@ -242,7 +239,7 @@ func TestJSONErrorsStayOnStderr(t *testing.T) {
 		return nil, &domain.Error{Code: "AUTH_REQUIRED", Message: "school approval expired", Retryable: false}
 	}}
 	opts, out, errOut := testOptions(t, b)
-	if code := executeTest(t, opts, "instance", "ls", "--json"); code != 1 || out.Len() != 0 {
+	if code := executeTest(t, opts, "compute", "instance", "ls", "--json"); code != 1 || out.Len() != 0 {
 		t.Fatalf("exit=%d out=%q err=%q", code, out, errOut)
 	}
 	var envelope struct{ Error domain.Error }
@@ -252,16 +249,16 @@ func TestJSONErrorsStayOnStderr(t *testing.T) {
 }
 
 func TestJSONLAndQuietListsAreComposable(t *testing.T) {
-	for _, format := range []string{"--jsonl", "--quiet"} {
+	for _, format := range []string{"--jsonl", "--output=id"} {
 		t.Run(format, func(t *testing.T) {
 			b := &fakeBackend{call: func(context.Context, string, map[string]any) (any, error) {
 				return []map[string]any{{"id": "a", "name": "first"}, {"id": "b", "name": "second"}}, nil
 			}}
 			opts, out, errOut := testOptions(t, b)
-			if code := executeTest(t, opts, "ls", format); code != 0 || errOut.Len() != 0 {
+			if code := executeTest(t, opts, "compute", "instance", "ls", format); code != 0 || errOut.Len() != 0 {
 				t.Fatalf("exit=%d err=%q", code, errOut)
 			}
-			if format == "--quiet" {
+			if format == "--output=id" {
 				if out.String() != "a\nb\n" {
 					t.Fatalf("quiet output=%q", out)
 				}
@@ -285,7 +282,7 @@ func TestDownloadStdoutContainsOnlyFileBytes(t *testing.T) {
 		return map[string]any{"bytes": len(data)}, e
 	}}
 	opts, out, errOut := testOptions(t, b)
-	if code := executeTest(t, opts, "data", "pull", "result.bin", "-"); code != 0 || !bytes.Equal(out.Bytes(), data) || errOut.Len() != 0 {
+	if code := executeTest(t, opts, "compute", "storage", "pull", "result.bin", "-"); code != 0 || !bytes.Equal(out.Bytes(), data) || errOut.Len() != 0 {
 		t.Fatalf("download not byte-clean: exit=%d out=%q err=%q", code, out, errOut)
 	}
 }
@@ -301,7 +298,7 @@ func TestFailedDownloadKeepsExistingFileAndRemovesPartial(t *testing.T) {
 		return nil, errors.New("interrupted transport")
 	}}
 	opts, out, errOut := testOptions(t, b)
-	if code := executeTest(t, opts, "data", "pull", "result.bin", dest, "--overwrite"); code != 1 || out.Len() != 0 {
+	if code := executeTest(t, opts, "compute", "storage", "pull", "result.bin", dest, "--overwrite"); code != 1 || out.Len() != 0 {
 		t.Fatalf("exit=%d out=%q err=%q", code, out, errOut)
 	}
 	contents, e := os.ReadFile(dest)
@@ -333,7 +330,7 @@ func TestRunForegroundKeepsJSONSeparateAndReturnsRemoteStatus(t *testing.T) {
 		return nil, e
 	}}
 	opts, out, errOut := testOptions(t, b)
-	if code := executeTest(t, opts, "run", "--max-runtime", "1h", "--json", "--", "false"); code != 9 {
+	if code := executeTest(t, opts, "compute", "job", "run", "--max-runtime", "1h", "--max-points-per-day", "1.25", "--json", "--", "false"); code != 9 {
 		t.Fatalf("exit=%d err=%q", code, errOut)
 	}
 	if !json.Valid(out.Bytes()) || errOut.String() != "program log\n" {
@@ -382,7 +379,7 @@ func TestHelpNeedsNoConfigurationOrController(t *testing.T) {
 	if code := executeTest(t, opts, "help", "--all"); code != 0 || errOut.Len() != 0 {
 		t.Fatalf("exit=%d err=%q", code, errOut)
 	}
-	for _, name := range []string{"auth", "agent", "config", "profile", "instance", "spec", "lease", "run", "ssh", "exec", "data", "snapshot", "service", "key"} {
+	for _, name := range []string{"auth", "agent", "config", "profile", "compute instance", "compute catalog", "compute lease", "compute job run", "ssh", "exec", "compute storage", "compute snapshot", "compute service", "client key"} {
 		if !strings.Contains(out.String(), "  "+name+" ") {
 			t.Errorf("help missing %s", name)
 		}
@@ -478,7 +475,7 @@ func TestUploadResumeIdentityHashesContentsAndRewinds(t *testing.T) {
 		return map[string]any{"id": "pending-1"}, e
 	}}
 	opts, _, errOut := testOptions(t, b)
-	if code := executeTest(t, opts, "data", "push", file, "sample.bin", "--upload-id", "pending-1", "--json"); code != 0 {
+	if code := executeTest(t, opts, "compute", "storage", "push", file, "sample.bin", "--upload-id", "pending-1", "--json"); code != 0 {
 		t.Fatalf("exit=%d err=%q", code, errOut)
 	}
 }
@@ -513,7 +510,7 @@ func TestJobWaitReturnsForExpiredAndExternallyStoppedRuns(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			b := &fakeBackend{call: func(context.Context, string, map[string]any) (any, error) { return tc.run, nil }}
 			opts, _, errOut := testOptions(t, b)
-			if code := executeTest(t, opts, "job", "wait", "job-1", "--timeout", "100ms", "--json"); code != tc.want {
+			if code := executeTest(t, opts, "compute", "job", "wait", "job-1", "--timeout", "100ms", "--json"); code != tc.want {
 				t.Fatalf("exit=%d want=%d err=%s", code, tc.want, errOut)
 			}
 			if len(b.calls) != 1 {

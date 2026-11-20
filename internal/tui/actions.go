@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"bupt.local/cli/internal/domain"
+	"bupt.local/cli/internal/feedback"
 	"github.com/google/uuid"
 )
 
@@ -17,15 +18,15 @@ type change struct {
 	title, method string
 	args          []string
 	params        map[string]any
-	quote         *instanceQuote
 	facts         []string
 	resources     []string
 	deleteName    string
 	task          bool
+	afterSubmit   func()
 }
 
-func (w *workspace) terminalReview(title, detail string, args []string) {
-	w.terminalConfirmation(title, detail, args, func() { w.foreground(args...) })
+func (w *workspace) terminalReview(title, detail string, args []string, action TerminalAction) {
+	w.terminalConfirmation(title, detail, args, func() { w.foreground(action) })
 }
 func (w *workspace) terminalConfirmation(title, detail string, args []string, apply func()) {
 	display := cmdline(args...)
@@ -46,19 +47,18 @@ func (w *workspace) review(op change) {
 	test := maps.Clone(params)
 	test["dry_run"] = true
 	command := cmdline(op.args...)
-	type preview struct {
-		DryRun      bool                                      `json:"dry_run"`
-		Run         *domain.Run                               `json:"run"`
-		Constraints map[string][]struct{ Type, Value string } `json:"resource_constraints"`
-	}
+
 	var p *page
-	p = queryPage(w, "确认"+op.title, command, op.method, test, true, func(plan preview) content {
+	p = queryPage(w, "确认"+op.title, command, op.method, test, true, func(plan domain.InstanceCreatePreview) content {
 		lines := slices.Clone(op.facts)
 		if !plan.DryRun {
 			return w.textContent("控制器未返回有效预览")
 		}
+		if plan.Run != nil && plan.Run.Noop {
+			return w.textContent("实例已达到请求状态，无需提交")
+		}
 		switch op.method {
-		case "up", "instance.create", "instance.restore":
+		case "instance.start", "instance.create", "instance.restore", "instance.restart":
 			if plan.Run == nil || plan.Run.Deadline.IsZero() {
 				return w.textContent("尚未取得托管截止时间，请返回核对时限。")
 			}
@@ -66,15 +66,15 @@ func (w *workspace) review(op change) {
 		if name, ok := params["name"].(string); ok {
 			lines = append(lines, "实例名称  "+name)
 		}
-		if len(plan.Constraints) == 0 {
+		if len(plan.ResourceConstraints) == 0 {
 			lines = append(lines, op.resources...)
 			if params["resources"] != nil {
 				lines = append(lines, "完整资源组合以学校核定结果为准。")
 			}
 		} else {
-			for _, group := range orderedKeys(plan.Constraints) {
+			for _, group := range orderedKeys(plan.ResourceConstraints) {
 				var hardware []string
-				for _, field := range plan.Constraints[group] {
+				for _, field := range plan.ResourceConstraints[group] {
 					switch field.Type {
 					case "GPU":
 						hardware = append(hardware, gpuConstraint(field.Value))
@@ -88,7 +88,7 @@ func (w *workspace) review(op change) {
 				}
 				if len(hardware) != 0 {
 					label := "本次配置"
-					if len(plan.Constraints) > 1 {
+					if len(plan.ResourceConstraints) > 1 {
 						label = "节点组 " + group
 					}
 					lines = append(lines, label+"  "+strings.Join(hardware, " · "))
@@ -102,14 +102,24 @@ func (w *workspace) review(op change) {
 			}
 			lines = append(lines, limit+"  "+moment(plan.Run.Deadline), "到期处理  "+label(plan.Run.Policy.Cleanup)+" · 自动续期 "+yes(plan.Run.Policy.AutoRenew))
 		}
+		if op.method == "instance.create" || op.method == "instance.restore" {
+			if plan.PointsPerDay == "" {
+				return w.textContent("尚未取得学校估价，请返回重新核对")
+			}
+			lines = append(lines, "学校估价  "+plan.PointsPerDay+" 积分/天", plan.BillingStart)
+		}
 		v := w.textContent(strings.Join(lines, "\n"))
 		v.rows = append(v.rows, navLink("back", "返回修改", "保留本次填写的内容", "", w.back))
 		submit := link("submit", "确认"+op.title, "执行已核对的操作", command, func() {
+			if op.method == "instance.create" || op.method == "instance.restore" {
+				params["max_points_per_day"] = plan.PointsPerDay
+			}
 			if op.deleteName != "" {
-				w.edit("输入实例名称 "+op.deleteName+" 确认永久删除", "", func(input string) error {
+				w.edit("输入实例 ID "+op.deleteName+" 确认永久删除", "", func(input string) error {
 					if input != op.deleteName {
-						return fmt.Errorf("名称不匹配")
+						return fmt.Errorf("实例 ID 不匹配")
 					}
+					params["confirm"] = input
 					w.submit(p, op, params)
 					return nil
 				})
@@ -121,20 +131,8 @@ func (w *workspace) review(op change) {
 		v.rows = append(v.rows, submit)
 		return v
 	})
-	if op.quote != nil {
-		loadPlan := p.load
-		p.load = func(ctx context.Context) (func() content, error) {
-			show, err := loadPlan(ctx)
-			if err != nil {
-				return nil, err
-			}
-			select {
-			case <-op.quote.ready:
-			case <-ctx.Done():
-			}
-			return func() content { v := show(); v.facts = append(v.facts, op.quote.label()); return v }, nil
-		}
-	}
+
+	p.unsubmitted = true
 	w.push(p)
 }
 func gpuConstraint(raw string) string {
@@ -158,7 +156,8 @@ func (w *workspace) submit(p *page, op change, params map[string]any) {
 	if p.submitting || w.current() != p {
 		return
 	}
-	p.submitting = true
+	p.submitting, p.unsubmitted = true, false
+	p.incident = feedback.Incident{}
 	w.notice = ""
 	go func() {
 		ctx, cancel := context.WithTimeout(w.ctx, w.Timeout)
@@ -170,6 +169,8 @@ func (w *workspace) submit(p *page, op change, params map[string]any) {
 		w.post(w.ctx, func() {
 			p.submitting = false
 			if err != nil {
+				issue := feedback.FromError(op.method, err)
+				p.incident = issue
 				var detail *domain.Error
 				if errors.As(err, &detail) {
 					ref := detail.RunID
@@ -184,6 +185,7 @@ func (w *workspace) submit(p *page, op change, params map[string]any) {
 						} else {
 							w.taskPage(ref)
 						}
+						w.current().incident = issue
 					}
 				}
 				w.notice = whenError(err)
@@ -191,7 +193,11 @@ func (w *workspace) submit(p *page, op change, params map[string]any) {
 			}
 			if receipt.ID == "" {
 				w.notice = "控制器未返回回执，请查看作业与记录"
+				p.incident = feedback.FromError(op.method, domain.E("MISSING_RECEIPT", ""))
 				return
+			}
+			if op.afterSubmit != nil {
+				op.afterSubmit()
 			}
 			if instanceChange(op.method) {
 				w.trackInstance(op, receipt.ID, op.task)
@@ -275,22 +281,30 @@ func (w *workspace) trackInstance(op change, ref string, task bool) {
 }
 func (w *workspace) endReview(i domain.Instance) {
 	id := string(i.ID)
-	w.review(change{title: "停止并归还算力", method: "down", args: []string{"down", id, "--cleanup", "release", "--no-wait"}, params: map[string]any{"target": id, "cleanup": "release"}, facts: []string{i.Name + " · " + id, "正在运行的任务会中断。释放计算预留，保留实例磁盘。", "保留的存储仍可能计费，费用以学校存储账单为准。"}})
+	w.review(change{title: "停止并归还算力", method: "down", args: []string{"compute", "lease", "end", id, "--cleanup", "release"}, params: map[string]any{"target": id, "cleanup": "release"}, facts: []string{i.Name + " · " + id, "正在运行的任务会中断。释放计算预留，保留实例磁盘。", "保留的存储仍可能计费，费用以学校存储账单为准。"}})
 }
 func (w *workspace) deleteReview(i domain.Instance) {
 	id := string(i.ID)
-	w.review(change{title: "永久删除实例及磁盘", method: "instance.delete", args: []string{"instance", "delete", id, "--no-wait"}, params: map[string]any{"target": id}, facts: []string{i.Name + " · " + id, "平台将永久删除实例及其实例磁盘。"}, deleteName: i.Name, task: true})
+	w.review(change{title: "永久删除实例及磁盘", method: "instance.delete", args: []string{"compute", "instance", "delete", id, "--confirm", id}, params: map[string]any{"target": id}, facts: []string{i.Name + " · " + id, "平台将永久删除实例及其实例磁盘。"}, deleteName: string(i.ID), task: true})
 }
 func (w *workspace) cancelReview(r domain.Run) {
-	w.review(change{title: "取消作业", method: "job.cancel", args: []string{"job", "cancel", r.ID}, params: map[string]any{"target": r.ID}, facts: []string{r.Name + " · " + r.ID, "作业终止后按周期策略清理 · " + label(r.Policy.Cleanup)}})
+	w.review(change{title: "取消作业", method: "job.cancel", args: []string{"compute", "job", "cancel", r.ID}, params: map[string]any{"target": r.ID}, facts: []string{r.Name + " · " + r.ID, "作业终止后按周期策略清理 · " + label(r.Policy.Cleanup)}})
 }
 
-func (w *workspace) field(key, title string, dest *string, placeholder string) row {
+func (w *workspace) field(key, title string, dest *string, placeholder string, changed ...func()) row {
 	detail := *dest
 	if detail == "" {
 		detail = placeholder
 	}
-	r := link(key, title, detail, "", func() { w.edit(title, *dest, func(s string) error { *dest = strings.TrimSpace(s); return nil }) })
+	r := link(key, title, detail, "", func() {
+		w.edit(title, *dest, func(s string) error {
+			*dest = strings.TrimSpace(s)
+			for _, apply := range changed {
+				apply()
+			}
+			return nil
+		})
+	})
 	r.verb = "编辑"
 	return r
 }
@@ -298,8 +312,8 @@ func (w *workspace) field(key, title string, dest *string, placeholder string) r
 func (w *workspace) jobForm(i domain.Instance) {
 	id := string(i.ID)
 	var argv = []string{""}
-	w.local("提交后台作业", "bupt run --help", func() content {
-		args := append([]string{"run", "--detach", "--instance", id, "--"}, argv...)
+	w.local("提交后台作业", "bupt compute job run --help", func() content {
+		args := append([]string{"compute", "job", "run", "--detach", "--instance", id, "--"}, argv...)
 		facts := []string{"实例 " + i.Name + " · 示例命令  python train.py", "作业结束或达到时限后，按本次托管策略清理。"}
 		if r := w.instanceRun(i); r != nil {
 			facts = append(facts, runDeadline(*r))

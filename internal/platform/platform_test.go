@@ -883,8 +883,8 @@ func TestCaptchaOptionsAndSavedCredentialRetry(t *testing.T) {
 	}
 }
 
-func TestTaskRetryReusesExactUUIDAndPayload(t *testing.T) {
-	requests := make(chan string, 2)
+func TestUnacknowledgedTaskIsNotSentAgain(t *testing.T) {
+	requests := make(chan string, 8)
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/auth/user" {
 			writeJSON(w, map[string]any{"uid": 7})
@@ -897,7 +897,6 @@ func TestTaskRetryReusesExactUUIDAndPayload(t *testing.T) {
 		defer ws.CloseNow()
 		_ = ws.Write(r.Context(), websocket.MessageText, []byte(`0{"pingInterval":100,"pingTimeout":2000}`))
 		_ = ws.Write(r.Context(), websocket.MessageText, []byte("40"))
-		count := 0
 		for {
 			name, p, e := readEvent(r.Context(), ws)
 			if e != nil {
@@ -909,24 +908,35 @@ func TestTaskRetryReusesExactUUIDAndPayload(t *testing.T) {
 			case "TASK":
 				b, _ := json.Marshal(p)
 				requests <- string(b)
-				count++
-				if count == 2 {
-					_ = sendEvent(r.Context(), ws, "TASK_RET", map[string]any{"id": p["id"], "state": "complete", "code": 0})
-				}
 			}
 		}
 	}))
 	defer s.Close()
 	c := testClient(t, s)
-	ctx, cancel := context.WithTimeout(context.Background(), 7*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5500*time.Millisecond)
 	defer cancel()
-	_, e := c.Submit(ctx, domain.TaskRequest{ID: "c5b62d2e-33cf-4f2d-9ef6-5a466a86287b", Type: "StopAppTask", Payload: map[string]any{"appEid": 10, "eaasIndex": 55}})
-	if e != nil {
-		t.Fatal(e)
+	request := domain.TaskRequest{ID: "c5b62d2e-33cf-4f2d-9ef6-5a466a86287b", Type: "StopAppTask", Payload: map[string]any{"appEid": 10, "eaasIndex": 55}}
+	if _, err := c.Submit(ctx, request); !isCode(err, "TASK_PENDING") {
+		t.Fatal(err)
 	}
-	a, b := <-requests, <-requests
-	if a != b {
-		t.Fatal("retry changed task envelope")
+	retry, retryCancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer retryCancel()
+	if _, err := c.Submit(retry, request); !isCode(err, "TASK_PENDING") {
+		t.Fatal(err)
+	}
+	select {
+	case first := <-requests:
+		var sent map[string]any
+		if err := json.Unmarshal([]byte(first), &sent); err != nil || sent["id"] != request.ID || sent["type"] != request.Type {
+			t.Fatal(sent, err)
+		}
+	default:
+		t.Fatal("task did not reach the real websocket fixture")
+	}
+	select {
+	case replay := <-requests:
+		t.Fatal("unacknowledged task was replayed:", replay)
+	default:
 	}
 }
 

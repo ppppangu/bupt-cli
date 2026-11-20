@@ -28,14 +28,15 @@ func (a *app) computeDetail(use, description, section string, cluster bool) *cob
 	return cmd
 }
 func (a *app) adminQuotaCommands() *cobra.Command {
-	cmd := a.computeDetail("quota CLUSTER", "查看集群已发布的账户限额", "admin.limits", false)
+	cmd := &cobra.Command{Use: "quota", Short: "学校管理员限额"}
+	cmd.AddCommand(a.computeDetail("show CLUSTER", "查看集群已发布的账户限额", "admin.limits", false))
 	set := &cobra.Command{Use: "set CLUSTER ACCOUNT", Short: "预览或更新一个现有的数值限额", Args: exactArgs(2)}
-	field := set.Flags().String("field", "", "学校发布的限额字段")
+	field := set.Flags().String("quota-field", "", "学校发布的限额字段")
 	value := set.Flags().String("value", "", "新的数值")
 	revision := set.Flags().String("revision", "", "预览返回的版本")
 	set.RunE = func(cmd *cobra.Command, args []string) error {
 		if *field == "" || *value == "" {
-			return usage("quota set requires --field and --value")
+			return usage("quota set requires --quota-field and --value")
 		}
 		if !a.dryRun && *revision == "" {
 			return usage("先用 --dry-run 预览，再指定 --revision")
@@ -55,7 +56,7 @@ func (a *app) featureCommand() *cobra.Command {
 		if e := a.rpc(cmd.Context(), "compute.read", map[string]any{"section": "capabilities", "cached": *cached, "refresh": *fresh}, &flags); e != nil {
 			return e
 		}
-		if a.json || a.jsonl || a.quiet {
+		if a.json || a.jsonl || a.ids {
 			return a.emit(flags)
 		}
 		for _, f := range []struct{ id, title string }{{"app", "算力实例"}, {"pool", "资源池"}, {"hpc", "学校调度"}, {"billing", "计量与账单"}, {"remoteApp", "远程算力"}, {"aiModel", "算力站内模型服务"}, {"dataset", "数据集"}, {"projects", "项目"}, {"prepayment", "预付费账户"}} {

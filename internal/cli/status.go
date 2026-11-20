@@ -28,9 +28,6 @@ func (a *app) statusCommand() *cobra.Command {
 		if a.json || a.jsonl {
 			return a.emit(report)
 		}
-		if a.quiet {
-			return a.emit(report.Platform)
-		}
 		out := tabwriter.NewWriter(a.options.Out, 0, 4, 2, ' ', 0)
 		fmt.Fprintf(out, "PROFILE\t%s\nCONTROLLER\t%s\nWEBVPN\t%s\n裸算力会话\t%s\nDATA\t%s\n", scalar(report.Profile), scalar(report.Controller), scalar(report.Gateway), scalar(report.Platform), report.Source)
 		if len(args) == 0 {
@@ -92,11 +89,11 @@ func (a *app) statusCommand() *cobra.Command {
 		}
 		for _, run := range report.Runs {
 			if run.LastError != "" && !displayRunEnded(run.State) {
-				fmt.Fprintf(a.options.Err, "run %s: %s; bupt job inspect %s\n", run.ID, scalar(run.LastError), run.ID)
+				fmt.Fprintf(a.options.Err, "run %s: %s; bupt compute job show %s\n", run.ID, scalar(run.LastError), run.ID)
 			}
 		}
 		if !cached && report.Platform != "authenticated" {
-			fmt.Fprintln(a.options.Err, "Next: bupt login (cached SSH routes remain independent of school login)")
+			a.humanHint("下一步  bupt login")
 		}
 		return nil
 	}

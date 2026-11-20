@@ -15,7 +15,7 @@ func TestRemoteCheckoutOutputPreservesSchoolQuotePrecision(t *testing.T) {
 		return json.RawMessage(`{"quote":"review-id","details":{"total":9007199254740993.10,"currency":"CNY"}}`), nil
 	}}
 	opts, out, diag := testOptions(t, b)
-	if rc := executeTest(t, opts, "compute", "remote", "order", "create", "--dry-run", "--json", "--spec=80", "--", "--quote=literal"); rc != 0 || !strings.Contains(out.String(), "9007199254740993.10") {
+	if rc := executeTest(t, opts, "remote", "order", "create", "--dry-run", "--json", "--spec=80", "--", "--quote=literal"); rc != 0 || !strings.Contains(out.String(), "9007199254740993.10") {
 		t.Fatal(rc, out.String(), diag.String())
 	}
 }

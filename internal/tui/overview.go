@@ -9,13 +9,14 @@ import (
 	"time"
 
 	"bupt.local/cli/internal/domain"
+	"bupt.local/cli/internal/feedback"
 	"bupt.local/cli/internal/navigation"
 	"bupt.local/cli/internal/shellquote"
 )
 
 var stateLabels = map[string]string{
 	"authenticated": "已登录", "expired": "已过期", "blocked_by_gateway": "等待 WebVPN", "not_checked": "未检查", "unknown": "未知", "action_required": "需要认证",
-	"running": "运行中", "starting": "启动中", "stopping": "停止中", "stopped": "已停止", "ready": "就绪", "released": "已释放", "allocated": "已分配", "preparing": "准备中", "pending": "等待中", "failed": "失败", "complete": "完成", "completed": "完成", "cancelled": "已取消", "rejected": "已拒绝", "uncertain": "待核对", "cleanup_pending": "等待清理", "approved": "已批准", "pending_approval": "等待审批", "session": "实例周期", "allocation": "资源申请", "job": "后台作业", "direct": "直连", "relay": "中继", "release": "停止并释放资源", "stop": "只停止", "none": "保留资源", "delete": "永久删除", "ip_changed": "出口 IP 已变化",
+	"running": "运行中", "ssh_preparing": "正在验证 SSH", "create_pending": "创建待核对", "reserve_queuing": "等待分配算力", "restoring": "正在分配算力", "queuing": "正在排队", "restart_failed": "重启待处理", "starting": "启动中", "stopping": "停止中", "stopped": "已停止", "ready": "就绪", "released": "已释放", "allocated": "已分配", "preparing": "准备中", "pending": "等待中", "failed": "失败", "complete": "完成", "completed": "完成", "cancelled": "已取消", "rejected": "已拒绝", "uncertain": "待核对", "cleanup_pending": "等待清理", "approved": "已批准", "pending_approval": "等待审批", "session": "实例周期", "allocation": "资源申请", "job": "后台作业", "direct": "直连", "relay": "中继", "release": "停止并释放资源", "stop": "只停止", "none": "保留资源", "delete": "永久删除", "ip_changed": "出口 IP 已变化",
 }
 
 func label(s string) string {
@@ -82,8 +83,8 @@ func (w *workspace) openArea(a navigation.Area) {
 		cmd  string
 		body func() content
 	}{
-		"compute": {"bupt ls", w.instances}, "resources": {"bupt resources", w.resources},
-		"work": {"bupt job ls", w.work}, "files": {"bupt data stores", w.files}, "access": {"bupt status", w.access},
+		"compute": {"bupt compute instance ls", w.instances}, "resources": {"bupt compute catalog", w.resources},
+		"work": {"bupt compute job ls", w.work}, "files": {"bupt compute storage stores", w.files}, "access": {"bupt status", w.access},
 	}
 	section := sections[a.ID]
 	w.push(&page{title: a.Name, area: a.ID, command: section.cmd, build: section.body})
@@ -110,6 +111,17 @@ func (w *workspace) instanceName(i domain.Instance) string {
 	}
 	return name
 }
+func instanceComputeState(i domain.Instance) string {
+	switch {
+	case i.ReserveType == "no":
+		return "按需分配算力"
+	case i.Reserved:
+		return "算力已分配"
+	default:
+		return "算力未分配"
+	}
+}
+
 func (w *workspace) instances() content {
 	v := content{split: true, empty: "当前账号暂无实例。"}
 	if w.hasReport && !w.report.SnapshotAvailable && w.report.Source != "live" && len(w.report.Instances) == 0 {
@@ -121,17 +133,22 @@ func (w *workspace) instances() content {
 		if alias := w.instanceName(i); alias != title {
 			title += " · " + alias
 		}
-		res := "未预留"
-		if i.Reserved {
-			res = "已预留"
-		}
+		res := instanceComputeState(i)
 		ssh := "SSH " + label(w.instanceSSHState(i))
 		run := w.instanceRun(i)
 		expiry, next := instanceTiming(i.ExpiresAt, run, now)
 		if !next.IsZero() && (v.redrawAt.IsZero() || next.Before(v.redrawAt)) {
 			v.redrawAt = next
 		}
-		r := navLink(string(i.ID), title, strings.Join([]string{ssh, expiry, label(i.State), res}, " · "), cmdline("inspect", string(i.ID)), func() { w.instancePage(i.ID) })
+		state := label(i.State)
+		detail := []string{ssh, expiry, state, res}
+		if i.State == "stopped" && !i.Reserved && i.ReserveType != "no" {
+			detail = []string{state, res}
+			if run != nil || !i.ExpiresAt.IsZero() {
+				detail = append(detail, expiry)
+			}
+		}
+		r := navLink(string(i.ID), title, strings.Join(detail, " · "), cmdline("compute", "instance", "show", string(i.ID)), func() { w.instancePage(i.ID) })
 		r.preview = []string{"实例 " + string(i.ID), "状态 " + label(i.State) + " · " + res}
 		if len(i.Nodes) > 0 {
 			if spec := resourceSummary(i.Nodes[0].Resources); spec != "" {
@@ -326,13 +343,14 @@ func (w *workspace) instancePage(id domain.ID) {
 	w.instanceWorkspace(id, title, nil)
 }
 func (w *workspace) instanceWorkspace(id domain.ID, title string, tracking *instanceOperation) *page {
-	p := &page{title: title, area: "compute", bench: "instance", instanceID: id, tracking: tracking, command: cmdline("inspect", string(id))}
+	p := &page{title: title, area: "compute", bench: "instance", instanceID: id, tracking: tracking, command: cmdline("compute", "instance", "show", string(id))}
 	p.build = func() content { return w.instanceContent(p) }
 	w.push(p)
 	return p
 }
 func (w *workspace) instanceContent(p *page) content {
 	op := p.tracking
+	var issue feedback.Incident
 	var progress []string
 	outstanding := false
 	expectInstance := false
@@ -347,6 +365,13 @@ func (w *workspace) instanceContent(p *page) content {
 				if t.Result != nil && t.Result.Message != "" {
 					progress = append(progress, t.Result.Message)
 				}
+				if slices.Contains([]string{"failed", "rejected", "aborted", "need_repeat", "uncertain"}, t.State) {
+					code := "INSTANCE_TASK_FAILED"
+					if t.Result != nil && t.Result.Code != 0 {
+						code = fmt.Sprintf("TASK_%d", t.Result.Code)
+					}
+					issue = feedback.Incident{Operation: op.method, Code: code, State: t.State, TaskID: t.ID, Time: t.UpdatedAt}
+				}
 			}
 			if op.problem != "" {
 				progress = append(progress, op.problem)
@@ -356,7 +381,7 @@ func (w *workspace) instanceContent(p *page) content {
 				if r.ID == op.id && (p.instanceID == "" || r.InstanceID == "" || r.InstanceID == p.instanceID) {
 					if r.InstanceID != "" {
 						p.instanceID = r.InstanceID
-						p.command = cmdline("inspect", string(r.InstanceID))
+						p.command = cmdline("compute", "instance", "show", string(r.InstanceID))
 					}
 					state = label(r.State)
 					outstanding = active(r) && !slices.Contains([]string{"ready", "running", "allocated"}, r.State)
@@ -366,6 +391,7 @@ func (w *workspace) instanceContent(p *page) content {
 					}
 					if r.LastError != "" {
 						progress = append(progress, "诊断  "+r.LastError)
+						issue = feedback.Incident{Operation: op.method, Code: r.LastError, State: r.State, RunID: r.ID, TaskID: r.LastTaskID, Time: r.UpdatedAt}
 					}
 					break
 				}
@@ -385,7 +411,7 @@ func (w *workspace) instanceContent(p *page) content {
 		} else {
 			progress = append(progress, "当前快照中没有此实例。")
 		}
-		return content{facts: progress, rows: []row{link("refresh", "刷新实例状态", "", "", w.refresh)}}
+		return content{facts: progress, incident: issue, rows: []row{link("refresh", "刷新实例状态", "", "", w.refresh)}}
 	}
 	if i.Name != "" {
 		p.title = i.Name
@@ -405,12 +431,17 @@ func (w *workspace) instanceContent(p *page) content {
 			op.observed = true
 		}
 	}
-	if op != nil && op.method == "up" && expectInstance && !op.observed {
-		if i.State != "running" {
-			outstanding = true
-		} else if !outstanding && w.report.Source == "live" {
-			op.observed = true
+	if op != nil && expectInstance && !op.observed {
+		switch op.method {
+		case "instance.start", "instance.restart", "instance.create":
+			outstanding = outstanding || i.State != "running"
+		case "instance.restore":
+			if !outstanding && !i.Reserved {
+				progress = append(progress, "已收到分配结果，正在核对可用算力。")
+				outstanding = true
+			}
 		}
+		op.observed = !outstanding && w.report.Source == "live"
 	}
 	if op != nil && w.statusArea == "compute" && w.statusErr != "" {
 		progress = append(progress, w.statusErr)
@@ -420,7 +451,7 @@ func (w *workspace) instanceContent(p *page) content {
 	}
 	p.watch = !w.Cached && (outstanding || slices.Contains([]string{"starting", "stopping", "pending_approval", "queuing", "queued", "restoring"}, i.State))
 	sshState := w.instanceSSHState(i)
-	v := content{facts: []string{fmt.Sprintf("%s   ·   已预留 %s   ·   SSH %s", label(i.State), yes(i.Reserved), label(sshState)), "实例 " + string(i.ID) + "   ·   逻辑名 " + w.instanceName(i)}}
+	v := content{incident: issue, facts: []string{fmt.Sprintf("%s   ·   %s   ·   SSH %s", label(i.State), instanceComputeState(i), label(sshState)), "实例 " + string(i.ID) + "   ·   逻辑名 " + w.instanceName(i)}}
 	v.facts = append(progress, v.facts...)
 	if i.Health != "" {
 		v.facts = append(v.facts, "健康状态  "+label(i.Health))
@@ -445,7 +476,9 @@ func (w *workspace) instanceContent(p *page) content {
 				for _, svc := range n.Services {
 					if svc.Healthy && svc.InnerPort > 0 && svc.InnerPort <= 65535 && slices.Contains([]string{"jupyter", "jupyterhub", "code-server", "vscode", "webide"}, strings.ToLower(svc.Name)) {
 						args := []string{"forward", "--node", string(n.ID), "--", string(i.ID), strconv.Itoa(svc.InnerPort)}
-						v.rows = append(v.rows, link("ide/"+string(n.ID)+"/"+string(svc.ID), "转发 "+svc.Name+" 到本机", n.Name+" · 在浏览器使用终端显示的本机端口", cmdline(args...), func() { w.foreground(args...) }))
+						v.rows = append(v.rows, link("ide/"+string(n.ID)+"/"+string(svc.ID), "转发 "+svc.Name+" 到本机", n.Name+" · 在浏览器使用终端显示的本机端口", cmdline(args...), func() {
+							w.foreground(TerminalAction{Name: "forward", Args: []string{string(i.ID), strconv.Itoa(svc.InnerPort)}, Options: map[string]string{"node": string(n.ID)}})
+						}))
 					}
 				}
 			}
@@ -453,15 +486,21 @@ func (w *workspace) instanceContent(p *page) content {
 				v.rows = append(v.rows, link("upload", "上传代码到此实例", "选择本机文件和实例路径", cmdline("cp", "LOCAL", string(id)+":PATH"), func() { w.uploadToInstance(i) }))
 			}
 			if i.Managed {
-				v.rows = append(v.rows, navLink("job", "提交后台作业", "沿用此周期的截止时间", cmdline("run", "--instance", string(id), "--", "COMMAND"), func() { w.jobForm(i) }))
+				v.rows = append(v.rows, navLink("job", "提交后台作业", "沿用此周期的截止时间", cmdline("compute", "job", "run", "--instance", string(id), "--", "COMMAND"), func() { w.jobForm(i) }))
 			}
 		}
-		if i.State == "stopped" || i.State == "approved" || i.State == "running" && !i.Managed {
-			name := "启动并准备 SSH"
-			if i.State == "running" {
-				name = "设置本次运行期限"
-			}
-			v.rows = append(v.rows, link("start", name, "核对期限和到期处理，准备运行程序", "bupt up "+quoteArg(w.instanceName(i)), func() { w.startForm(i) }))
+		switch {
+		case (i.State == "stopped" || i.State == "approved") && (i.Reserved || i.ReserveType == "no"):
+			v.rows = append(v.rows, link("start", "启动并准备 SSH", "核对期限和到期处理，准备运行程序", "bupt compute instance start "+quoteArg(w.instanceName(i)), func() { w.startForm(i) }))
+		case i.State == "stopped" && !i.Reserved:
+			const title = "重新分配算力"
+			v.rows = append(v.rows, navLink("restore", title, "分配后可启动并连接 SSH，原磁盘保留", cmdline("compute", "instance", "restore", string(i.ID)), func() {
+				policy := w.Config.Policy
+				if preset, ok := w.Config.Presets[w.Config.DefaultPreset]; ok {
+					policy = preset.Policy
+				}
+				w.resourceForm(title, &draft{instance: &i, restore: true, name: w.instanceName(i), policy: policy, limit: policy.MaxRuntime})
+			}))
 		}
 	}
 	if run != nil {
@@ -482,7 +521,7 @@ func (w *workspace) instanceContent(p *page) content {
 			if !ok {
 				return content{empty: "当前快照中已找不到此实例。"}
 			}
-			maintenance := content{rows: []row{navLink("receipts", "实例操作回执", "查看与此实例相关的操作结果", "bupt task ls", func() { w.scopedTasks(id) })}}
+			maintenance := content{rows: []row{navLink("receipts", "实例操作回执", "查看与此实例相关的操作结果", "bupt compute task ls", func() { w.scopedTasks(id) })}}
 			if !w.Cached {
 				target := string(current.ID)
 				maintenance.rows = append(maintenance.rows,
@@ -496,7 +535,7 @@ func (w *workspace) instanceContent(p *page) content {
 					maintenance.rows = append(maintenance.rows, w.contextAction("纳入托管周期", "选择时限和清理策略", []string{"compute", "instance", "adopt"}, target))
 				}
 				if len(current.Nodes) == 1 && current.Nodes[0].Type == "qemu" && (current.State == "stopped" || current.State == "approved") {
-					maintenance.rows = append(maintenance.rows, w.contextAction("克隆实例", "填写新实例名称及其生命周期", []string{"compute", "clone"}, target))
+					maintenance.rows = append(maintenance.rows, w.contextAction("克隆实例", "填写新实例名称及其生命周期", []string{"compute", "instance", "clone"}, target))
 				}
 			}
 			return maintenance
@@ -549,16 +588,18 @@ func (w *workspace) addSSH(v *content, i domain.Instance, n domain.Node) {
 }
 func (w *workspace) sshRow(id domain.ID, n domain.Node, ready bool) row {
 	args := []string{"ssh", string(id), "--node", string(n.ID)}
+	action := TerminalAction{Name: "ssh", Args: []string{string(id)}, Options: map[string]string{"node": string(n.ID)}}
 	name, detail := "连接 SSH", n.Name
 	if !ready {
-		args = []string{"ssh", "ensure", string(id), "--node", string(n.ID)}
+		args = []string{"compute", "instance", "prepare-ssh", string(id), "--node", string(n.ID)}
+		action.Name = "compute instance prepare-ssh"
 		name, detail = "准备 SSH", n.Name+" · 核对后安装并验证公钥"
 	}
 	r := link("ssh/"+string(n.ID), name, detail, cmdline(args...), func() {
 		if ready {
-			w.foreground(args...)
+			w.foreground(action)
 		} else {
-			w.terminalReview(name, detail, args)
+			w.terminalReview(name, detail, args, action)
 		}
 	})
 	r.verb = name
@@ -576,7 +617,7 @@ func (w *workspace) node(instanceID, nodeID domain.ID) (domain.Instance, domain.
 	return i, domain.Node{}, false
 }
 func (w *workspace) nodePage(i domain.Instance, n domain.Node) {
-	w.local(n.Name, cmdline("inspect", string(i.ID)), func() content {
+	w.local(n.Name, cmdline("compute", "instance", "show", string(i.ID)), func() content {
 		current, n, ok := w.node(i.ID, n.ID)
 		if !ok {
 			return content{empty: "当前实例中已找不到此节点。"}
@@ -592,7 +633,7 @@ func (w *workspace) nodePage(i domain.Instance, n domain.Node) {
 		}
 		if !w.Cached {
 			if current.State == "running" {
-				v.rows = append(v.rows, navLink("connection", "连接与终端", "SSH、命令、隧道与文件传输", cmdline("compute", "ssh", target, node), func() {
+				v.rows = append(v.rows, navLink("connection", "连接与终端", "SSH、命令、隧道与文件传输", cmdline("ssh", target, node), func() {
 					w.nodeConnections(current.ID, n.ID)
 
 				}))
@@ -604,7 +645,7 @@ func (w *workspace) nodePage(i domain.Instance, n domain.Node) {
 				if !canResize {
 					detail = "指定 QEMU 磁盘的目标总容量"
 				}
-				v.rows = append(v.rows, w.contextAction("调整节点规格", detail, []string{"compute", "resize"}, node, target))
+				v.rows = append(v.rows, w.contextAction("调整节点规格", detail, []string{"compute", "instance", "resize"}, node, target))
 			}
 			if current.State == "running" || current.State == "stopped" {
 				v.rows = append(v.rows, w.contextAction("新增服务映射", "为此节点指定服务名称、绑定地址和端口", []string{"compute", "service", "add"}, node, target))
@@ -630,7 +671,7 @@ func (w *workspace) nodePage(i domain.Instance, n domain.Node) {
 }
 func (w *workspace) nodeConnections(instanceID, nodeID domain.ID) {
 	target, node := string(instanceID), "--node="+string(nodeID)
-	w.local("连接与终端", cmdline("compute", "ssh", target, node), func() content {
+	w.local("连接与终端", cmdline("ssh", target, node), func() content {
 		current, n, ok := w.node(instanceID, nodeID)
 		if !ok || current.State != "running" || n.State == "stopped" || w.Cached {
 			return content{empty: "此节点当前未运行。"}
@@ -638,11 +679,11 @@ func (w *workspace) nodeConnections(instanceID, nodeID domain.ID) {
 		c := content{}
 		w.addSSH(&c, current, n)
 		c.rows = append(c.rows,
-			w.contextAction("SSH 会话选项", "选择 tmux 会话或设置断线重连", []string{"compute", "ssh"}, node, target),
-			w.contextAction("运行远端命令", "按参数输入要执行的程序", []string{"compute", "exec"}, node, target),
-			w.contextAction("学校终端", "通过算力平台进入此节点", []string{"compute", "console"}, node, target),
-			w.contextAction("本地端口转发", "选择节点上需要访问的端口", []string{"compute", "forward"}, node, target),
-			w.contextAction("打开 SFTP", "在此节点上传或下载文件", []string{"compute", "sftp"}, node, target),
+			w.contextAction("SSH 会话选项", "选择 tmux 会话或设置断线重连", []string{"ssh"}, node, target),
+			w.contextAction("运行远端命令", "按参数输入要执行的程序", []string{"exec"}, node, target),
+			w.contextAction("学校终端", "通过算力平台进入此节点", []string{"console"}, node, target),
+			w.contextAction("本地端口转发", "选择节点上需要访问的端口", []string{"forward"}, node, target),
+			w.contextAction("打开 SFTP", "在此节点上传或下载文件", []string{"sftp"}, node, target),
 		)
 		return c
 	})
@@ -654,8 +695,12 @@ func (w *workspace) loginMethods() {
 	}
 	origin := w.current()
 	menu := &page{title: "学校登录", command: "bupt login", loginMenu: true}
-	login := func(args ...string) {
-		if !w.foreground(args...) || w.current() != menu {
+	login := func(password bool) {
+		action := TerminalAction{Name: "login"}
+		if password {
+			action.Options = map[string]string{"sso-password": "true"}
+		}
+		if !w.foreground(action) || w.current() != menu {
 			return
 		}
 		w.bar.loginRevision++ // Compute can require a new ticket while the portal remains signed in.
@@ -673,8 +718,8 @@ func (w *workspace) loginMethods() {
 			label = "选择统一身份认证方式。学校要求核验网络时会先显示 WebVPN 二维码。"
 		}
 		return content{facts: []string{label}, rows: []row{
-			link("qr", "扫码登录", "在手机上确认学校身份", "bupt login", func() { login("login") }),
-			link("sso-password", "账号密码登录", "使用统一身份认证账号", "bupt login --sso-password", func() { login("login", "--sso-password") }),
+			link("qr", "扫码登录", "在手机上确认学校身份", "bupt login", func() { login(false) }),
+			link("sso-password", "账号密码登录", "使用统一身份认证账号", "bupt login --sso-password", func() { login(true) }),
 		}}
 	}
 	w.push(menu)
@@ -692,10 +737,10 @@ func (w *workspace) access() content {
 		}
 		if s.VPN == "authenticated" || s.Platform == "authenticated" {
 			v.rows = append(v.rows, navLink("logout", "退出登录", "结束当前配置的学校会话", "bupt logout", func() {
-				w.terminalReview("退出登录", "退出 "+w.Config.Selected+" 的学校会话并清除已保存的平台口令和实例终端密码。", []string{"logout"})
+				w.terminalReview("退出登录", "退出 "+w.Config.Selected+" 的学校会话并清除已保存的平台口令和实例终端密码。", []string{"logout"}, TerminalAction{Name: "logout"})
 			}))
 		}
-		v.rows = append(v.rows, link("password", "保存实例终端密码", "首次准备 SSH 时使用", "bupt auth access", func() { w.foreground("auth", "access") }))
+		v.rows = append(v.rows, link("password", "保存实例终端密码", "首次准备 SSH 时使用", "bupt auth access", func() { w.foreground(TerminalAction{Name: "auth access"}) }))
 	}
 	v.rows = append(v.rows, navLink("topbar", prefsTitle, "选择顶栏信息和自动核验方式", "", w.topbarSettings))
 	for _, r := range w.report.Routes {

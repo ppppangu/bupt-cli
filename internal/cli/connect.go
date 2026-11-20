@@ -21,8 +21,8 @@ import (
 )
 
 func (a *app) rawOutput() error {
-	if a.json || a.jsonl || a.quiet {
-		return usage("raw connection commands cannot be combined with --json, --jsonl, or --quiet")
+	if a.json || a.jsonl || a.ids || a.field != "" || a.format != "" {
+		return usage("raw connection commands cannot be combined with 格式化输出选项")
 	}
 	return nil
 }
@@ -33,17 +33,8 @@ func (a *app) sshCommand() *cobra.Command {
 	cmd.Flags().String("session", "", "Attach or create a persistent tmux session")
 	cmd.Flags().Bool("reconnect", false, "Reconnect a named tmux session after transport failure")
 	cmd.Flags().String("node", "", "Node selector for a multi-node instance")
-	ensure := &cobra.Command{Use: "ensure INSTANCE", Short: "Prepare or repair SSH for an existing running instance without allocating resources", Args: exactArgs(1)}
-	ensure.Flags().String("node", "", "Node selector for a multi-node instance")
-	ensure.RunE = func(cmd *cobra.Command, args []string) error {
-		p := targetParams(args)
-		copyChangedFlags(cmd, p)
-		p["repair"] = true
-		return a.callAndPrint(cmd, "route.get", p)
-	}
-	cmd.AddCommand(ensure)
 	cmd.RunE = func(cmd *cobra.Command, args []string) error {
-		if len(args) > 1 && cmd.ArgsLenAtDash() != 1 {
+		if len(args) > 1 && cmd.ArgsLenAtDash() != 1 && cmd.Annotations["terminal_action"] != "true" {
 			return usage("separate remote commands with --")
 		}
 		tty, _ := cmd.Flags().GetBool("tty")
@@ -86,6 +77,18 @@ func (a *app) sshCommand() *cobra.Command {
 	return cmd
 }
 
+func (a *app) sshRepairCommand() *cobra.Command {
+	ensure := &cobra.Command{Use: "prepare-ssh INSTANCE", Short: "Prepare or repair SSH for an existing running instance without allocating resources", Args: exactArgs(1)}
+	ensure.Flags().String("node", "", "Node selector for a multi-node instance")
+	ensure.RunE = func(cmd *cobra.Command, args []string) error {
+		p := targetParams(args)
+		copyChangedFlags(cmd, p)
+		p["repair"] = true
+		return a.callAndPrint(cmd, "route.get", p)
+	}
+	return ensure
+}
+
 func reconnectable(err error) bool {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
@@ -105,7 +108,7 @@ func (a *app) execCommand() *cobra.Command {
 	cmd := &cobra.Command{Use: "exec INSTANCE -- COMMAND [ARG...]", Short: "Execute a remote command and preserve its exit status", Args: rangeArgs(2, -1)}
 	cmd.Flags().String("node", "", "Node selector for a multi-node instance")
 	cmd.RunE = func(cmd *cobra.Command, args []string) error {
-		if cmd.ArgsLenAtDash() != 1 {
+		if cmd.ArgsLenAtDash() != 1 && cmd.Annotations["terminal_action"] != "true" {
 			return usage("use exec INSTANCE -- COMMAND [ARG...]")
 		}
 		return a.session(cmd, args[0], args[1:], false, true, "")
@@ -134,8 +137,12 @@ func (a *app) session(cmd *cobra.Command, target string, command []string, force
 	if err != nil {
 		return err
 	}
-	pty := forcePTY || (!noPTY && isTerminal(a.options.In) && isTerminal(a.options.Out))
+	pty := forcePTY || (!a.nonInteractive && !noPTY && isTerminal(a.options.In) && isTerminal(a.options.Out))
 	opts := connect.SessionOptions{Command: command, PTY: pty, Term: "xterm-256color", Rows: 24, Cols: 80}
+	if len(command) == 0 && a.humanOutput() {
+		a.humanHint("正在连接实例 " + scalar(target) + "…")
+		opts.OnConnected = func() { a.humanHint("SSH 认证成功") }
+	}
 	resizes := make(chan connect.WindowSize, 1)
 	signals := make(chan string, 4)
 	stop := make(chan struct{})
@@ -192,18 +199,30 @@ func (a *app) session(cmd *cobra.Command, target string, command []string, force
 		ctx, cancel = context.WithTimeout(ctx, a.timeout)
 		defer cancel()
 	}
+	in, release, err := borrowTerminalInput(a.options.In)
+	if err != nil {
+		return err
+	}
+	defer release()
 	var exit int
 	if node != "" {
 		nb, ok := b.(nodeSessionBackend)
 		if !ok {
 			return domain.E("TRANSPORT_CAPABILITY", "this controller transport does not support node-specific SSH sessions")
 		}
-		exit, err = nb.SessionNode(ctx, target, node, opts, a.options.In, a.options.Out, a.options.Err, resizes, signals)
+		exit, err = nb.SessionNode(ctx, target, node, opts, in, a.options.Out, a.options.Err, resizes, signals)
 	} else {
-		exit, err = b.Session(ctx, target, opts, a.options.In, a.options.Out, a.options.Err, resizes, signals)
+		exit, err = b.Session(ctx, target, opts, in, a.options.Out, a.options.Err, resizes, signals)
 	}
 	if err != nil {
-		return err
+		var problem *domain.Error
+		if errors.As(err, &problem) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
+		return &domain.Error{Code: "SSH_TRANSPORT", Message: "SSH 会话中断", Retryable: true}
+	}
+	if exit < 0 || exit > 255 {
+		return domain.E("PROTOCOL_ERROR", "远端退出状态不在 0–255 范围")
 	}
 	if exit != 0 {
 		return &ExitError{Code: exit}
@@ -225,14 +244,16 @@ func (a *app) proxyCommand() *cobra.Command {
 		if e != nil {
 			return e
 		}
+		ctx, cancel := a.transferContext(cmd)
+		defer cancel()
 		if node, _ := cmd.Flags().GetString("node"); node != "" {
 			nb, ok := b.(nodeProxyBackend)
 			if !ok {
 				return domain.E("TRANSPORT_CAPABILITY", "this controller transport does not support node-specific SSH proxying")
 			}
-			return nb.ProxyNode(cmd.Context(), args[0], node, a.options.In, a.options.Out)
+			return nb.ProxyNode(ctx, args[0], node, a.options.In, a.options.Out)
 		}
-		return b.Proxy(cmd.Context(), args[0], a.options.In, a.options.Out)
+		return b.Proxy(ctx, args[0], a.options.In, a.options.Out)
 	}
 	return cmd
 }
@@ -268,13 +289,18 @@ func (a *app) consoleCommand() *cobra.Command {
 		}
 		ctx, cancel := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 		defer cancel()
-		_, e = b.Stream(ctx, "console", p, a.options.In, a.options.Out)
+		in, release, e := borrowTerminalInput(a.options.In)
+		if e != nil {
+			return e
+		}
+		defer release()
+		_, e = b.Stream(ctx, "console", p, in, a.options.Out)
 		return e
 	}
 	return cmd
 }
 func (a *app) forwardCommand() *cobra.Command {
-	cmd := &cobra.Command{Use: "forward INSTANCE PORT", Short: "Forward a local loopback port through the existing SSH route", Args: exactArgs(2)}
+	cmd := &cobra.Command{Use: "forward INSTANCE PORT", Short: "转发实例端口，默认仅监听本机回环地址", Args: exactArgs(2)}
 	cmd.Flags().String("local", "127.0.0.1:0", "Local listen address")
 	cmd.Flags().String("remote-host", "127.0.0.1", "Destination as seen inside the instance")
 	cmd.Flags().String("node", "", "Node selector for a multi-node instance")
@@ -304,7 +330,7 @@ func (a *app) forwardCommand() *cobra.Command {
 		if e = a.emit(map[string]any{"target": args[0], "listen": listener.Addr().String(), "remote_host": remote, "remote_port": port}); e != nil {
 			return e
 		}
-		ctx, cancel := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+		ctx, cancel := a.transferContext(cmd)
 		defer cancel()
 		go func() { <-ctx.Done(); listener.Close() }()
 		var wg sync.WaitGroup
@@ -313,7 +339,7 @@ func (a *app) forwardCommand() *cobra.Command {
 			conn, e := listener.Accept()
 			if e != nil {
 				if ctx.Err() != nil {
-					return nil
+					return ctx.Err()
 				}
 				return e
 			}

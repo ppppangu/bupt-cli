@@ -44,7 +44,7 @@ func (c *Controller) Handle(ctx context.Context, r domain.RPCRequest, p Params) 
 			}
 		}()
 	}
-	if p.Bool("dry_run") && isMutation(r.Method) && !strings.HasPrefix(r.Method, "instance.") && r.Method != "up" && r.Method != "down" && r.Method != "job.run" {
+	if p.Bool("dry_run") && (isMutation(r.Method) || r.Method == "instance.wait" || r.Method == "run.wait") {
 		return map[string]any{"dry_run": true, "operation": r.Method, "profile": profile}, nil
 	}
 	if r.Method == "portal.read" && p.String("section") == "admin" {
@@ -57,7 +57,7 @@ func (c *Controller) Handle(ctx context.Context, r domain.RPCRequest, p Params) 
 			return nil, err
 		}
 	}
-	if !p.Bool("cached") && !p.Bool("dry_run") && (p.Bool("compute") || strings.HasPrefix(r.Method, "spec.") || strings.HasPrefix(r.Method, "instance.") || strings.HasPrefix(r.Method, "data.") || r.Method == "resources.overview" || r.Method == "quota.get" || r.Method == "compute.read") {
+	if !p.Bool("cached") && !p.Bool("dry_run") && (p.Bool("compute") || strings.HasPrefix(r.Method, "spec.") || strings.HasPrefix(r.Method, "data.") || r.Method == "resources.overview" || r.Method == "quota.get" || r.Method == "compute.read") {
 		a, e := c.api(profile)
 		if e != nil {
 			return nil, e
@@ -132,9 +132,41 @@ func (c *Controller) Handle(ctx context.Context, r domain.RPCRequest, p Params) 
 	case "status.get":
 		return c.Status(ctx, profile, p)
 	case "agent.status":
-		runs, _ := c.Store.ListRuns("")
-		routes, _ := c.Store.ListRoutes("")
-		return map[string]any{"state": "running", "protocol": 1, "controller": "local", "runs": len(runs), "routes": len(routes), "relay_enabled": c.opts.AuthorizedKeys != ""}, nil
+		scope := profile
+		if r.ClientID == "" {
+			scope = ""
+		}
+		runs, err := c.Store.ListRuns(scope)
+		if err != nil {
+			return nil, err
+		}
+		tasks, err := c.Store.ListTasks(scope)
+		if err != nil {
+			return nil, err
+		}
+		routes, err := c.Store.ListRoutes(scope)
+		if err != nil {
+			return nil, err
+		}
+		active, pending := 0, 0
+		for _, run := range runs {
+			if !managedRunTerminal(run.State) {
+				active++
+			}
+		}
+		for _, t := range tasks {
+			if t.ParentID == "" && (!terminalTask(t.State) || t.Manual && t.State == "complete" && !t.Verified && taskError(t) == nil) {
+				pending++
+			}
+		}
+		health := map[string]any{
+			"state": "running", "protocol": 1, "controller": "local", "version": c.opts.Version,
+			"runs": len(runs), "routes": len(routes), "active_runs": active, "pending_tasks": pending, "relay_enabled": c.opts.AuthorizedKeys != "",
+		}
+		if r.ClientID == "" {
+			health["other_connections"] = max(0, c.connections.Load()-1)
+		}
+		return health, nil
 	case "agent.stop":
 		return map[string]any{"state": "stopping", "routes_preserved": true}, nil
 	case "agent.reload":
@@ -257,34 +289,12 @@ func (c *Controller) Handle(ctx context.Context, r domain.RPCRequest, p Params) 
 		}
 		return projectList(v, p)
 	case "instance.inspect":
-		s, e := c.snapshot(ctx, profile)
-		if e != nil {
-			return nil, e
-		}
-		return Resolve(s, p.String("target"))
+		return c.inspectInstance(ctx, profile, p)
 	case "instance.wait":
 		return c.waitInstance(ctx, profile, p)
 	case "instance.events":
-		s, e := c.snapshot(ctx, profile)
-		if e != nil {
-			return nil, e
-		}
-		i, e := Resolve(s, p.String("target"))
-		if e != nil {
-			return nil, e
-		}
-		events, e := c.Store.ListAudits(time.Time{}, limit(p, 100))
-		if e != nil {
-			return nil, e
-		}
-		out := []domain.AuditEvent{}
-		for _, event := range events {
-			if event.Profile == profile && event.Target == string(i.ID) {
-				out = append(out, event)
-			}
-		}
-		return map[string]any{"source": "controller_audit", "events": out}, nil
-	case "instance.create", "instance.start", "instance.restore", "instance.adopt", "instance.clone":
+		return c.instanceEvents(ctx, profile, p)
+	case "instance.create", "instance.start", "instance.restart", "instance.restore", "instance.adopt", "instance.clone":
 		return c.ManagedOperation(ctx, profile, strings.TrimPrefix(r.Method, "instance."), p)
 	case "up":
 		return c.Up(ctx, profile, p)
@@ -295,18 +305,15 @@ func (c *Controller) Handle(ctx context.Context, r domain.RPCRequest, p Params) 
 		if p.Bool("force") {
 			op = "force-stop"
 		}
-		if !p.Bool("dry_run") {
-			if e := c.ObserveManualOperation(ctx, profile, op, p); e != nil {
-				return nil, e
-			}
-		}
-		return c.Operation(ctx, profile, op, p)
-	case "instance.release", "instance.delete", "instance.cancel-queue", "instance.resize", "instance.disk-grow":
-		if !p.Bool("dry_run") && (r.Method == "instance.release" || r.Method == "instance.delete") {
-			if e := c.ObserveManualOperation(ctx, profile, strings.TrimPrefix(r.Method, "instance."), p); e != nil {
-				return nil, e
-			}
-		}
+		return c.manualInstance(ctx, profile, op, p)
+	case "instance.delete":
+		p.Set("confirm_delete", true)
+		return c.manualInstance(ctx, profile, "delete", p)
+	case "instance.release":
+		return c.manualInstance(ctx, profile, "release", p)
+	case "instance.cancel-queue":
+		return c.manualInstance(ctx, profile, "cancel-queue", p)
+	case "instance.resize", "instance.disk-grow":
 		return c.Operation(ctx, profile, strings.TrimPrefix(r.Method, "instance."), p)
 	case "snapshot.create", "snapshot.restore", "snapshot.delete":
 		return c.Operation(ctx, profile, strings.ReplaceAll(r.Method, ".", "-"), p)
@@ -355,6 +362,11 @@ func (c *Controller) Handle(ctx context.Context, r domain.RPCRequest, p Params) 
 		v["requests"] = pending
 		return v, nil
 	case "lease.set", "job.update":
+		if r.Method == "job.update" {
+			if _, e := c.job(profile, p.String("target")); e != nil {
+				return nil, e
+			}
+		}
 		return c.UpdateRunPolicy(ctx, profile, p)
 	case "lease.renew":
 		d, e := time.ParseDuration(p.String("duration"))
@@ -384,13 +396,24 @@ func (c *Controller) Handle(ctx context.Context, r domain.RPCRequest, p Params) 
 		return c.Operation(ctx, profile, "renew", p)
 	case "job.run":
 		return c.RunJob(ctx, profile, p)
-	case "job.list":
+	case "run.list", "job.list":
 		v, e := c.Store.ListRuns(profile)
 		if e != nil {
 			return nil, e
 		}
-		return projectList(v, p)
+		if r.Method == "run.list" {
+			return projectList(v, p)
+		}
+		filtered := make([]domain.Run, 0, len(v))
+		for _, run := range v {
+			if run.Kind == "job" {
+				filtered = append(filtered, run)
+			}
+		}
+		return projectList(filtered, p)
 	case "job.get":
+		return c.job(profile, p.String("target"))
+	case "run.get":
 		return c.GetRun(profile, p.String("target"))
 	case "run.wait":
 		condition := p.String("condition")
@@ -409,6 +432,9 @@ func (c *Controller) Handle(ctx context.Context, r domain.RPCRequest, p Params) 
 		}
 		return c.waitManaged(ctx, r.ID, condition == "finished")
 	case "job.cancel":
+		if _, e := c.job(profile, p.String("target")); e != nil {
+			return nil, e
+		}
 		return c.CancelRun(ctx, profile, p)
 	case "task.list":
 		v, e := c.Store.ListTasks(profile)
@@ -622,33 +648,6 @@ func runTerminal(s string) bool {
 		return true
 	}
 	return false
-}
-
-func (c *Controller) waitInstance(ctx context.Context, profile string, p Params) (domain.Instance, error) {
-	state := p.String("state")
-	if state == "" {
-		state = "running"
-	}
-	timer := time.NewTicker(time.Second)
-	defer timer.Stop()
-	for {
-		s, e := c.snapshot(ctx, profile)
-		if e != nil {
-			return domain.Instance{}, e
-		}
-		i, e := Resolve(s, p.String("target"))
-		if e != nil {
-			return i, e
-		}
-		if i.State == state {
-			return i, nil
-		}
-		select {
-		case <-ctx.Done():
-			return i, ctx.Err()
-		case <-timer.C:
-		}
-	}
 }
 
 // Filtering and projection happen after whitelisted platform serialization.

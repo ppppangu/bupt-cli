@@ -65,7 +65,7 @@ func (c *Controller) Authorize(id, method, p string) error {
 	}
 	if identity.ReadOnly {
 		switch method {
-		case "account.snapshot", "account.watch", "account.refresh", "compute.read", "portal.read", "agent.status", "status.get", "resources.overview", "auth.status", "instance.list", "instance.inspect", "spec.list", "spec.show", "spec.estimate", "preset.resolve", "quota.get", "job.list", "job.get", "lease.status", "task.list", "task.get", "audit.list", "doctor":
+		case "account.snapshot", "account.watch", "account.refresh", "compute.read", "portal.read", "agent.status", "status.get", "resources.overview", "auth.status", "instance.list", "instance.inspect", "spec.list", "spec.show", "spec.estimate", "preset.resolve", "quota.get", "job.list", "job.get", "run.get", "run.list", "instance.wait", "instance.events", "lease.status", "task.list", "task.get", "audit.list", "doctor":
 			return nil
 		}
 		return domain.E("READ_ONLY_CLIENT", "client is read-only")

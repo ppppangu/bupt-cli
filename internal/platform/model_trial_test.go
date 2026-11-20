@@ -10,8 +10,54 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
+
+func TestModelGatewayDistinguishesBalanceRejectionAndLostResponse(t *testing.T) {
+	for _, scenario := range []struct {
+		name, code string
+	}{
+		{"balance", "MODEL_BALANCE_INSUFFICIENT"},
+		{"lost-response", "MODEL_RESULT_UNKNOWN"},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			var requests atomic.Int32
+			upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests.Add(1)
+				body, _ := io.ReadAll(r.Body)
+				if r.Method != "POST" || r.URL.Path != "/v1/chat/completions" || !strings.Contains(string(body), "billable-input") {
+					t.Error("unexpected model request")
+				}
+				if scenario.name == "balance" {
+					w.Header().Set("X-Request-Id", "billing-402")
+					w.WriteHeader(http.StatusPaymentRequired)
+				} else {
+					<-r.Context().Done() // the gateway received a POST but the client gets no reply
+				}
+			}))
+			defer upstream.Close()
+			c, err := New(domain.Profile{Name: "fixture", PlatformURL: upstream.URL, PortalURL: upstream.URL}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer c.Close()
+			c.http.Transport = upstream.Client().Transport
+			req, err := (domain.PortalModel{ID: "m", Kind: "chat"}).TrialRequest(domain.TrialInput{Texts: []string{"billable-input"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
+			defer cancel()
+			got, err := c.RunModelTrial(ctx, upstream.URL+"/v1", req, "fixture-key")
+			assertCode(t, err, scenario.code)
+			if got.CostPoints != nil || requests.Load() != 1 {
+				t.Fatal(got, requests.Load())
+			}
+		})
+	}
+}
 
 func TestModelGatewayPostsOnlyTheEditedRequestAndParsesEachType(t *testing.T) {
 	const secret = "fixture-secret-never-display"

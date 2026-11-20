@@ -115,6 +115,10 @@ func (c *Controller) HandleStream(ctx context.Context, request domain.RPCRequest
 	defer func() { stop(); cancel(); _ = conn.Close() }()
 	fail := func(err error) { _ = streamAck(conn, request.ID, nil, err) }
 
+	if p.Bool("dry_run") {
+		fail(domain.E("PREVIEW_UNSUPPORTED", "流式操作需要使用独立的只读预览"))
+		return true
+	}
 	if request.Method == "connect.download" || request.Method == "data.download" {
 		go watchOutputStream(reader, cancel)
 	}
@@ -458,7 +462,7 @@ func (c *Controller) HandleJobStream(ctx context.Context, request domain.RPCRequ
 	ctx, cancel := context.WithCancel(ctx)
 	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
 	defer func() { stop(); cancel(); _ = conn.Close() }()
-	run, err := c.GetRun(request.Profile, p.String("target"))
+	run, err := c.job(request.Profile, p.String("target"))
 	if err != nil {
 		_ = streamAck(conn, request.ID, nil, err)
 		return true

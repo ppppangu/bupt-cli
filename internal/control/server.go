@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -116,6 +117,8 @@ func (c *Controller) Serve(ctx context.Context, socket string) error {
 	}
 }
 func (c *Controller) serveConnection(ctx context.Context, n net.Conn) {
+	c.connections.Add(1)
+	defer c.connections.Add(-1)
 	_ = n.SetReadDeadline(time.Now().Add(15 * time.Second))
 	reader := bufio.NewReader(n)
 	var req domain.RPCRequest
@@ -158,7 +161,7 @@ func (c *Controller) serveConnection(ctx context.Context, n net.Conn) {
 		response.Result = publicResult(v)
 	}
 	_ = wire.WriteJSON(n, response)
-	if req.Method == "agent.stop" && e == nil {
+	if req.Method == "agent.stop" && e == nil && !p.Bool("dry_run") {
 		c.cancel()
 	}
 }
@@ -166,6 +169,10 @@ func (c *Controller) serveConnection(ctx context.Context, n net.Conn) {
 // Intent hashes can depend on private job argv/env. Keep them in the ledger,
 // not in frontend state or CLI output; preserve integer precision in projection.
 func publicResult(value any) json.RawMessage {
+	v := reflect.ValueOf(value)
+	if v.Kind() == reflect.Slice && v.IsNil() && v.Type() != reflect.TypeFor[json.RawMessage]() {
+		return json.RawMessage("[]")
+	}
 	raw := domain.Result(value)
 	var public any
 	decoder := json.NewDecoder(bytes.NewReader(raw))
@@ -305,7 +312,7 @@ func RunAgent(ctx context.Context, cfg *config.Config, params map[string]any, lo
 	if socket == "" {
 		socket = cfg.Paths.Socket
 	}
-	c, e := New(Options{Config: cfg, Store: store, Vault: vault, AuthorizedKeys: p.String("authorized_keys"), Executable: p.String("executable"), Socket: socket})
+	c, e := New(Options{Config: cfg, Store: store, Vault: vault, AuthorizedKeys: p.String("authorized_keys"), Executable: p.String("executable"), Socket: socket, Version: p.String("controller_version")})
 	if e != nil {
 		return e
 	}

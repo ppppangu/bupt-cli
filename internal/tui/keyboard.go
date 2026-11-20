@@ -157,7 +157,10 @@ func (w *workspace) handleKey(e *tcell.EventKey) {
 		return
 	}
 	if e.Key() == tcell.KeyCtrlC {
-		if p := w.current(); p.interrupt != nil {
+		if w.input != nil {
+			w.input = nil
+			w.notice = "已取消编辑，原值保留"
+		} else if p := w.current(); p.interrupt != nil {
 			p.interrupt()
 			w.notice = "正在中断等待…"
 		} else {
@@ -174,6 +177,9 @@ func (w *workspace) handleKey(e *tcell.EventKey) {
 	}
 	p := w.current()
 	if p.submitting && e.Rune() != 'q' {
+		if e.Key() == tcell.KeyEscape {
+			w.notice = "请求已经发出，等待回执。退出等待也不会撤销操作"
+		}
 		return
 	}
 	if p.copyText != "" {
@@ -335,6 +341,7 @@ func (w *workspace) handleText(e *tcell.EventKey) {
 	case tcell.KeyEscape:
 		if w.input != nil {
 			w.input = nil
+			w.notice = "已取消编辑，原值保留"
 		} else if p.overlay {
 			w.filtering = false
 			w.back()

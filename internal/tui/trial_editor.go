@@ -155,9 +155,7 @@ func (w *workspace) trialEditKey(key *tcell.EventKey) {
 		}
 	}
 	switch k {
-	case tcell.KeyCtrlC:
-		w.quit = true
-	case tcell.KeyEscape, tcell.KeyCtrlS:
+	case tcell.KeyEscape, tcell.KeyCtrlC, tcell.KeyCtrlS:
 		finish()
 	case tcell.KeyCtrlD:
 		e.message = "Esc 保留草稿，回到工作台选择「发送请求」。"

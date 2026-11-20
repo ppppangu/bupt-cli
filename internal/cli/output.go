@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/spf13/cobra"
 	"io"
 	"reflect"
 	"sort"
@@ -15,6 +16,10 @@ func (a *app) emit(value any) error {
 	if a.transferResults != nil {
 		*a.transferResults = append(*a.transferResults, value)
 		return nil
+	}
+	v := reflect.ValueOf(value)
+	if v.Kind() == reflect.Slice && v.IsNil() && v.Type() != reflect.TypeFor[json.RawMessage]() {
+		value = []any{}
 	}
 	value = redact(value)
 	if a.json {
@@ -35,8 +40,8 @@ func (a *app) emit(value any) error {
 		}
 		return enc.Encode(value)
 	}
-	if a.quiet {
-		return writeQuiet(a.options.Out, value)
+	if a.ids {
+		return writeIDs(a.options.Out, value)
 	}
 	return writeHuman(a.options.Out, value)
 }
@@ -80,30 +85,75 @@ func redact(v any) any {
 	}
 	return walk(x)
 }
-func writeQuiet(w io.Writer, v any) error {
-	switch x := v.(type) {
-	case nil:
+func supportsID(cmd *cobra.Command) bool {
+	switch cmd.CommandPath() {
+	case "bupt api model", "bupt api model ls", "bupt api model show",
+		"bupt api key", "bupt api key ls", "bupt api key show", "bupt api key create",
+		"bupt compute catalog", "bupt compute catalog ls", "bupt compute catalog show",
+		"bupt compute instance", "bupt compute instance ls", "bupt compute instance show", "bupt compute instance wait",
+		"bupt compute instance create", "bupt compute instance start", "bupt compute instance stop", "bupt compute instance restart",
+		"bupt compute instance release", "bupt compute instance restore", "bupt compute instance delete", "bupt compute instance cancel-queue",
+		"bupt compute job", "bupt compute job ls", "bupt compute job show", "bupt compute job run", "bupt compute job wait", "bupt compute job cancel",
+		"bupt compute task", "bupt compute task ls", "bupt compute task show", "bupt compute lease ls":
+		return !cmd.Flags().Changed("columns")
+	}
+	return false
+}
+
+func writeIDs(w io.Writer, value any) error {
+	if value == nil {
 		return nil
-	case []any:
-		for _, r := range x {
-			if err := writeQuiet(w, r); err != nil {
-				return err
+	}
+	rows, ok := value.([]any)
+	if !ok {
+		rows = []any{value}
+	}
+	ids := make([]string, 0, len(rows))
+	for _, row := range rows {
+		obj, _ := row.(map[string]any)
+		id := obj["operation_id"]
+		if id == nil {
+			id = obj["id"]
+		}
+		switch id.(type) {
+		case string, json.Number:
+			if id != "" {
+				ids = append(ids, scalar(id))
+				continue
 			}
 		}
-		return nil
-	case map[string]any:
-		for _, k := range []string{"id", "task_id", "run_id", "name", "value"} {
-			if val, ok := x[k]; ok {
-				_, e := fmt.Fprintln(w, scalar(val))
-				return e
-			}
+		return usage("--output id 需要包含稳定 ID 的结果")
+	}
+	return writeIDLines(w, ids)
+}
+
+func writeIDLines[T ~string](w io.Writer, ids []T) error {
+	for _, id := range ids {
+		if _, err := fmt.Fprintln(w, scalar(string(id))); err != nil {
+			return err
 		}
-		return fmt.Errorf("--quiet requires an identifier or scalar result")
-	default:
-		_, e := fmt.Fprintln(w, scalar(x))
-		return e
+	}
+	return nil
+}
+
+func terminalWriter(w io.Writer, override func() bool) bool {
+	if override != nil {
+		return override()
+	}
+	return isTerminal(w)
+}
+
+func (a *app) humanOutput() bool {
+	return !a.json && !a.jsonl && !a.ids && a.field == "" && a.interactive() &&
+		terminalWriter(a.options.Err, a.options.StderrIsTerminal) && (a.options.Interactive != nil || isTerminal(a.options.Out))
+}
+
+func (a *app) humanHint(message string) {
+	if a.humanOutput() {
+		fmt.Fprintln(a.options.Err, message)
 	}
 }
+
 func scalar(v any) string {
 	switch x := v.(type) {
 	case nil:

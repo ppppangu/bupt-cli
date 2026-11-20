@@ -14,6 +14,10 @@ func defaultTo(g *cobra.Command, name string) {
 	g.Flags().AddFlagSet(sub.LocalNonPersistentFlags())
 	g.Args = exactArgs(0)
 	g.RunE = sub.RunE
+	if g.Annotations == nil {
+		g.Annotations = map[string]string{}
+	}
+	g.Annotations["default_child"] = name
 }
 func (a *app) computeQuery(use, label, section string) *cobra.Command {
 	cmd := &cobra.Command{Use: use, Short: label, Args: exactArgs(0)}
@@ -28,29 +32,27 @@ func (a *app) computeQuery(use, label, section string) *cobra.Command {
 	}
 	return cmd
 }
-func (a *app) computeCommand() *cobra.Command {
+func (a *app) computeCommand() (*cobra.Command, []*cobra.Command) {
 	g := a.statusCommand()
 	g.Use = "compute"
 	g.Short = "裸算力服务总览"
 	g.Args = exactArgs(0)
-	catalog := a.resourcesCommand()
+	catalog := &cobra.Command{}
 	catalog.Use = "catalog"
-	catalog.Short = "资源池、可申请模板与账号配额"
-	specs := a.specCommands()
-	for _, sub := range specs.Commands() {
-		specs.RemoveCommand(sub)
-		catalog.AddCommand(sub)
-	}
-	catalog.AddCommand(a.estimateCommand())
+	catalog.Short = "资源池与可申请规格"
+	showSpec := a.simpleRPC("show SPEC", "查看模板规格", "spec.show", 1, 1, targetParams)
+	catalogList := a.resourcesCommand()
+	catalogList.Use = "ls"
+	catalog.AddCommand(catalogList, showSpec, a.estimateCommand())
+	defaultTo(catalog, "ls")
 	instances := a.instanceCommands()
 	show, _, _ := instances.Find([]string{"inspect"})
-	show.Aliases = append(show.Aliases, "show")
+	show.Use = "show INSTANCE"
 	list, _, _ := instances.Find([]string{"ls"})
 	list.Flags().Bool("cached", false, "读取上次观察到的实例")
-	defaultTo(instances, "ls")
-	original := instances.RunE
-	instances.RunE = func(cmd *cobra.Command, args []string) error {
-		if a.json || a.jsonl || a.quiet || cmd.Flags().Changed("columns") || cmd.Flags().Changed("filter") || cmd.Flags().Changed("state") {
+	original := list.RunE
+	list.RunE = func(cmd *cobra.Command, args []string) error {
+		if a.json || a.jsonl || a.ids || cmd.Flags().Changed("columns") || cmd.Flags().Changed("filter") || cmd.Flags().Changed("state") {
 			return original(cmd, args)
 		}
 		cached, _ := cmd.Flags().GetBool("cached")
@@ -69,12 +71,13 @@ func (a *app) computeCommand() *cobra.Command {
 		}
 		return out.Flush()
 	}
+	defaultTo(instances, "ls")
 	storage := a.dataCommands()
 	storage.Use = "storage"
-	storage.Aliases = []string{"data"}
+
 	defaultTo(storage, "stores")
 	run := a.jobCommands()
-	run.Use = "run"
+	run.Use = "job"
 	run.Short = "CLI 托管运行、日志和退出结果"
 	defaultTo(run, "ls")
 	job := a.computeQuery("job", "学校调度作业", "job")
@@ -82,7 +85,7 @@ func (a *app) computeCommand() *cobra.Command {
 	requests.AddCommand(a.computeDetail("show ID", "调度提交详情", "job.request.show", false))
 	templates := a.computeQuery("template", "调度作业模板", "job.template")
 	templates.AddCommand(a.computeDetail("show ID", "模板详情与作业参数", "job.template.show", false))
-	job.AddCommand(requests, templates, a.computeDetail("show ID", "学校作业状态与退出结果", "job.show", true), a.computeDetail("logs ID", "学校作业输出", "job.log", true))
+	job.AddCommand(a.computeQuery("ls", "列出学校调度作业", "job"), a.computeDetail("show ID", "学校作业状态与退出结果", "job.show", true), a.computeDetail("logs ID", "学校作业输出", "job.log", true))
 	admin := a.computeQuery("admin", "查询学校实际授予的平台管理身份", "admin")
 	admin.AddCommand(a.computeQuery("user", "分页查询已授权的账户", "admin.users"), a.adminQuotaCommands(), a.computeQuery("cluster", "后台计算集群", "admin.cluster"), a.computeQuery("usage", "后台实例计量", "admin.billing"), a.computeQuery("request", "学校申请及其审批状态", "admin.request"), a.approvalCommand("approve"), a.approvalCommand("reject"))
 	project := a.computeQuery("project", "我的项目及实际角色", "project")
@@ -110,11 +113,21 @@ func (a *app) computeCommand() *cobra.Command {
 	for _, r := range []struct{ id, title string }{{"model", "该站模型目录"}, {"key", "该站 Key 元数据"}, {"spend", "该站模型消费记录"}} {
 		llm.AddCommand(a.computeQuery(r.id, r.title, "llm."+r.id))
 	}
-	g.AddCommand(catalog, instances, storage, run, job, admin, cluster, a.featureCommand(), datasets, notices, remote, llm, billing, project, a.computeQuery("request", "平台申请与审批状态", "request"))
+	scheduler := &cobra.Command{Use: "scheduler", Short: "学校调度系统"}
+	scheduler.AddCommand(job, requests, templates)
 	quota := a.simpleRPC("quota", "个人与存储额度", "quota.get", 0, 0, nil)
+	quota.RunE = a.personalQuota
 	quota.AddCommand(a.quotaRequestCommand())
-	g.AddCommand(quota, a.presetCommands(), a.leaseCommands(), a.taskCommands(), a.auditCommands(), a.snapshotCommands(), a.serviceCommands(), a.sshCommand(), a.execCommand(), a.consoleCommand(), a.cpCommand(), a.sftpCommand(), a.forwardCommand(), a.cloneCommand(), a.resizeCommand(), a.waitCommand(), a.upCommand(), a.downCommand())
-	return g
+	repair := a.sshRepairCommand()
+	repair.Use = "prepare-ssh INSTANCE"
+	instances.AddCommand(advancedCommand(repair), advancedCommand(a.cloneCommand()), advancedCommand(a.resizeCommand()))
+	g.AddCommand(catalog, instances, storage, run, scheduler, billing, quota)
+	for _, c := range []*cobra.Command{a.featureCommand(), datasets, notices, llm, a.computeQuery("request", "平台申请与审批状态", "request"),
+		a.presetCommands(), a.leaseCommands(), a.taskCommands(), a.auditCommands(), a.snapshotCommands(), a.serviceCommands()} {
+		g.AddCommand(advancedCommand(c))
+	}
+	admin.AddCommand(a.portalQuery("portal", "查看模型门户管理身份", "admin"))
+	return g, []*cobra.Command{advancedCommand(admin), advancedCommand(cluster), advancedCommand(remote), advancedCommand(project)}
 }
 
 func instanceResources(i domain.Instance) string {

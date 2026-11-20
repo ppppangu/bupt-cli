@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -207,7 +208,7 @@ func TestCachedAPIOverviewAndMissingUsagePeriodAllowLocalNavigation(t *testing.T
 	click(t, w, "period")
 	click(t, w, "7")
 	waitFor(t, w, func() bool { return !p.loading })
-	if p.problem == "" || len(w.view(p).rows) != 6 || w.view(p).rows[5].key != "period" {
+	if p.problem == "" || len(w.view(p).rows) != 7 || w.view(p).rows[5].key != "period" || w.view(p).rows[6].key != "feedback-error" {
 		t.Fatal(p.problem, w.view(p))
 	}
 	click(t, w, "period")
@@ -255,6 +256,7 @@ func TestUsageIncludesPublishedDatesWithoutMeasurements(t *testing.T) {
 
 func TestUnifiedLedgerPeriodFilterAndExactPoints(t *testing.T) {
 	today := time.Now().Format("2006-01-02")
+	var requireDates atomic.Bool
 	b := &fixtureBackend{reply: func(_ context.Context, m string, p map[string]any) (any, error) {
 		if m == "portal.read" {
 			return map[string]any{"data": map[string]any{"periodCalls": 1, "periodCostPoints": 0}}, nil
@@ -262,9 +264,13 @@ func TestUnifiedLedgerPeriodFilterAndExactPoints(t *testing.T) {
 		if m != "compute.read" || p["section"] != "billing" {
 			return nil, errors.New(m)
 		}
+		unknownDate := ""
+		if requireDates.Load() {
+			unknownDate = "2020-01-01"
+		}
 		return map[string]any{"total": 4, "items": []map[string]any{
 			{"appId": "7", "appName": "课程", "endAt": today, "usagePoints": 0.1}, {"appId": "7", "appName": "课程", "endAt": today, "usagePoints": 0.2},
-			{"appId": "7", "appName": "未知日期", "usagePoints": 10}, {"appId": "17", "appName": "其他实例", "endAt": today, "usagePoints": 80},
+			{"appId": "7", "appName": "未知日期", "endAt": unknownDate, "usagePoints": 10}, {"appId": "17", "appName": "其他实例", "endAt": today, "usagePoints": 80},
 		}}, nil
 	}}
 	w := fixtureWorkspace(t, b)
@@ -284,6 +290,14 @@ func TestUnifiedLedgerPeriodFilterAndExactPoints(t *testing.T) {
 		t.Fatal(got)
 	}
 	click(t, w, "view/compute")
+	for _, row := range w.view(p).rows {
+		if row.key == "total" {
+			t.Fatal("an undated charge made the total uncertain")
+		}
+	}
+	requireDates.Store(true)
+	w.refresh()
+	settle()
 	if r, _ := objectRow(t, w, "total"); !strings.Contains(r.title, "0.3 积分") {
 		t.Fatal(r)
 	}

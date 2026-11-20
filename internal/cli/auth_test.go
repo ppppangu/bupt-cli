@@ -84,7 +84,7 @@ func TestInteractiveLoginContinuesCaptchaWithOnePasswordPrompt(t *testing.T) {
 				}
 				return nil
 			}
-			if code := executeTest(t, opts, "auth", "login", "--local", "--username", "student", "--json"); code != 0 {
+			if code := executeTest(t, opts, "login", "--local", "--username", "student", "--json"); code != 0 {
 				t.Fatalf("exit=%d stderr=%q", code, errOut)
 			}
 			if loginCalls != 2 || passwordPrompts != 1 || viewerCalls != 1 {
@@ -125,7 +125,7 @@ func TestNoninteractiveCaptchaNeverPromptsOrOpensViewer(t *testing.T) {
 	opts.Interactive = func() bool { return true }
 	opts.ReadSecret = func(string) (string, error) { t.Fatal("noninteractive login prompted"); return "", nil }
 	opts.OpenImage = func(context.Context, string) error { t.Fatal("noninteractive login opened a viewer"); return nil }
-	if code := executeTest(t, opts, "auth", "login", "--credentials-stdin", "--non-interactive", "--json"); code != 1 || out.Len() != 0 {
+	if code := executeTest(t, opts, "login", "--credentials-stdin", "--non-interactive", "--json"); code != 1 || out.Len() != 0 {
 		t.Fatalf("exit=%d stdout=%q stderr=%q", code, out, errOut)
 	}
 	if len(b.calls) != 2 || strings.Contains(errOut.String(), "stdin-secret") {
@@ -156,7 +156,7 @@ func TestInteractiveCaptchaHasThreeChallengeLimitAndDoesNotReadAhead(t *testing.
 	opts.Interactive = func() bool { return true }
 	opts.ReadSecret = func(string) (string, error) { passwordPrompts++; return "secret", nil }
 	opts.OpenImage = func(context.Context, string) error { viewerCalls++; return nil }
-	if code := executeTest(t, opts, "auth", "login", "--local", "--json"); code != 1 || out.Len() != 0 {
+	if code := executeTest(t, opts, "login", "--local", "--json"); code != 1 || out.Len() != 0 {
 		t.Fatalf("exit=%d out=%q err=%q", code, out, errOut)
 	}
 	if loginCalls != 4 || captchaCalls != 3 || viewerCalls != 3 || passwordPrompts != 1 {
@@ -182,7 +182,7 @@ func TestOtherLoginFailuresDoNotTriggerCaptcha(t *testing.T) {
 	opts.Interactive = func() bool { return true }
 	opts.ReadSecret = func(string) (string, error) { return "secret", nil }
 	opts.OpenImage = func(context.Context, string) error { t.Fatal("unrelated failure opened CAPTCHA viewer"); return nil }
-	if code := executeTest(t, opts, "auth", "login", "--local", "--username", "student", "--json"); code != 1 || out.Len() != 0 || !strings.Contains(errOut.String(), "INVALID_CREDENTIALS") {
+	if code := executeTest(t, opts, "login", "--local", "--username", "student", "--json"); code != 1 || out.Len() != 0 || !strings.Contains(errOut.String(), "INVALID_CREDENTIALS") {
 		t.Fatalf("exit=%d out=%q err=%q", code, out, errOut)
 	}
 }
@@ -221,7 +221,7 @@ func TestDevicePollingStopsAtTakeoverConfirmationWithoutApplyingIt(t *testing.T)
 }
 
 func TestLogoutCommandPaths(t *testing.T) {
-	for _, path := range [][]string{{"logout"}, {"auth", "logout"}} {
+	for _, path := range [][]string{{"logout"}} {
 		t.Run(strings.Join(path, "-"), func(t *testing.T) {
 			b := &fakeBackend{call: func(_ context.Context, method string, p map[string]any) (any, error) {
 				if method != "auth.logout" {
@@ -250,7 +250,7 @@ func TestLogoutCommandPaths(t *testing.T) {
 			if code := run("--dry-run", "--json"); code != 0 || len(b.calls) != 2 || b.calls[1].params["dry_run"] != true || !strings.Contains(out.String(), "auth.logout") {
 				t.Fatalf("unexpected preview: exit=%d calls=%v out=%s", code, b.calls, out)
 			}
-			if code := run("--force", "-q"); code != 0 || len(b.calls) != 3 || b.calls[2].params["force"] != true || out.Len() != 0 {
+			if code := run("--force", "--json"); code != 0 || len(b.calls) != 3 || b.calls[2].params["force"] != true || out.Len() == 0 {
 				t.Fatalf("unexpected quiet logout: exit=%d calls=%v out=%s", code, b.calls, out)
 			}
 			if code := run("extra"); code != 2 || len(b.calls) != 3 {
@@ -259,7 +259,7 @@ func TestLogoutCommandPaths(t *testing.T) {
 			b.call = func(context.Context, string, map[string]any) (any, error) {
 				return nil, domain.E("ACTIVE_RUNS", "active managed runs")
 			}
-			if code := run("-q"); code == 0 || out.Len() != 0 || !strings.Contains(diag.String(), "ACTIVE_RUNS") || len(b.calls) != 4 {
+			if code := run("--json"); code == 0 || out.Len() != 0 || !strings.Contains(diag.String(), "ACTIVE_RUNS") || len(b.calls) != 4 {
 				t.Fatal("logout error was suppressed or retried", code, b.calls)
 			}
 		})

@@ -1,4 +1,6 @@
-# 演示素材
+# 旧版演示素材
+
+当前 README 演示及录制方法见 [docs/demo](../../docs/demo/README.md)。
 
 仓库根目录的三个 GIF 由 `assets/demo/tapes/*.tape` 用 [vhs](https://github.com/charmbracelet/vhs) 渲染。
 动图展示的是真实 TUI 的画面与真实 CLI 帮助文本，数据为**脚本化的模拟内容**，不涉及任何真实账号。

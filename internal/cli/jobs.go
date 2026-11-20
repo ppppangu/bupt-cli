@@ -19,18 +19,25 @@ func (a *app) runCommand() *cobra.Command {
 	addResourceFlags(cmd)
 	cmd.Flags().String("name", "", "Job name")
 	cmd.Flags().String("instance", "", "Reuse an explicitly selected managed instance")
+	rate := cmd.Flags().String("max-points-per-day", "", "新建实例时授权的积分日价上限")
 	cmd.Flags().String("workdir", "", "Remote working directory")
 	cmd.Flags().BoolP("detach", "d", false, "Return the job ID and let the controller continue managing it")
 	cmd.RunE = func(cmd *cobra.Command, args []string) error {
 		if cmd.ArgsLenAtDash() != 0 {
-			return usage("use run [flags] -- COMMAND [ARG...]")
+			return usage("use compute job run [flags] -- COMMAND [ARG...]")
 		}
 		instance, _ := cmd.Flags().GetString("instance")
 		p, e := a.resourceParams(cmd, instance == "")
 		if e != nil {
 			return e
 		}
+		if !a.dryRun && instance == "" && *rate == "" {
+			return usage("新建实例需要先用 --dry-run 估价，再指定 --max-points-per-day RATE")
+		}
 		p["command"] = args
+		if *rate != "" {
+			p["max_points_per_day"] = *rate
+		}
 		if instance != "" && !anyPolicyChanged(cmd) && !cmd.Flags().Changed("preset") {
 			p["inherit_policy"] = true
 		}
@@ -58,9 +65,7 @@ func (a *app) runCommand() *cobra.Command {
 		if id == "" {
 			return domain.E("PROTOCOL_ERROR", "job.run returned no job identifier")
 		}
-		if !a.json && !a.jsonl && !a.quiet {
-			fmt.Fprintln(a.options.Err, "Run", id)
-		}
+		a.humanHint("作业 " + id + " 已提交")
 		b, e := a.getBackend()
 		if e != nil {
 			return e
@@ -89,7 +94,7 @@ func (a *app) runCommand() *cobra.Command {
 			}
 		}()
 		logsDone := make(chan struct{})
-		if !a.quiet {
+		if !a.ids {
 			logOut := a.options.Out
 			if a.json || a.jsonl {
 				logOut = a.options.Err
@@ -125,7 +130,7 @@ func (a *app) runCommand() *cobra.Command {
 			}
 		}
 		cancel()
-		if a.json || a.jsonl || a.quiet {
+		if a.json || a.jsonl || a.ids {
 			if e = a.emit(run); e != nil {
 				return e
 			}
@@ -153,14 +158,13 @@ func resultID(v any) string {
 	return ""
 }
 func (a *app) jobCommands() *cobra.Command {
-	g := &cobra.Command{Use: "job", Aliases: []string{"jobs"}, Short: "Inspect durable jobs independently of the creating CLI process"}
+	g := &cobra.Command{Use: "job", Short: "Inspect durable jobs independently of the creating CLI process"}
 	g.AddCommand(a.runCommand())
 	list := a.simpleRPC("ls", "List jobs", "job.list", 0, 0, nil)
-	list.Aliases = []string{"list"}
+
 	addListFlags(list)
-	get := a.simpleRPC("inspect JOB", "Show job, authentication, renewal and cleanup state", "job.get", 1, 1, targetParams)
+	get := a.simpleRPC("show JOB", "Show job, authentication, renewal and cleanup state", "job.get", 1, 1, targetParams)
 	cancel := a.simpleRPC("cancel JOB", "Cancel a job and apply its configured cleanup policy", "job.cancel", 1, 1, targetParams)
-	cancel.Flags().Bool("force", false, "Request immediate forced cleanup")
 	wait := &cobra.Command{Use: "wait JOB", Short: "Wait for job completion; interruption only stops waiting", Args: exactArgs(1)}
 	wait.RunE = func(cmd *cobra.Command, args []string) error {
 		ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
@@ -228,7 +232,7 @@ func (a *app) jobCommands() *cobra.Command {
 		p["policy"] = patch
 		return a.callAndPrint(cmd, "job.update", p)
 	}
-	g.AddCommand(list, get, cancel, wait, logs, attach, update)
+	g.AddCommand(list, get, cancel, logs, advancedCommand(wait), advancedCommand(attach), advancedCommand(update))
 	return g
 }
 func (a *app) waitJob(ctx context.Context, cmd *cobra.Command, id string) (domain.Run, error) {
@@ -273,7 +277,7 @@ func runExit(run domain.Run) error {
 		return &ExitError{Code: *run.ExitCode}
 	}
 	if run.State == "expired" {
-		return &ExitError{Code: 124}
+		return &ExitError{Code: 124, Diagnostic: &domain.Error{Code: "JOB_DEADLINE", Message: "作业达到运行上限", RunID: run.ID}}
 	}
 	if run.State == "stopped" && run.Kind == "job" && run.ExitCode == nil {
 		return domain.E("JOB_INTERRUPTED", "instance stopped before the job's exit status could be confirmed")
@@ -285,7 +289,7 @@ func runExit(run domain.Run) error {
 		return domain.E("JOB_FAILED", run.LastError)
 	}
 	if run.State == "cancelled" || run.State == "canceled" {
-		return &ExitError{Code: 130}
+		return &ExitError{Code: 130, Diagnostic: &domain.Error{Code: "JOB_CANCELLED", Message: "作业已取消", RunID: run.ID}}
 	}
 	return nil
 }

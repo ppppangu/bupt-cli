@@ -28,14 +28,14 @@ func TestNodeAndSnapshotActionsTrackSelectedObject(t *testing.T) {
 	i.Nodes = []domain.Node{{ID: "17", Name: "gpu", Type: "qemu", Snapshots: []map[string]any{{"eid": "23", "name": "baseline"}}, Services: []domain.Service{{ID: "20", Name: "ssh", Type: "tcp", Builtin: true}, {ID: "21", Name: "training", Type: "tcp"}}}}
 	w.instancePage(i.ID)
 	click(t, w, "maintenance")
-	for _, key := range []string{"action/compute/clone", "action/compute/preset/set", "action/compute/instance/events", "action/compute/instance/wait", "action/compute/instance/adopt"} {
+	for _, key := range []string{"action/compute/instance/clone", "action/compute/preset/set", "action/compute/instance/events", "action/compute/instance/wait", "action/compute/instance/adopt"} {
 		if _, ok := objectRow(t, w, key); !ok {
 			t.Errorf("stopped instance lacks %s", key)
 		}
 	}
 	w.back()
 	click(t, w, "node/17")
-	for _, key := range []string{"action/compute/resize", "action/compute/service/add", "remove-service/21", "snapshots"} {
+	for _, key := range []string{"action/compute/instance/resize", "action/compute/service/add", "remove-service/21", "snapshots"} {
 		if _, ok := objectRow(t, w, key); !ok {
 			t.Errorf("node lacks %s", key)
 		}
@@ -63,13 +63,13 @@ func TestNodeAndSnapshotActionsTrackSelectedObject(t *testing.T) {
 	w.back()
 	click(t, w, "connection")
 	for _, op := range []string{"ssh", "exec", "console", "forward", "sftp"} {
-		r, ok := objectRow(t, w, "action/compute/"+op)
+		r, ok := objectRow(t, w, "action/"+op)
 		if !ok || !strings.HasSuffix(r.command, "--node=17 101") {
 			t.Errorf("missing node binding: %s: %q", op, r.command)
 		}
 	}
 	i.State = "stopped"
-	if _, ok := objectRow(t, w, "action/compute/exec"); ok {
+	if _, ok := objectRow(t, w, "action/exec"); ok {
 		t.Fatal("stopped node still offers a terminal")
 	}
 	w.back()
@@ -118,14 +118,7 @@ func TestProjectFileActionsKeepScopeAndReloadAfterChange(t *testing.T) {
 		t.Fatal(w.current().command)
 	}
 	w.back()
-	rename := CommandForm{Path: []string{"compute", "storage", "rename"}, Runnable: true, Flags: []FormFlag{{Name: "store"}, {Name: "group-id"}}}
-	storage := CommandForm{Path: []string{"compute", "storage"}, Children: []CommandForm{rename}}
-	w.Commands = map[string]CommandForm{"compute": {Path: []string{"compute"}, Children: []CommandForm{storage}}}
-	var calls [][]string
-	w.Capture = func(_ context.Context, args []string) (string, error) {
-		calls = append(calls, slices.Clone(args))
-		return "ok", nil
-	}
+	calls := recordFormCalls(w, "data.edit", func(p map[string]any) (any, error) { return "ok", nil })
 	click(t, w, "action/compute/storage/rename")
 	click(t, w, "arg")
 	input := w.input
@@ -137,13 +130,13 @@ func TestProjectFileActionsKeepScopeAndReloadAfterChange(t *testing.T) {
 	waitFor(t, w, func() bool { return !w.current().loading })
 	click(t, w, "submit")
 	waitFor(t, w, func() bool { return !w.current().submitting })
-	expected := []string{"compute", "storage", "rename", "--store=school", "--group-id=702", "--", "--profile=other", "changed"}
-	if len(calls) != 2 || !slices.Contains(calls[0], "--dry-run") || slices.Contains(calls[1], "--dry-run") {
-		t.Fatal(calls)
+	preview, submit := <-calls, <-calls
+	if preview["dry_run"] != true || submit["dry_run"] != nil {
+		t.Fatal(preview, submit)
 	}
-	for _, argv := range calls {
-		if !slices.Equal(argv[len(argv)-len(expected):], expected) {
-			t.Fatal(calls)
+	for _, p := range []map[string]any{preview, submit} {
+		if p["action"] != "rename" || p["store"] != "school" || p["group_id"] != "702" || p["path"] != "--profile=other" || p["new_name"] != "changed" {
+			t.Fatal(p)
 		}
 	}
 	w.back() // Result → form.
@@ -215,8 +208,8 @@ func TestQuotaAndRunActionsUseServerObjectIDs(t *testing.T) {
 	w.runPage("job1")
 	waitFor(t, w, func() bool { return !w.current().loading })
 	for _, op := range []string{"attach", "wait", "update"} {
-		r, _ := objectRow(t, w, "action/compute/run/"+op)
-		if r.command != "bupt compute run "+op+" job1" {
+		r, _ := objectRow(t, w, "action/compute/job/"+op)
+		if r.command != "bupt compute job "+op+" job1" {
 			t.Error(r.command)
 		}
 	}

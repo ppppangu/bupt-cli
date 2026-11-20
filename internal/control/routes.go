@@ -16,6 +16,19 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
+func instanceSSHState(i domain.Instance, routes []domain.Route) string {
+	if instanceStopped(i) {
+		return "stopped"
+	}
+	result := i.SSHState
+	for _, route := range routes {
+		if route.InstanceID == i.ID {
+			result = route.State
+		}
+	}
+	return result
+}
+
 func (c *Controller) CachedRoute(profile, target, node string) (domain.Route, error) {
 	routes, e := c.Store.ListRoutes(profile)
 	if e != nil {
@@ -52,7 +65,7 @@ func (c *Controller) CachedRoute(profile, target, node string) (domain.Route, er
 	if len(found) > 1 {
 		return domain.Route{}, domain.E("AMBIGUOUS_TARGET", "cached target has multiple nodes; specify a node")
 	}
-	return domain.Route{}, domain.E("SSH_NOT_PREPARED", "no verified SSH route; run up or ssh ensure while platform authentication is available")
+	return domain.Route{}, domain.E("SSH_NOT_PREPARED", "no verified SSH route; run bupt compute instance prepare-ssh while platform authentication is available")
 }
 func (c *Controller) automationKey(profile string) (string, string, error) {
 	p := filepath.Join(c.Configuration().Paths.DataDir, "keys", profile+"-automation")

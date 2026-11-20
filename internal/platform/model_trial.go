@@ -114,6 +114,8 @@ func (c *Client) RunModelTrial(ctx context.Context, base string, trial domain.Tr
 		return result, domain.E("MODEL_GATEWAY_REDIRECT", "模型网关要求重定向；本次请求已结束。")
 	case resp.StatusCode == 401:
 		return result, domain.E("MODEL_KEY_REJECTED", "模型网关未接受所选 Key，请检查启用状态。")
+	case resp.StatusCode == 402:
+		return result, responseError("MODEL_BALANCE_INSUFFICIENT", "学校网关拒绝调用，余额或可用额度不足。")
 	case resp.StatusCode == 403:
 		return result, domain.E("MODEL_ACCESS_DENIED", "模型网关拒绝本次调用，请检查 Key 范围和账户额度。")
 	case resp.StatusCode == 429:

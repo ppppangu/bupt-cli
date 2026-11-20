@@ -271,7 +271,7 @@ func TestPrimitiveMutationsReturnTaskReceipts(t *testing.T) {
 			return c.ResizeInstance(context.Background(), domain.ResizeInstanceRequest{InstanceTaskRequest: base, Resources: &domain.ResourceSelection{Memory: "8GiB"}})
 		}, "resources", `{"memory":"8GiB"}`},
 		{"instance.disk-grow", func(c *Client) (domain.TaskRecord, error) {
-			return c.GrowDisk(context.Background(), domain.GrowDiskRequest{InstanceTaskRequest: base, SizeGB: 100})
+			return c.GrowDisk(context.Background(), domain.GrowDiskRequest{InstanceTaskRequest: base, TargetCapacityGB: 100})
 		}, "size_gb", "100"},
 		{"snapshot.create", func(c *Client) (domain.TaskRecord, error) {
 			return c.CreateSnapshot(context.Background(), domain.CreateSnapshotRequest{InstanceTaskRequest: base, Name: "checkpoint", Description: "before upgrade"})

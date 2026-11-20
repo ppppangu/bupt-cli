@@ -1,9 +1,7 @@
 package tui
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"math"
 	"math/big"
@@ -13,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"bupt.local/cli/internal/client"
 	"bupt.local/cli/internal/domain"
 	"github.com/rivo/uniseg"
 )
@@ -261,73 +260,34 @@ func (u *usageScreen) ledgerLoader() func(context.Context) (func() content, erro
 	w := u.w
 	section, days, instance := u.section, u.days, u.instance
 	return func(ctx context.Context) (func() content, error) {
-		var records []map[string]any
-		var previous string
-		for page := 1; ; page++ {
-			var reply struct {
-				Items []map[string]any
-				Total json.Number
-			}
-			var raw json.RawMessage
-			if err := w.Backend.Call(ctx, "compute.read", map[string]any{"section": section, "page": page, "limit": 100}, &raw); err != nil {
-				return nil, err
-			}
-			decoder := json.NewDecoder(bytes.NewReader(raw))
-			decoder.UseNumber()
-			if err := decoder.Decode(&reply); err != nil {
-				return nil, err
-			}
-			signature := string(domain.Result(reply.Items))
-			if page > 1 && signature == previous && len(reply.Items) > 0 {
-				return nil, fmt.Errorf("账单分页重复，请刷新重试")
-			}
-			records = append(records, reply.Items...)
-			previous = signature
-			n, err := reply.Total.Int64()
-			if err == nil && int64(page*100) >= n || err != nil && len(reply.Items) < 100 || len(reply.Items) == 0 {
-				break
-			}
-			if ctx.Err() != nil {
-				return nil, ctx.Err()
-			}
+		window := client.SchoolUsageWindow(time.Now(), days)
+		ledger, err := client.ReadComputeLedger(ctx, w.Backend.Call, section, window, instance)
+		if err != nil {
+			return nil, err
 		}
-		now := time.Now()
-		start := now.AddDate(0, 0, 1-days).Format("2006-01-02")
-		end := now.Format("2006-01-02")
+		start, end := window.Start, window.End
 		var details, undated []row
 		missing := 0
 		totals := map[string]*big.Rat{}
 		precision := 0
 		var runtimeSeconds big.Int
 		runtimeKnown := true
-		complete := true
+		complete := ledger.Complete && len(ledger.Undated) == 0
 		count := 0
-		for i, m := range records {
-			if instance != "" && computeValue(m, "appId") != string(instance) {
-				continue
-			}
-			raw := computeValue(m, "endAt", "createdAt", "startAt", "updatedAt")
-			date := computeTime(raw)
-			dated := len(date) >= 10
-			if dated {
-				date = date[:10]
-				_, err := time.Parse("2006-01-02", date)
-				dated = err == nil
-			}
-			if dated && (date < start || date > end) {
-				continue
-			}
+		for i, bill := range append(ledger.Items, ledger.Undated...) {
+			m, date := bill.Source, bill.Date
+			dated := date != ""
 			if !dated {
 				date = "日期待核实"
 				missing++
-			} else {
+			} else if bill.Category == "bill" || bill.Category == "settled" {
 				count++
 				if seconds, ok := new(big.Int).SetString(value(m["runningSeconds"]), 10); ok && seconds.Sign() >= 0 {
 					runtimeSeconds.Add(&runtimeSeconds, seconds)
 				} else {
 					runtimeKnown = false
 				}
-				points, digits := billingPoints(value(m["usagePoints"]))
+				points, digits := client.BillingPoints(bill.Points)
 				if points == nil {
 					complete = false
 				} else {
@@ -341,11 +301,11 @@ func (u *usageScreen) ledgerLoader() func(context.Context) (func() content, erro
 			name := computeValue(m, "appName", "name", "nodeName", "appId", "id")
 			lines := recordSummary(m)
 			summary := strings.Join(lines, " · ")
-			amount := computeValue(m, "usagePoints")
-			if amount != "" {
-				amount += " 积分"
-			} else {
-				amount = strings.TrimSpace(computeValue(m, "cost", "amount", "sum") + " " + computeValue(m, "currency"))
+			amount := bill.DisplayAmount()
+			if bill.Category == "estimate" {
+				amount += "（估价）"
+			} else if bill.Category == "unsettled" {
+				amount += "（未结算）"
 			}
 			r := navLink(fmt.Sprintf("bill/%d", i), strings.TrimSpace(date+"  "+name+"  "+amount), summary, "bupt compute usage", func() {
 				w.local(name, "bupt compute usage", func() content { return w.textContent(strings.Join(lines, "\n")) })
@@ -384,7 +344,13 @@ func (u *usageScreen) ledgerLoader() func(context.Context) (func() content, erro
 					}
 				})
 			}))
-			v.facts = []string{fmt.Sprintf("%s 至 %s · %d 条%s", start, end, count, which)}
+			v.facts = []string{fmt.Sprintf("%s 至 %s · %d 条%s", start, end, len(ledger.Items), which), "学校时区 " + window.Timezone}
+			if ledger.Code != "" {
+				v.facts = append(v.facts, "账单范围或金额待核查  "+ledger.Code)
+			}
+			if ledger.NextPage != 0 {
+				v.facts = append(v.facts, fmt.Sprintf("学校分页未读取完整，从第 %d 页待查", ledger.NextPage))
+			}
 			if instance != "" {
 				v.facts = append(v.facts, "实例 "+string(instance))
 			}
@@ -407,7 +373,18 @@ func (u *usageScreen) ledgerLoader() func(context.Context) (func() content, erro
 				if len(details) == 0 {
 					v.rows = append(v.rows, info("本期没有账单记录", ""))
 				} else {
-					v.rows = append(v.rows, details...)
+					const pageSize = 10
+					lastPage := (len(details) - 1) / pageSize
+					u.billPage = min(max(0, u.billPage), lastPage)
+					page := u.billPage
+					v.rows = append(v.rows, info(fmt.Sprintf("账单明细 %d/%d", page+1, lastPage+1), ""))
+					if page > 0 {
+						v.rows = append(v.rows, link("bill-prev", "上一页账单", "", "", func() { u.turnBillPage(page-1, "上一页账单") }))
+					}
+					if page < lastPage {
+						v.rows = append(v.rows, link("bill-next", "下一页账单", "", "", func() { u.turnBillPage(page+1, "下一页账单") }))
+					}
+					v.rows = append(v.rows, details[page*pageSize:min(len(details), (page+1)*pageSize)]...)
 				}
 			default:
 				if count > 0 && complete {
@@ -429,23 +406,6 @@ func (u *usageScreen) ledgerLoader() func(context.Context) (func() content, erro
 			return v
 		}, nil
 	}
-}
-func billingPoints(raw string) (*big.Rat, int) {
-	n, e := strconv.ParseFloat(raw, 64)
-	if e != nil || math.IsNaN(n) || math.IsInf(n, 0) || len(raw) > 128 {
-		return nil, 0
-	}
-	number, exponent, _ := strings.Cut(strings.ToLower(raw), "e")
-	power, _ := strconv.Atoi(exponent)
-	if power < -324 || power > 308 {
-		return nil, 0
-	}
-	_, fraction, _ := strings.Cut(number, ".")
-	amount, ok := new(big.Rat).SetString(raw)
-	if !ok {
-		return nil, 0
-	}
-	return amount, max(0, len(fraction)-power)
 }
 func (w *workspace) usageDayRows(u domain.PortalUsage) content {
 	v := content{fullWidth: true, empty: "暂无每日记录。"}

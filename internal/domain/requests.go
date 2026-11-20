@@ -21,6 +21,7 @@ const (
 type OperationOptions struct {
 	Wait           *bool  `json:"wait,omitempty"`
 	IdempotencyKey string `json:"idempotency_key,omitempty"`
+	DryRun         bool   `json:"dry_run,omitempty"`
 }
 
 // RunPolicyPatch changes only selected policy settings. A nil pointer inherits
@@ -75,6 +76,8 @@ type TemplateSelection struct {
 // An existing unmanaged instance is never adopted merely because Target is set:
 // use Adopt=true or the explicit AdoptInstance operation.
 type ManagedRequest struct {
+	AllocateOnly    bool   `json:"allocate_only,omitempty"`
+	MaxPointsPerDay string `json:"max_points_per_day,omitempty"`
 	OperationOptions
 	PolicySelection
 	TemplateSelection
@@ -117,8 +120,9 @@ type PolicyUpdateRequest struct {
 // receipt is TaskRecord; managed allocation operations return Run instead.
 type InstanceTaskRequest struct {
 	OperationOptions
-	Target string `json:"target"`
-	Node   ID     `json:"node,omitempty"`
+	Target  string `json:"target"`
+	Node    ID     `json:"node,omitempty"`
+	Confirm ID     `json:"confirm,omitempty"`
 }
 
 type StopInstanceRequest struct {
@@ -132,7 +136,7 @@ type ResizeInstanceRequest struct {
 }
 type GrowDiskRequest struct {
 	InstanceTaskRequest
-	SizeGB int64 `json:"size_gb"`
+	TargetCapacityGB int64 `json:"size_gb"`
 }
 type CreateSnapshotRequest struct {
 	InstanceTaskRequest
@@ -164,4 +168,21 @@ type ReloadResult struct {
 	Reloaded             bool     `json:"reloaded"`
 	Profiles             []string `json:"profiles"`
 	RunPoliciesPreserved bool     `json:"run_policies_preserved"`
+}
+
+// InstanceCreatePreview carries the resource and billing facts approved by both clients.
+type InstanceCreatePreview struct {
+	DryRun              bool                            `json:"dry_run"`
+	Run                 *Run                            `json:"run"`
+	SpecID              ID                              `json:"spec_id"`
+	PointsPerDay        string                          `json:"points_per_day"`
+	BillingStart        string                          `json:"billing_start"`
+	AllocateOnly        bool                            `json:"allocate_only"`
+	ResourceConstraints map[string][]ResourceConstraint `json:"resource_constraints"`
+}
+
+// ResourceConstraint is a normalized resource value from the school template.
+type ResourceConstraint struct {
+	Type  string `json:"type"`
+	Value string `json:"value"`
 }

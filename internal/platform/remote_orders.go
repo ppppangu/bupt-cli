@@ -169,7 +169,7 @@ func (c *Client) PlaceRemoteOrder(ctx context.Context, q RemoteQuote) (map[strin
 	order := object(object(raw)["createdOrder"])
 	id := stringValue(order["id"])
 	if !numericObjectID(id) {
-		return nil, domain.E("ORDER_RESULT_UNCERTAIN", "学校未返回可核对的订单 ID。请先查 bupt compute remote order。")
+		return nil, domain.E("ORDER_RESULT_UNCERTAIN", "学校未返回可核对的订单 ID。请先查 bupt remote order。")
 	}
 	return portalValue(order, "id", "no", "name", "appId", "appName", "amount", "status", "createdAt"), nil
 }

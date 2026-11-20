@@ -171,7 +171,7 @@ func TestDefaultsAreLocalAndFiniteLimitsAreRuntimeRequirements(t *testing.T) {
 	if p.Controller != "local" || p.PlatformURL != "https://gpuhub.bupt.edu.cn" {
 		t.Fatalf("wrong defaults %#v", p)
 	}
-	if c.Policy.Cleanup != "release" || c.Policy.StopGrace != "60s" || !c.Policy.ForceStop {
+	if c.Policy.Cleanup != "release" || c.Policy.StopGrace != "60s" || c.Policy.ForceStop {
 		t.Fatalf("wrong policy %#v", c.Policy)
 	}
 	if e = ValidatePolicy(c.Policy, true); code(e) != "LIMIT_REQUIRED" {
@@ -423,7 +423,7 @@ func TestCLIMapMergeAndUnknownKeys(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	if c.Policy.Cleanup != "none" || c.Policy.StopGrace != "60s" || !c.Policy.ForceStop {
+	if c.Policy.Cleanup != "none" || c.Policy.StopGrace != "60s" || c.Policy.ForceStop {
 		t.Fatal(c.Policy)
 	}
 	o.Overrides = map[string]any{"policy.auto_renwe": true}

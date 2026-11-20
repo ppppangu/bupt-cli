@@ -210,7 +210,7 @@ func (c *Controller) PollLogin(ctx context.Context, profile string) (domain.Auth
 	defer c.lockLogin(profile)()
 	var flow loginFlow
 	if e := c.Vault.Get(loginFlowKey(profile), &flow); e != nil {
-		return domain.AuthChallenge{}, domain.E("NO_LOGIN_FLOW", "start with bupt auth login")
+		return domain.AuthChallenge{}, domain.E("NO_LOGIN_FLOW", "start with bupt login")
 	}
 	flow.account = c.accountTicket(profile)
 	a, e := c.loginAdapter(profile, flow.Service)

@@ -129,6 +129,14 @@ def ak_lock(fd):
         except BlockingIOError:
             if time.monotonic()>=deadline:raise RuntimeError('SSH enrollment is busy; retry after the other update finishes')
             time.sleep(.05)
+def ak_open_lock(directory):
+    name='.bupt-enrollment.lock'
+    for _ in range(10):
+        try:return os.open(name,os.O_RDWR|os.O_NOFOLLOW,dir_fd=directory)
+        except FileNotFoundError:
+            try:return os.open(name,os.O_CREAT|os.O_EXCL|os.O_RDWR|os.O_NOFOLLOW,0o600,dir_fd=directory)
+            except (FileExistsError,FileNotFoundError):time.sleep(.02)
+    raise RuntimeError('SSH enrollment lock is temporarily unavailable')
 def ak_read(directory):
     try:fd=os.open('authorized_keys',os.O_RDONLY|os.O_NOFOLLOW,dir_fd=directory)
     except FileNotFoundError:return None,b''
@@ -169,7 +177,7 @@ def apply_authorized_keys(add,remove,home,backup_dir=None):
     directory=os.open(str(sshdir),os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
     try:
         ak_guard(os.fstat(directory),'directory')
-        lockfd=os.open('.bupt-enrollment.lock',os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW,0o600,dir_fd=directory)
+        lockfd=ak_open_lock(directory)
         with os.fdopen(lockfd,'a+') as lock:
             ak_guard(os.fstat(lock.fileno()),'file',True);ak_lock(lock.fileno())
             before,old=ak_read(directory)

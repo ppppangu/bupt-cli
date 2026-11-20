@@ -29,7 +29,7 @@ func (a *app) dataCommands() *cobra.Command {
 		}
 		return p
 	})
-	list.Aliases = []string{"list"}
+
 	storageFlags(list)
 	g.AddCommand(list)
 	push := &cobra.Command{Use: "push LOCAL REMOTE", Short: "Upload one file with resumable platform storage transport", Args: exactArgs(2)}
@@ -245,13 +245,20 @@ func (a *app) cpCommand() *cobra.Command {
 	cmd.Flags().BoolP("recursive", "r", false, "Copy a directory tree")
 	cmd.Flags().Bool("overwrite", false, "Permit replacing an existing destination")
 	cmd.Flags().String("node", "", "Node selector for a multi-node instance")
+	cmd.Flags().Int64("size", -1, "从标准输入上传时的准确字节数")
 	cmd.RunE = func(cmd *cobra.Command, args []string) error {
 		src, dst := parseFile(args[0]), parseFile(args[1])
 		if src.remote == dst.remote {
 			return usage("cp requires exactly one INSTANCE:PATH operand")
 		}
 		recursive, _ := cmd.Flags().GetBool("recursive")
+		if cmd.Flags().Changed("size") && (src.remote || src.path != "-" || recursive) {
+			return usage("--size 只用于从标准输入上传单个文件")
+		}
 		if recursive {
+			if src.path == "-" || dst.path == "-" {
+				return usage("递归复制需要文件系统目录")
+			}
 			return a.transferBatch(func() error {
 				if src.remote {
 					return a.downloadTree(cmd, src.target, src.path, dst.path)

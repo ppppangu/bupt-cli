@@ -2,9 +2,9 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net"
-	"slices"
 	"strings"
 	"testing"
 
@@ -40,16 +40,16 @@ func TestInstanceTransferAsksForSourceThenDestination(t *testing.T) {
 func TestRemoteOrderRecoverFromQuoteChangeAndUnknownReceipt(t *testing.T) {
 	w := fixtureWorkspace(t, &fixtureBackend{})
 	attempts := 0
-	w.Capture = func(_ context.Context, args []string) (string, error) {
-		if slices.Contains(args, "--dry-run") {
-			return `{"quote":"q","details":{"intent":{"action":"renew","target":"5","units":1},"spec_id":"5","spec_name":"GPU","unit":"CNY","unit_price":2,"duration_unit":"天","total":2}}`, nil
+	recordFormCalls(w, "compute.remote.checkout", func(p map[string]any) (any, error) {
+		if p["dry_run"] == true {
+			return json.RawMessage(`{"quote":"q","details":{"intent":{"action":"renew","target":"5","units":1},"spec_id":"5","spec_name":"GPU","unit":"CNY","unit_price":2,"duration_unit":"天","total":2}}`), nil
 		}
 		attempts++
 		if attempts == 1 {
-			return "", domain.E("QUOTE_CHANGED", "需要重报")
+			return nil, domain.E("QUOTE_CHANGED", "需要重报")
 		}
-		return "", domain.E("ORDER_RESULT_UNCERTAIN", "待核对")
-	}
+		return nil, domain.E("ORDER_RESULT_UNCERTAIN", "待核对")
+	})
 	w.remoteOrderForm(true, "5", "课程", "天")
 	click(t, w, "go")
 	waitFor(t, w, func() bool { return !w.current().loading })
@@ -87,11 +87,7 @@ func TestPersonalQuotaFormUsesPublishedLimitsAndPreservesUnits(t *testing.T) {
 		}
 		return map[string]any{"UserQuota:51": map[string]any{"domain": "科研", "gpu": 100, "memory": 2048}, "UserStorageQuota:52": map[string]any{"storageName": "home", "fileStorageQuotaInMb": 0}}, nil
 	}})
-	calls := make(chan []string, 2)
-	w.Capture = func(_ context.Context, args []string) (string, error) {
-		calls <- slices.Clone(args)
-		return "学校预览", nil
-	}
+	calls := recordFormCalls(w, "compute.quota.request", func(map[string]any) (any, error) { return "学校预览", nil })
 	w.quotaRequests()
 	waitFor(t, w, func() bool { return !w.current().loading })
 	click(t, w, "UserQuota:51")
@@ -115,9 +111,8 @@ func TestPersonalQuotaFormUsesPublishedLimitsAndPreservesUnits(t *testing.T) {
 	click(t, w, "wait")
 	click(t, w, "go")
 	waitFor(t, w, func() bool { return !w.current().loading })
-	want := []string{"compute", "quota", "request", "--gpu=0", "--memory=1.5GiB", "--no-wait", "--reason=教学 作业", "--", "51"}
 	preview := <-calls
-	if !slices.Equal(preview[len(preview)-len(want):], want) || !slices.Contains(preview, "--dry-run") {
+	if preview["target"] != "51" || preview["gpu"] != "0" || preview["memory"] != "1.5GiB" || preview["wait"] != true || preview["reason"] != "教学 作业" || preview["dry_run"] != true {
 		t.Fatal(preview)
 	}
 	r, ok := objectRow(t, w, "submit")
@@ -136,7 +131,7 @@ func TestPersonalQuotaFormUsesPublishedLimitsAndPreservesUnits(t *testing.T) {
 	}
 	click(t, w, "submit")
 	waitFor(t, w, func() bool { return !w.current().submitting })
-	if got := <-calls; !slices.Equal(got[1:], want) || !slices.Contains(preview, got[0]) {
+	if got := <-calls; got["idempotency_key"] != preview["idempotency_key"] || got["dry_run"] != nil || got["target"] != "51" {
 		t.Fatal(got)
 	}
 	w.back()
@@ -152,9 +147,8 @@ func TestPersonalQuotaFormUsesPublishedLimitsAndPreservesUnits(t *testing.T) {
 
 func TestRemoteFormBindsFreshQuoteAndRequiresCompletePrice(t *testing.T) {
 	w := fixtureWorkspace(t, &fixtureBackend{})
-	calls := make(chan []string, 3)
 	doc := `{"quote":"server-quote","details":{"intent":{"action":"renew","target":"8234","units":2},"spec_id":"81","spec_name":"GPU","unit":"CNY","unit_price":4503599627370496.55,"duration_unit":"周","total":9007199254740993.10}}`
-	w.Capture = func(_ context.Context, args []string) (string, error) { calls <- slices.Clone(args); return doc, nil }
+	calls := recordFormCalls(w, "compute.remote.checkout", func(map[string]any) (any, error) { return json.RawMessage(doc), nil })
 	actions := w.recordActions("remote.instance", "8234", map[string]any{"name": "工位 A", "durationUnit": "周"})
 	actions[0].open()
 	if _, ok := objectRow(t, w, "arg"); ok {
@@ -167,8 +161,7 @@ func TestRemoteFormBindsFreshQuoteAndRequiresCompletePrice(t *testing.T) {
 	click(t, w, "go")
 	waitFor(t, w, func() bool { return !w.current().loading })
 	request := <-calls
-	want := []string{"compute", "remote", "order", "renew", "--units=2", "--", "8234"}
-	if !slices.Equal(request[len(request)-len(want):], want) || !slices.Contains(request, "--dry-run") {
+	if request["target"] != "8234" || request["units"] != float64(2) || request["dry_run"] != true {
 		t.Fatal(request)
 	}
 	page := w.view(w.current())
@@ -181,7 +174,7 @@ func TestRemoteFormBindsFreshQuoteAndRequiresCompletePrice(t *testing.T) {
 	}
 	click(t, w, "submit")
 	waitFor(t, w, func() bool { return !w.current().submitting })
-	if args := <-calls; !slices.Contains(args, "--quote=server-quote") || slices.Contains(args, "--dry-run") {
+	if args := <-calls; args["quote"] != "server-quote" || args["dry_run"] != nil {
 		t.Fatal(args)
 	}
 	w.back()
@@ -197,14 +190,14 @@ func TestRemoteFormBindsFreshQuoteAndRequiresCompletePrice(t *testing.T) {
 func TestUncertainFileEditOffersFreshListing(t *testing.T) {
 	w := fixtureWorkspace(t, &fixtureBackend{})
 	n := 0
-	w.Capture = func(_ context.Context, args []string) (string, error) {
+	recordFormCalls(w, "data.edit", func(p map[string]any) (any, error) {
 		n++
-		if slices.Contains(args, "--dry-run") {
+		if p["dry_run"] == true {
 			return "预览", nil
 		}
-		return "", &net.OpError{Op: "read", Net: "unix", Err: net.ErrClosed}
-	}
-	w.runForm([]string{"compute", "storage", "rm", "--confirm=file", "--", "file"}, true, "删除文件")
+		return nil, &net.OpError{Op: "read", Net: "unix", Err: net.ErrClosed}
+	})
+	w.reviewForm(formRequest{method: "data.edit", params: map[string]any{"action": "remove", "path": "file", "confirm": "file"}}, true, "删除文件")
 	waitFor(t, w, func() bool { return !w.current().loading })
 	click(t, w, "submit")
 	waitFor(t, w, func() bool { return !w.current().submitting })
@@ -213,5 +206,31 @@ func TestUncertainFileEditOffersFreshListing(t *testing.T) {
 	}
 	if _, ok := objectRow(t, w, "verify"); !ok || n != 2 {
 		t.Fatal(n)
+	}
+}
+
+// Observe structured requests at the same boundary used by the real frontend.
+func recordFormCalls(w *workspace, method string, reply func(map[string]any) (any, error)) chan map[string]any {
+	b := w.Backend.(*fixtureBackend)
+	prior := b.reply
+	calls := make(chan map[string]any, 8)
+	b.reply = func(ctx context.Context, name string, p map[string]any) (any, error) {
+		if name == method {
+			calls <- p
+			return reply(p)
+		}
+		if prior != nil {
+			return prior(ctx, name, p)
+		}
+		return nil, errors.New(name)
+	}
+	return calls
+}
+func TestDiskExpansionFormBindsControllerSizeInGB(t *testing.T) {
+	form := formOperations["compute instance resize"].form([]string{"compute", "instance", "resize"})
+	request, err := formParams(form, []string{"instance-123"}, map[string]string{"size-gb": "60", "node": "node-7"})
+	if err != nil || request.method != "instance.disk-grow" || request.disk == nil ||
+		request.disk.TargetCapacityGB != 60 || request.disk.Target != "instance-123" || request.disk.Node != "node-7" {
+		t.Fatalf("%+v: %v", request, err)
 	}
 }

@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"maps"
 
 	"bupt.local/cli/internal/domain"
 )
@@ -32,6 +33,11 @@ func (c *Client) StartInstance(ctx context.Context, request domain.ManagedReques
 func (c *Client) RestoreInstance(ctx context.Context, request domain.ManagedRequest) (domain.Run, error) {
 	var result domain.Run
 	err := c.mutate(ctx, "instance.restore", request, &result)
+	return result, err
+}
+func (c *Client) RestartInstance(ctx context.Context, request domain.ManagedRequest) (domain.Run, error) {
+	var result domain.Run
+	err := c.mutate(ctx, "instance.restart", request, &result)
 	return result, err
 }
 func (c *Client) AdoptInstance(ctx context.Context, request domain.ManagedRequest) (domain.Run, error) {
@@ -145,9 +151,30 @@ func previewable(method string) bool {
 	switch method {
 	case "up", "job.run", "down", "job.cancel", "lease.set", "job.update", "lease.renew", "agent.reload",
 		"instance.create", "instance.start", "instance.restore", "instance.adopt", "instance.clone",
-		"instance.stop", "instance.release", "instance.delete", "instance.cancel-queue", "instance.resize", "instance.disk-grow",
+		"instance.restart", "compute.quota.request", "compute.admin.approve", "compute.admin.reject", "compute.admin.update", "compute.remote.checkout", "compute.remote.order", "data.edit", "instance.stop", "instance.release", "instance.delete", "instance.cancel-queue", "instance.resize", "instance.disk-grow",
 		"snapshot.create", "snapshot.restore", "snapshot.delete", "service.add", "service.delete":
 		return true
 	}
 	return false
+}
+
+// Caller is the transport shared by terminal and screen frontends.
+type Caller interface {
+	Call(context.Context, string, any, any) error
+}
+
+// CallOperation applies a preview only when the controller supports it.
+func CallOperation(ctx context.Context, caller Caller, method string, params map[string]any, preview bool, out any) error {
+	if !preview {
+		return caller.Call(ctx, method, params, out)
+	}
+	if !previewable(method) {
+		return domain.E("PREVIEW_UNSUPPORTED", "此操作没有只读预览")
+	}
+	p := maps.Clone(params)
+	if p == nil {
+		p = map[string]any{}
+	}
+	p["dry_run"] = true
+	return caller.Call(ctx, method, p, out)
 }

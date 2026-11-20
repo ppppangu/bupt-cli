@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 
@@ -57,7 +58,7 @@ func (a *app) configCommands() *cobra.Command {
 }
 func (a *app) profileCommands() *cobra.Command {
 	g := &cobra.Command{Use: "profile", Short: "Manage trusted account and controller profiles"}
-	g.AddCommand(&cobra.Command{Use: "ls", Aliases: []string{"list"}, Short: "List configured profiles", Args: exactArgs(0), RunE: func(_ *cobra.Command, _ []string) error {
+	g.AddCommand(&cobra.Command{Use: "ls", Short: "List configured profiles", Args: exactArgs(0), RunE: func(_ *cobra.Command, _ []string) error {
 		keys := []string{}
 		for n := range a.cfg.Profiles {
 			keys = append(keys, n)
@@ -202,7 +203,7 @@ func (a *app) agentCommands() *cobra.Command {
 			cmd.Hidden = true
 		}
 		cmd.RunE = func(cmd *cobra.Command, _ []string) error {
-			if op == "gateway" && (a.json || a.jsonl || a.quiet) {
+			if op == "gateway" && (a.json || a.jsonl || a.ids) {
 				return usage("agent gateway requires an unformatted protocol stream")
 			}
 			return a.local(cmd, "agent."+op, localParams(cmd, a))
@@ -240,11 +241,11 @@ func (a *app) sshConfigCommands() *cobra.Command {
 	for _, op := range []string{"export", "install"} {
 		op := op
 		cmd := &cobra.Command{Use: op + " [INSTANCE]", Short: op + " OpenSSH compatibility configuration", Args: rangeArgs(0, 1)}
-		cmd.Flags().String("output", "", "Output/include path")
+		cmd.Flags().String("file", "", "Output/include path")
 		cmd.Flags().String("alias", "", "Short SSH host alias (requires one instance)")
 		cmd.Flags().String("node", "", "Node selector for a multi-node instance")
 		cmd.RunE = func(cmd *cobra.Command, args []string) error {
-			if output, _ := cmd.Flags().GetString("output"); op == "export" && output == "" {
+			if output, _ := cmd.Flags().GetString("file"); op == "export" && output == "" {
 				if e := a.rawOutput(); e != nil {
 					return e
 				}
@@ -264,7 +265,11 @@ func (a *app) completionCommand() *cobra.Command {
 	cmd.RunE = func(cmd *cobra.Command, args []string) error {
 		switch args[0] {
 		case "bash":
-			return a.root.GenBashCompletionV2(a.options.Out, true)
+			if err := a.root.GenBashCompletionV2(a.options.Out, true); err != nil {
+				return err
+			}
+			_, err := io.WriteString(a.options.Out, bashBuiltinCompletion)
+			return err
 		case "zsh":
 			return a.root.GenZshCompletion(a.options.Out)
 		case "fish":

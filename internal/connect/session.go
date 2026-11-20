@@ -20,12 +20,13 @@ type WindowSize struct {
 	Cols int `json:"cols"`
 }
 type SessionOptions struct {
-	Command []string          `json:"command,omitempty"`
-	PTY     bool              `json:"pty"`
-	Term    string            `json:"term,omitempty"`
-	Rows    int               `json:"rows,omitempty"`
-	Cols    int               `json:"cols,omitempty"`
-	Env     map[string]string `json:"env,omitempty"`
+	OnConnected func()            `json:"-"`
+	Command     []string          `json:"command,omitempty"`
+	PTY         bool              `json:"pty"`
+	Term        string            `json:"term,omitempty"`
+	Rows        int               `json:"rows,omitempty"`
+	Cols        int               `json:"cols,omitempty"`
+	Env         map[string]string `json:"env,omitempty"`
 }
 
 func QuotePOSIX(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'" }

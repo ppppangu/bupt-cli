@@ -11,16 +11,16 @@ func TestProgressiveHelpExposesAdvancedFlagsOnDemand(t *testing.T) {
 		args       []string
 		want, omit string
 	}{
-		{nil, "bupt tui", "bupt            打开交互总览"},
-		{nil, "bupt logout", ""},
+		{nil, "打开交互工作台", "admin"},
+		{nil, "login", "  up "},
 		{[]string{"help", "access"}, "logout", ""},
 		{[]string{"logout", "--help"}, "--force", ""},
-		{[]string{"--help"}, "help resources", "--controller"},
-		{[]string{"help", "compute"}, "instance", "--force-stop"},
-		{[]string{"up", "--help"}, "--max-runtime", "--constraints"},
-		{[]string{"help", "up", "--all"}, "--constraints", ""},
-		{[]string{"help", "resources", "--all"}, "--cached", ""},
-		{[]string{"help", "--all"}, "instance delete", ""},
+		{[]string{"--help"}, "help COMMAND", "--controller"},
+		{[]string{"help", "compute"}, "instance", "admin"},
+		{[]string{"compute", "instance", "create", "--help"}, "--max-runtime", "--constraints"},
+		{[]string{"help", "compute", "instance", "create", "--all"}, "--constraints", ""},
+		{[]string{"help", "compute", "catalog", "--all"}, "--cached", ""},
+		{[]string{"help", "--all"}, "compute instance delete", "compute run"},
 	} {
 		out.Reset()
 		if code := executeTest(t, opts, test.args...); code != 0 || !strings.Contains(out.String(), test.want) || test.omit != "" && strings.Contains(out.String(), test.omit) {
@@ -31,8 +31,9 @@ func TestProgressiveHelpExposesAdvancedFlagsOnDemand(t *testing.T) {
 func TestBareObjectDispatchAndNonTTYContracts(t *testing.T) {
 	b := &fakeBackend{}
 	opts, out, errout := testOptions(t, b)
-	for noun, method := range map[string]string{"instance": "instance.list", "spec": "spec.list", "data": "data.config", "job": "job.list", "task": "task.list", "auth": "auth.status"} {
-		if code := executeTest(t, opts, noun, "--json"); code != 0 || b.calls[len(b.calls)-1].method != method {
+	for noun, method := range map[string]string{"compute instance": "instance.list", "compute catalog": "resources.overview", "compute storage": "data.config", "compute job": "job.list", "auth": "auth.status"} {
+		args := append(strings.Fields(noun), "--json")
+		if code := executeTest(t, opts, args...); code != 0 || b.calls[len(b.calls)-1].method != method {
 			t.Fatal(noun, code, errout.String())
 		}
 	}

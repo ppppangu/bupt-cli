@@ -61,6 +61,32 @@ func TestWaitStoppedRunCannotReportSSHReady(t *testing.T) {
 	}
 }
 
+func TestStoppedInstanceOverridesCachedReadySSHState(t *testing.T) {
+	ctx := t.Context()
+	c, a, _ := lifecycleController(t)
+	fixtureActiveRun(t, c, a, false)
+	a.mu.Lock()
+	a.snap.Instances[0].State = "stopped"
+	a.mu.Unlock()
+
+	instances, err := c.Instances(ctx, "test", false)
+	if err != nil || len(instances) != 1 || instances[0].SSHState != "stopped" {
+		t.Fatalf("instance list: %+v, %v", instances, err)
+	}
+	result, err := c.inspectInstance(ctx, "test", lifecycleParams(map[string]any{"target": "20"}))
+	if instance, ok := result.(domain.Instance); err != nil || !ok || instance.SSHState != "stopped" {
+		t.Fatalf("instance detail: %+v, %v", result, err)
+	}
+	report, err := c.Status(ctx, "test", lifecycleParams(map[string]any{"cached": true}))
+	if err != nil || len(report.Instances) != 1 || report.Instances[0].SSHState != "stopped" {
+		t.Fatalf("cached status: %+v, %v", report.Instances, err)
+	}
+	route, err := c.CachedRoute("test", "20", "40")
+	if err != nil || route.State != "ready" {
+		t.Fatalf("route metadata: %+v, %v", route, err)
+	}
+}
+
 func TestWaitActionErrorRetainsDurableRun(t *testing.T) {
 	c, _, _ := lifecycleController(t)
 	r := domain.Run{ID: "needs-password", Profile: "test", State: "preparing", LastError: "CONSOLE_LOGIN_REQUIRED", Deadline: time.Now().Add(time.Hour)}

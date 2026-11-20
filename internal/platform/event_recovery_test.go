@@ -25,6 +25,103 @@ func TestEventCreatedByUpdatesExistingActorView(t *testing.T) {
 	}
 }
 
+func TestPendingTaskRecoversFromFullViewWithoutResending(t *testing.T) {
+	const taskID = "32448adc-a967-4eee-8ad6-e85caeb43b25"
+	tasks := make(chan int, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/auth/user" {
+			writeJSON(w, map[string]any{"code": 0, "uid": 7, "uname": "student"})
+			return
+		}
+		ws, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer ws.CloseNow()
+		ctx := r.Context()
+		_ = ws.Write(ctx, websocket.MessageText, []byte("40"))
+		var submissions int
+		ready, recovered := false, false
+		for {
+			name, p, err := readEvent(ctx, ws)
+			if err != nil {
+				return
+			}
+			switch name {
+			case "TASK":
+				if !ready {
+					t.Error("task sent before ready acknowledgement")
+				}
+				if p["id"] != taskID || p["type"] != "StartAppTask" || p["payload"] != `{"appEid":10}` {
+					t.Errorf("unexpected task frame: %v", p)
+				}
+				submissions++
+				// Apply the task, but suppress incremental events and TASK_RET.
+			case "SYNC":
+				ready = false
+				if integer(p["index"]) != -1 {
+					_ = sendEvent(ctx, ws, "SYNCED", nil)
+					continue
+				}
+				dump := dumpFixture(5)
+				resource := dump["views"].([]any)[0].(map[string]any)
+				entities := resource["view"].(map[string]any)["memViewDump"].(map[string]any)["entities"].(map[string]any)
+				app := entities["App"].([]any)[0].(map[string]any)
+				if submissions == 0 {
+					app["state"] = "stopped"
+				} else {
+					entities["Task"] = []any{map[string]any{"eid": 80, "id": taskID, "type": "StartAppTask", "state": "complete", "payload": map[string]any{"appEid": 10}}}
+					recovered = true
+				}
+				_ = sendEvent(ctx, ws, "VIEW_DUMP", dump)
+			case "READY_RECEIVE_EVENT":
+				ready = true
+				if recovered {
+					tasks <- submissions
+					recovered = false
+				}
+			}
+		}
+	}))
+	defer srv.Close()
+	c := testClient(t, srv)
+	defer c.Close()
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	initial, err := c.Sync(ctx)
+	if err != nil || len(initial.Instances) != 1 || initial.Instances[0].State != "stopped" {
+		t.Fatalf("initial snapshot: %+v, %v", initial.Instances, err)
+	}
+	s := c.socket
+	req := domain.TaskRequest{ID: taskID, Type: "StartAppTask", UserID: "7", TargetID: "10"}
+	if _, err := s.sendTask(ctx, req, []byte(`{"appEid":10}`)); err != nil {
+		t.Fatal(err)
+	}
+	stale, err := c.Sync(ctx)
+	if err != nil || stale.Instances[0].State != "stopped" || terminalTask(stale.Tasks[0].State) {
+		t.Fatalf("incremental snapshot: %+v, %+v, %v", stale.Instances, stale.Tasks, err)
+	}
+	s.mu.Lock()
+	s.lastFullSync = time.Now().Add(-taskReceiptRefreshInterval)
+	s.mu.Unlock()
+	result, err := s.waitTask(ctx, taskID, time.Millisecond)
+	if err != nil || result.ID != taskID || result.State != "complete" || result.TargetID != "10" {
+		t.Fatalf("recovered receipt: %+v, %v", result, err)
+	}
+	live, err := c.SyncTaskReceipts(ctx)
+	if err != nil || live.Instances[0].State != "running" {
+		t.Fatalf("recovered snapshot: %+v, %v", live.Instances, err)
+	}
+	select {
+	case count := <-tasks:
+		if count != 1 {
+			t.Fatalf("platform received %d task frames", count)
+		}
+	case <-ctx.Done():
+		t.Fatal("school did not receive the full synchronization acknowledgement")
+	}
+}
+
 func TestDuplicateTaskReceiptReconcilesOriginalResult(t *testing.T) {
 	const taskID = "c7d6500a-85df-45eb-b90f-87ea516f75c1"
 	submitted := false

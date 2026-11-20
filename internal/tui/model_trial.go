@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"bupt.local/cli/internal/domain"
+	"bupt.local/cli/internal/feedback"
 	"github.com/google/uuid"
 )
 
@@ -92,7 +93,7 @@ func (w *workspace) trialTaskChoices(owner *page, catalog []domain.PortalModel, 
 		if len(models) == 0 {
 			continue
 		}
-		v.rows = append(v.rows, navLink(task.kind, task.title, task.detail, "bupt help api model try --all", func() {
+		v.rows = append(v.rows, navLink(task.kind, task.title, task.detail, "bupt help api model invoke --all", func() {
 			if w.current() != owner {
 				w.back()
 			}
@@ -167,6 +168,7 @@ func (w *workspace) modelPlayground(m domain.PortalModel, t domain.ModelTrial, m
 }
 
 type trialOutcome struct {
+	incident                        feedback.Incident
 	result                          *domain.TrialResult
 	message, reference              string
 	summary                         string
@@ -204,6 +206,16 @@ func (w *workspace) resumeTrial(p *page, f *trialForm) {
 		f.input = copyTrial(saved.draft.input)
 		f.key, f.keyName = saved.draft.key, saved.draft.keyName
 		last = saved.outcome
+	} else {
+		saved := w.readDraft("model/" + w.draftSlot(f))
+		if !saved.Updated.IsZero() {
+			if saved.MaxTokens > 0 && f.template.Kind == "chat" {
+				f.input.MaxTokens = saved.MaxTokens
+			}
+			if f.template.Kind == "rerank" && saved.TopN <= len(f.input.Documents) {
+				f.input.TopN = saved.TopN
+			}
+		}
 	}
 	w.trialWorkspace(p, f, last)
 }
@@ -222,7 +234,7 @@ func (w *workspace) trialWorkspace(p *page, f *trialForm, last trialOutcome) {
 	if fresh {
 		p = &page{}
 	}
-	p.title, p.bench, p.command, p.queryMethod = "在线调试", "trial", "bupt help api model try --all", "portal.read"
+	p.title, p.bench, p.command, p.queryMethod = "在线调试", "trial", "bupt help api model invoke --all", "portal.read"
 	p.filter, p.key, p.scroll, p.focus, p.reading = "", f.firstInput(), 0, 0, false
 	owner := w.bar.snapshot.CampusID
 	p.onLeave = func() {
@@ -278,7 +290,7 @@ func (w *workspace) trialTexts(v *content, items *[]string, noun string) {
 		v.rows = append(v.rows, link("remove", "移除最后一段", fmt.Sprintf("%s %d", noun, len(*items)), "", func() { *items = (*items)[:len(*items)-1] }))
 	}
 }
-func (w *workspace) trialNumber(key, title string, current *int, minVal, maxVal int) row {
+func (w *workspace) trialNumber(key, title string, current *int, minVal, maxVal int, save func()) row {
 	display := strconv.Itoa(*current)
 	if *current == 0 {
 		display = "全部"
@@ -290,6 +302,7 @@ func (w *workspace) trialNumber(key, title string, current *int, minVal, maxVal 
 				return fmt.Errorf("请填写 %d 至 %d 的整数", minVal, maxVal)
 			}
 			*current = n
+			save()
 			return nil
 		})
 	})
@@ -315,12 +328,12 @@ func (w *workspace) trialInputRows(v *content, f *trialForm) {
 func (w *workspace) trialLimitRow(v *content, f *trialForm) {
 	switch f.template.Kind {
 	case "chat":
-		v.rows = append(v.rows, w.trialNumber("max", "输出上限（Token）", &f.input.MaxTokens, 1, 4096))
+		v.rows = append(v.rows, w.trialNumber("max", "输出上限（Token）", &f.input.MaxTokens, 1, 4096, func() { w.saveModelDraft(f) }))
 	case "rerank":
 		if f.input.TopN > len(f.input.Documents) {
 			f.input.TopN = 0
 		}
-		v.rows = append(v.rows, w.trialNumber("top", "返回条数（0 为全部）", &f.input.TopN, 0, len(f.input.Documents)))
+		v.rows = append(v.rows, w.trialNumber("top", "返回条数（0 为全部）", &f.input.TopN, 0, len(f.input.Documents), func() { w.saveModelDraft(f) }))
 	}
 }
 func usableModelKeys(all []domain.PortalKey, model string) []domain.PortalKey {
@@ -454,6 +467,14 @@ func (w *workspace) trialContent(p *page, f *trialForm, o trialOptions, last *tr
 		}
 	}
 	v.rows = append(v.rows, send)
+	if !w.Cached && f.template.Kind != "embedding" {
+		v.rows = append(v.rows, link("clear-draft", "清除本机参数草稿", "恢复输出上限或返回条数的默认值", "", func() {
+			if w.clearDraft("model/" + w.draftSlot(f)) {
+				f.input.MaxTokens, f.input.TopN = f.template.Sample.MaxTokens, 0
+				w.notice = "已清除本机参数草稿"
+			}
+		}))
+	}
 	if !w.Cached && ready && len(keys) == 0 {
 		v.rows = append(v.rows, navLink("create-key", "创建调用密钥", "仅授权当前模型，完成后继续调试", "bupt api key create", func() { w.createTrialKey(p, f) }))
 	} else if !w.Cached && !p.loading {
@@ -498,6 +519,7 @@ func (w *workspace) trialContent(p *page, f *trialForm, o trialOptions, last *tr
 			v.rows = append(v.rows, w.textContent(full).rows...)
 		}
 	case last.message != "":
+		v.incident = last.incident
 		v.panelTitle += " · " + map[bool]string{true: "结果未知", false: "失败"}[last.unknown]
 		v.panel = strings.Split(last.message, "\n")
 		if last.reference != "" {
@@ -524,7 +546,10 @@ func (w *workspace) submitTrial(p *page, f *trialForm, last *trialOutcome) {
 		return
 	}
 	ref := uuid.NewString()
-	params := map[string]any{"model": f.model.ID, "key_id": f.key, "input": copyTrial(f.input), "idempotency_key": ref}
+	params := domain.ModelInvocation{Model: f.model.ID, KeyID: f.key, Input: copyTrial(f.input), IdempotencyKey: ref}
+	if last.unknown && last.acknowledged {
+		params.ResendAfter = last.reference
+	}
 	ctx, cancel := context.WithTimeout(w.ctx, w.Timeout)
 	p.submitting, p.interrupt = true, cancel
 	*last = trialOutcome{reference: ref}
@@ -540,13 +565,22 @@ func (w *workspace) submitTrial(p *page, f *trialForm, last *trialOutcome) {
 			if err != nil {
 				var de *domain.Error
 				code := errorCode(err)
-				last.unknown = !errors.As(err, &de) || slices.Contains([]string{"MODEL_RESULT_UNKNOWN", "TRIAL_ALREADY_SUBMITTED", "MODEL_GATEWAY_ERROR", "MODEL_RESPONSE_LARGE", "MODEL_PROTOCOL"}, code) || connectionError(code) || interrupted
+				last.unknown = !errors.As(err, &de) || slices.Contains([]string{"MODEL_RESULT_UNKNOWN", "MODEL_RECONCILIATION_REQUIRED", "TRIAL_ALREADY_SUBMITTED", "MODEL_GATEWAY_ERROR", "MODEL_RESPONSE_LARGE", "MODEL_PROTOCOL"}, code) || connectionError(code) || interrupted
 				last.message = whenError(err)
-				if de != nil && de.RequestID != "" {
+				if de != nil && de.RequestID != "" && (code == "MODEL_RECONCILIATION_REQUIRED" || code == "TRIAL_ALREADY_SUBMITTED") {
+					last.reference = de.RequestID
+				} else if de != nil && de.RequestID != "" {
 					last.message += "\n网关请求编号 " + de.RequestID
 				}
 				if last.unknown {
-					p.key = "usage"
+					p.key, p.filter, p.scroll = "usage", "", 0
+				}
+				last.incident = feedback.FromError("portal.trial", err)
+				if last.incident.RequestID == "" {
+					last.incident.RequestID = last.reference
+				}
+				if last.unknown {
+					last.incident.State = "uncertain"
 				}
 				return
 			}

@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
+	"bupt.local/cli/internal/client"
 	"bupt.local/cli/internal/domain"
 )
 
@@ -17,7 +19,7 @@ var usageViews = []exampleChoice{
 type usageScreen struct {
 	w               *workspace
 	page            *page
-	days            int
+	days, billPage  int
 	view, section   string
 	ledger, byModel bool
 	instance        domain.ID
@@ -52,7 +54,7 @@ func (u *usageScreen) selectView(id string) {
 	case "compute":
 		u.ledger = true
 	}
-	u.view = id
+	u.view, u.billPage = id, 0
 	u.page.filter, u.page.key, u.page.reading, u.page.scroll = "", "view/"+id, false, 0
 	if oldSource != u.ledger {
 		u.reload()
@@ -116,9 +118,17 @@ func (u *usageScreen) pickPeriod() {
 	})
 }
 func (u *usageScreen) reload() {
-	u.page.filter = ""
+	u.page.filter, u.billPage = "", 0
 	u.configure()
 	u.w.fetchPage(u.page, false)
+}
+
+func (u *usageScreen) turnBillPage(page int, label string) {
+	p := u.page
+	if p.filter != "" && strings.Contains(label, p.filter) {
+		u.w.clearFilter(p)
+	}
+	u.billPage, p.scroll, p.reading = page, 0, false
 }
 func (u *usageScreen) configure() {
 	p, w := u.page, u.w
@@ -148,6 +158,13 @@ func (u *usageScreen) portalContent(reply domain.PortalContent[domain.PortalUsag
 	w, data := u.w, reply.Data
 	v := u.controls()
 	v.facts = portalNotes(reply.PortalObservation)
+	window := client.SchoolUsageWindow(time.Now(), u.days)
+	aligned := window.MatchesPortal(data)
+	if aligned {
+		v.facts = append(v.facts, window.Start+" 至 "+window.End+" · "+window.Timezone)
+	} else {
+		v.facts = append(v.facts, "学校门户的统计日期未能与算力账单对齐")
+	}
 	if u.view == "overview" || u.view == "api" {
 		balance := "—"
 		if reply.Account != nil {
@@ -158,10 +175,14 @@ func (u *usageScreen) portalContent(reply domain.PortalContent[domain.PortalUsag
 			v.rows = append(v.rows, w.staticMetric("quota", "模型免费额度", ntext(reply.Account.FreeQuota)+" 点")...)
 		}
 		fee := "门户未提供"
-		if data.CostPoints != nil {
+		if data.CostPoints != nil && (data.Available == nil || *data.Available) {
 			fee = ntext(data.CostPoints) + " 点"
 		}
-		v.rows = append(v.rows, w.staticMetric("fees", "本期模型实扣积分", fee)...)
+		label := "本期模型实扣积分"
+		if !aligned {
+			label = "门户报告扣费（日期待核对）"
+		}
+		v.rows = append(v.rows, w.staticMetric("fees", label, fee)...)
 		if u.view == "overview" {
 			for _, c := range w.report.Capacity {
 				v.rows = append(v.rows, w.staticMetric("quota/"+c.Scope+"/"+c.Resource, "算力配额 · "+c.Resource+"（已用 / 上限）", c.Amounts())...)

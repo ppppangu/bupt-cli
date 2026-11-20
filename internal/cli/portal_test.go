@@ -30,7 +30,7 @@ func TestPortalCommandsExposeCatalogMeasurementsAndProtectKeyExport(t *testing.T
 	for _, tc := range []struct {
 		args []string
 		want string
-	}{{[]string{"api", "model", "--json"}, "1.5"}, {[]string{"api", "model", "show", "m-1", "--json"}, "m-1"}, {[]string{"api", "model", "-q"}, "m-1"}, {[]string{"api", "usage", "--days", "7", "--json"}, "331"}} {
+	}{{[]string{"api", "model", "--json"}, "1.5"}, {[]string{"api", "model", "show", "m-1", "--json"}, "m-1"}, {[]string{"api", "model", "--output=id"}, "m-1"}, {[]string{"api", "usage", "--days", "7", "--json"}, "331"}} {
 		out.Reset()
 		if n := executeTest(t, opts, tc.args...); n != 0 || !strings.Contains(out.String(), tc.want) || strings.Contains(out.String(), "secret-fixture") {
 			t.Fatal(n, out.String(), diag.String())
@@ -38,7 +38,7 @@ func TestPortalCommandsExposeCatalogMeasurementsAndProtectKeyExport(t *testing.T
 	}
 	filename := filepath.Join(t.TempDir(), "private")
 	out.Reset()
-	if n := executeTest(t, opts, "api", "key", "export", "id", "--output", filename, "--json"); n != 0 || strings.Contains(out.String()+diag.String(), "private-fixture-credential") {
+	if n := executeTest(t, opts, "api", "key", "export", "id", "--file", filename, "--json"); n != 0 || strings.Contains(out.String()+diag.String(), "private-fixture-credential") {
 		t.Fatal(n, out.String(), diag.String())
 	}
 	fi, e := os.Stat(filename)
@@ -46,11 +46,11 @@ func TestPortalCommandsExposeCatalogMeasurementsAndProtectKeyExport(t *testing.T
 		t.Fatal("export mode", e)
 	}
 	before := len(b.calls)
-	if executeTest(t, opts, "api", "key", "export", "id", "--output", filename) == 0 || len(b.calls) != before {
+	if executeTest(t, opts, "api", "key", "export", "id", "--file", filename) == 0 || len(b.calls) != before {
 		t.Fatal("overwrote private export")
 	}
 	out.Reset()
-	if executeTest(t, opts, "api", "key", "export", "id", "--output", "-", "--json") == 0 || len(b.calls) != before {
+	if executeTest(t, opts, "api", "key", "export", "id", "--file", "-", "--json") == 0 || len(b.calls) != before {
 		t.Fatal("secret mixed with machine output")
 	}
 }
@@ -65,7 +65,7 @@ func TestTwoWorkspaceContractsAndCompatibility(t *testing.T) {
 	for _, test := range []struct {
 		args   []string
 		method string
-	}{{[]string{"compute", "instance", "--cached", "--json"}, "instance.list"}, {[]string{"instance", "ls", "--json"}, "instance.list"}, {[]string{"compute", "job", "--json"}, "compute.read"}, {[]string{"job", "--json"}, "job.list"}, {[]string{"compute", "catalog", "show", "12", "--json"}, "spec.show"}} {
+	}{{[]string{"compute", "instance", "--cached", "--json"}, "instance.list"}, {[]string{"compute", "instance", "ls", "--json"}, "instance.list"}, {[]string{"compute", "scheduler", "job", "--json"}, "compute.read"}, {[]string{"compute", "job", "--json"}, "job.list"}, {[]string{"compute", "catalog", "show", "12", "--json"}, "spec.show"}} {
 		out.Reset()
 		if code := executeTest(t, o, test.args...); code != 0 || b.calls[len(b.calls)-1].method != test.method || !json.Valid(out.Bytes()) {
 			t.Fatal(test, diag.String())

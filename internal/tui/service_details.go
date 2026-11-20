@@ -14,28 +14,22 @@ func (w *workspace) lifecycleRows(v *content, i domain.Instance) {
 	}
 	id := string(i.ID)
 	action := func(key, title, detail string) {
-		args := []string{"compute", "instance", key, id, "--no-wait"}
+		args := []string{"compute", "instance", key, id}
 		v.rows = append(v.rows, link(key, title, detail, cmdline(args...), func() {
 			w.review(change{title: title, method: "instance." + key, args: args, params: map[string]any{"target": id}, facts: []string{i.Name + " · " + id, detail}, task: true})
 		}))
 	}
 	if i.State == "running" || i.Reserved || i.Managed {
-		v.rows = append(v.rows, link("down", "停止并归还算力", "保留实例磁盘", cmdline("down", id, "--cleanup", "release"), func() { w.endReview(i) }))
+		v.rows = append(v.rows, link("down", "停止并归还算力", "保留实例磁盘", cmdline("compute", "lease", "end", id, "--cleanup", "release"), func() { w.endReview(i) }))
 	}
 	if i.State == "running" {
 		action("stop", "仅停止运行", "运行任务会中断，磁盘保留。预留算力与存储可能继续计费，以学校账单为准。")
+		v.rows = append(v.rows, link("restart", "温和重启", "保留本次运行截止时间", cmdline("compute", "instance", "restart", id), func() {
+			w.review(change{title: "重启实例", method: "instance.restart", args: []string{"compute", "instance", "restart", id}, params: map[string]any{"target": id}, facts: []string{"同一实例停机并重新启动。正在运行的任务会中断。"}})
+		}))
 	}
 	if i.State == "stopped" && i.Reserved {
-		action("release", "释放预留", "归还计算额度，保留可恢复的实例磁盘。")
-	}
-	if i.State == "stopped" && !i.Reserved {
-		v.rows = append(v.rows, navLink("restore", "恢复预留", "选择有限时长，保留原磁盘", cmdline("compute", "instance", "restore", id), func() {
-			p := w.Config.Policy
-			if preset, ok := w.Config.Presets[w.Config.DefaultPreset]; ok {
-				p = preset.Policy
-			}
-			w.resourceForm("恢复预留", &draft{instance: &i, restore: true, name: w.instanceName(i), policy: p, limit: p.MaxRuntime})
-		}))
+		action("release", "归还算力", "归还计算额度，保留可恢复的实例磁盘。")
 	}
 	if strings.Contains(i.State, "queu") {
 		action("cancel-queue", "取消排队", "撤回当前正在等待的资源申请。")
@@ -66,7 +60,7 @@ func (w *workspace) nodeSnapshots(i domain.Instance, n domain.Node) {
 					if strings.TrimSpace(name) == "" {
 						return fmt.Errorf("请输入快照名称")
 					}
-					a := []string{"compute", "snapshot", "create", "--node", node, "--no-wait", "--", id, name}
+					a := []string{"compute", "snapshot", "create", "--node", node, "--", id, name}
 					w.review(change{title: "创建快照", method: "snapshot.create", args: a, params: map[string]any{"target": id, "node": node, "name": name}, facts: []string{name, "实例 " + id + " · 节点 " + node}, task: true})
 					return nil
 				})
@@ -100,7 +94,7 @@ func (w *workspace) snapshotPage(instanceID, nodeID domain.ID, sid, name string)
 			return v
 		}
 		for _, a := range []struct{ op, title string }{{"restore", "从快照恢复"}, {"delete", "删除快照"}} {
-			args := []string{"compute", "snapshot", a.op, "--node", node, "--no-wait", "--", id, sid}
+			args := []string{"compute", "snapshot", a.op, "--node", node, "--", id, sid}
 			v.rows = append(v.rows, link(a.op, a.title, name, cmdline(args...), func() {
 				w.review(change{title: a.title, method: "snapshot." + a.op, args: args, params: map[string]any{"target": id, "node": node, "snapshot_id": sid}, facts: []string{name + " · " + sid}, deleteName: name, task: true})
 			}))

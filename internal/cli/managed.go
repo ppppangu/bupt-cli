@@ -35,7 +35,7 @@ func (a *app) managedCall(cmd *cobra.Command, method string, p map[string]any, c
 	if id == "" {
 		return result, domain.E("PROTOCOL_ERROR", "operation returned no run identifier")
 	}
-	if !a.json && !a.jsonl && !a.quiet {
+	if a.humanOutput() {
 		fmt.Fprintf(a.options.Err, "Run %s; waiting for %s (Ctrl-C stops waiting).\n", id, condition)
 	}
 	ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
@@ -78,7 +78,7 @@ func (a *app) waitCommand() *cobra.Command {
 	return cmd
 }
 func (a *app) emitRun(value any) error {
-	if a.json || a.jsonl || a.quiet {
+	if a.json || a.jsonl || a.ids {
 		return a.emit(value)
 	}
 	raw, _ := json.Marshal(value)
@@ -99,26 +99,34 @@ func withHint(original *domain.Error) *domain.Error {
 	}
 	switch d.Code {
 	case "CONTROLLER_UNAVAILABLE", "CONTROLLER_CONNECT", "AGENT_NOT_RUNNING":
-		d.Hint = "bupt agent status; bupt agent install --mode local"
+		d.Hint = "bupt agent status 或 bupt init"
 	case "GATEWAY_AUTH_EXPIRED", "AUTH_REQUIRED", "AUTH_EXPIRED", "PLATFORM_AUTH_EXPIRED", "SSO_REQUIRED", "SSO_VERIFICATION_PENDING":
 		d.Hint = "bupt login"
 	case "CONSOLE_LOGIN_REQUIRED", "CONSOLE_LOGIN_FAILED":
 		d.Hint = "bupt auth access"
 	case "SSH_NOT_PREPARED":
-		d.Hint = "bupt ssh ensure INSTANCE"
+		d.Hint = "bupt compute instance prepare-ssh INSTANCE"
 	case "RELAY_REQUIRED", "SSH_NOT_READY", "SSH_DIAL_FAILED":
 		d.Hint = "bupt doctor ssh"
 	case "SPEC_REQUIRED", "SPEC_NOT_FOUND", "AMBIGUOUS_SPEC":
-		d.Hint = "bupt spec ls; bupt preset ls"
-	case "RUN_LIMIT_REQUIRED":
-		d.Hint = "set --max-runtime (for example 2h), or save a bounded preset"
+		d.Hint = "bupt compute catalog ls 或 bupt compute preset ls"
+	case "RUN_LIMIT_REQUIRED", "LIMIT_REQUIRED":
+		d.Hint = "使用 --max-runtime 2h，或选用已设置时限的预设"
+	case "COST_AUTH_REQUIRED", "COST_ESTIMATE_UNAVAILABLE", "COST_LIMIT_EXCEEDED", "COST_SELECTION_CHANGED":
+		d.Hint = "给原命令加 --dry-run，重新核对学校估价"
 	}
 	if d.RunID != "" {
-		next := "bupt wait " + d.RunID + "; bupt status " + d.RunID
+		next := "bupt compute instance wait --operation " + d.RunID
 		if d.Hint != "" {
-			d.Hint += "; "
+			d.Hint += "。"
 		}
 		d.Hint += next
+	}
+	if d.TaskID != "" && d.RunID == "" {
+		if d.Hint != "" {
+			d.Hint += "。"
+		}
+		d.Hint += "bupt compute task show " + d.TaskID
 	}
 	return &d
 }

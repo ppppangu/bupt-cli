@@ -67,7 +67,7 @@ func TestCreatePreviewReportsResolvedResourceBundleOnly(t *testing.T) {
 	if fields["CPU"] != "4" || fields["Memory"] != "12288" || fields["GPU"] != "0.2:A100:8192" {
 		t.Fatal(fields)
 	}
-	if len(preview) != 3 || preview["run"] == nil || preview["dry_run"] != true {
+	if preview["points_per_day"] == nil || preview["run"] == nil || preview["dry_run"] != true {
 		t.Fatal("unexpected preview fields")
 	}
 	runs, err := c.Store.ListRuns("bupt")

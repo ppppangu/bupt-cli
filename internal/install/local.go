@@ -351,7 +351,7 @@ func (h *handler) saveProfile(cfg *config.Config, p domain.Profile, preserve boo
 	}
 	profiles[p.Name] = old
 	if _, ok := doc["policy"]; !ok {
-		doc["policy"] = map[string]any{"cleanup": "release", "stop_grace": "60s", "force_stop": true, "auto_renew": false}
+		doc["policy"] = map[string]any{"cleanup": "release", "stop_grace": "60s", "force_stop": false, "auto_renew": false}
 	}
 	var b bytes.Buffer
 	if err = toml.NewEncoder(&b).Encode(doc); err != nil {

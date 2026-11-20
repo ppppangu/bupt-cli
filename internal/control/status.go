@@ -181,11 +181,7 @@ func (c *Controller) Status(ctx context.Context, profile string, p Params) (doma
 
 	}
 	for idx := range result.Instances {
-		for _, r := range result.Routes {
-			if r.InstanceID == result.Instances[idx].ID {
-				result.Instances[idx].SSHState = r.State
-			}
-		}
+		result.Instances[idx].SSHState = instanceSSHState(result.Instances[idx], result.Routes)
 		for _, r := range result.Runs {
 			if r.InstanceID == result.Instances[idx].ID && !managedRunTerminal(r.State) {
 				result.Instances[idx].Managed = true

@@ -107,8 +107,23 @@ func recordSummary(m map[string]any) []string {
 	return lines
 }
 
+func computeCommandPath(path string) string {
+	head, rest, _ := strings.Cut(path, " ")
+	switch head {
+	case "admin", "cluster", "remote", "project":
+		return path
+	case "job":
+		if strings.HasPrefix(rest, "request") || strings.HasPrefix(rest, "template") {
+			return "compute scheduler " + rest
+		}
+		return "compute scheduler " + path
+	default:
+		return "compute " + path
+	}
+}
+
 func (w *workspace) computeList(section, title, command string, num int) {
-	cmd := "bupt compute " + command
+	cmd := "bupt " + computeCommandPath(command)
 	accountOnly := section == "project" || section == "request"
 	show := func(doc json.RawMessage) content {
 		result, e := readComputeJSON(doc)
@@ -280,14 +295,14 @@ func (w *workspace) recordActions(section, id string, m map[string]any) []row {
 		return nil
 	}
 	action := func(n, d, cmd string, args ...string) row {
-		return w.contextAction(n, d, strings.Fields("compute "+cmd), args...)
+		return w.contextAction(n, d, strings.Fields(cmd), args...)
 	}
 	switch section {
 	case "job":
 		if id == "" || computeValue(m, "clusterId", "clusterID") == "" {
 			return nil
 		}
-		return []row{action("作业日志", "stdout 或 stderr", "job logs", "--cluster="+computeValue(m, "clusterId", "clusterID"), id)}
+		return []row{action("作业日志", "stdout 或 stderr", "compute scheduler job logs", "--cluster="+computeValue(m, "clusterId", "clusterID"), id)}
 	case "cluster":
 		return []row{action("集群分区", "", "cluster partition", id)}
 	case "remote.catalog", "remote.instance":
@@ -296,8 +311,8 @@ func (w *workspace) recordActions(section, id string, m map[string]any) []row {
 		if renew {
 			op, title, bound = "renew", "按此实例续期", id
 		}
-		cmd := cmdline("compute", "remote", "order", op, bound)
-		return []row{navLink("action/compute/remote/order/"+op, title, "选择周期并核对学校报价", cmd, func() {
+		cmd := cmdline("remote", "order", op, bound)
+		return []row{navLink("action/remote/order/"+op, title, "选择周期并核对学校报价", cmd, func() {
 			w.remoteOrderForm(renew, id, computeValue(m, "name", "specName", "appName"), computeValue(m, "durationUnit"))
 		})}
 	case "remote.order":
@@ -306,7 +321,7 @@ func (w *workspace) recordActions(section, id string, m map[string]any) []row {
 		}
 		return []row{action("查询付款码", "查看本订单的学校付款码", "remote order payment-code", id), action("取消订单", "核对订单 ID 后确认", "remote order cancel", "--confirm="+id, id)}
 	case "admin.cluster":
-		return []row{action("账户限额", "查看学校发布的限额", "admin quota", id), action("更改账户限额", "按当前限额预览版本提交", "admin quota set", id)}
+		return []row{action("账户限额", "查看学校发布的限额", "admin quota show", id), action("更改账户限额", "按当前限额预览版本提交", "admin quota set", id)}
 	case "admin.request":
 		if state := strings.ToLower(computeValue(m, "state", "status")); state != "pending" && state != "created" {
 			return nil

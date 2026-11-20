@@ -15,6 +15,7 @@ import (
 	"bupt.local/cli/internal/config"
 	"bupt.local/cli/internal/connect"
 	"bupt.local/cli/internal/domain"
+	"bupt.local/cli/internal/feedback"
 	"github.com/spf13/cobra"
 )
 
@@ -59,7 +60,10 @@ func usage(format string, args ...any) error { return &UsageError{fmt.Errorf(for
 
 // ExitError transports a remote command's status without printing a fabricated
 // local error message or conflating it with an authentication failure.
-type ExitError struct{ Code int }
+type ExitError struct {
+	Code       int
+	Diagnostic *domain.Error
+}
 
 func (e *ExitError) Error() string {
 	return fmt.Sprintf("remote command exited with status %d", e.Code)
@@ -69,9 +73,9 @@ type app struct {
 	options                                                                 Options
 	root                                                                    *cobra.Command
 	configFile, projectFile, profile, controller, socket, stateDir, dataDir string
-	json, jsonl, quiet, noColor, nonInteractive, dryRun, noProject          bool
+	json, jsonl, ids, noColor, nonInteractive, dryRun, noProject            bool
 	timeout                                                                 time.Duration
-	idempotencyKey                                                          string
+	format, field, idempotencyKey                                           string
 	cfg                                                                     *config.Config
 	backend                                                                 Backend
 	transferResults                                                         *[]any
@@ -114,7 +118,8 @@ func NewRoot(options Options) *cobra.Command {
 	f.StringVar(&a.dataDir, "data-dir", "", "Override data directory")
 	f.BoolVar(&a.json, "json", false, "Write a single JSON value to stdout")
 	f.BoolVar(&a.jsonl, "jsonl", false, "Write newline-delimited JSON records")
-	f.BoolVarP(&a.quiet, "quiet", "q", false, "Write identifiers or scalar values only")
+	f.StringVar(&a.format, "output", "", "输出格式 table、json、jsonl 或 id")
+	f.StringVar(&a.field, "field", "", "输出一个受支持的标量字段")
 	f.BoolVar(&a.noColor, "no-color", false, "Disable color and inline images")
 	f.BoolVar(&a.nonInteractive, "non-interactive", false, "Never prompt for input")
 	f.BoolVar(&a.dryRun, "dry-run", false, "Validate and describe changes without applying them")
@@ -122,13 +127,39 @@ func NewRoot(options Options) *cobra.Command {
 	f.DurationVar(&a.timeout, "timeout", 10*time.Minute, "Time limit for an RPC or explicit wait; SSH sessions have no default limit")
 	f.StringVar(&a.idempotencyKey, "idempotency-key", "", "Stable request key for safe retries")
 	root.PersistentPreRunE = func(cmd *cobra.Command, _ []string) error {
-		if a.json && a.jsonl || a.quiet && (a.json || a.jsonl) {
-			return usage("choose only one of --json, --jsonl, or --quiet")
+		if cmd.Name() == cobra.ShellCompRequestCmd {
+			return nil
+		}
+		selected := 0
+		for _, name := range []string{"output", "json", "jsonl", "field"} {
+			if cmd.Flags().Changed(name) {
+				selected++
+			}
+		}
+		if selected > 1 {
+			return usage("任选一个 --output、--json、--jsonl 或 --field")
+		}
+		switch a.format {
+		case "", "table":
+		case "json":
+			a.json = true
+		case "jsonl":
+			a.jsonl = true
+		case "id":
+			a.ids = true
+		default:
+			return usage("--output 支持 table、json、jsonl 或 id")
+		}
+		if cmd.Flags().Changed("field") && (cmd.CommandPath() != "bupt api usage" || a.field != "balance") {
+			return usage("字段选择当前支持 bupt api usage --field balance")
+		}
+		if a.ids && !supportsID(cmd) {
+			return usage("%s 没有稳定 ID 输出", cmd.CommandPath())
 		}
 		if a.timeout <= 0 {
 			return usage("--timeout must be positive")
 		}
-		if cmd == root && !a.json && !a.jsonl && !a.quiet {
+		if cmd == root {
 			return nil
 		}
 		if cmd.Annotations["skip_config"] == "true" {
@@ -136,28 +167,28 @@ func NewRoot(options Options) *cobra.Command {
 		}
 		return a.loadConfig(cmd)
 	}
-	root.RunE = func(cmd *cobra.Command, _ []string) error {
-		if a.json || a.jsonl || a.quiet {
-			return a.statusCommand().RunE(cmd, nil)
-		}
-		return cmd.Help()
+	root.RunE = func(cmd *cobra.Command, _ []string) error { return cmd.Help() }
+	compute, advanced := a.computeCommand()
+	keys := a.keyCommands()
+	clients := a.clientCommands()
+	clients.AddCommand(keys)
+	root.AddCommand(a.loginCommand(), a.logoutCommand(), a.tuiCommand(), a.apiCommand(), compute,
+		a.sshCommand(), a.execCommand(), a.cpCommand(), a.forwardCommand(), a.usageCommand(), a.doctorCommand(), a.feedbackCommand(), a.configCommands(),
+		a.completionCommand(), &cobra.Command{Use: "version", Short: "显示版本", Args: exactArgs(0), Annotations: map[string]string{"skip_config": "true"}, RunE: func(cmd *cobra.Command, _ []string) error {
+			if a.json || a.jsonl {
+				return a.emit(map[string]any{"version": options.Version})
+			}
+			_, err := fmt.Fprintf(cmd.OutOrStdout(), "%s version %s\n", root.Name(), options.Version)
+			return err
+		}})
+	root.AddCommand(advanced...)
+	for _, cmd := range append(a.portalCommonCommands(), a.authCommands(), a.profileCommands(), a.agentCommands(), a.sshConfigCommands(),
+		a.consoleCommand(), a.proxyCommand(), a.sftpCommand(), a.initCommand(), clients, a.statusCommand()) {
+		markAdvanced(cmd)
+		root.AddCommand(cmd)
 	}
-	root.AddCommand(a.authCommands(), a.configCommands(), a.profileCommands(), a.specCommands(), a.instanceCommands(), a.jobCommands(), a.leaseCommands(), a.dataCommands(), a.snapshotCommands(), a.serviceCommands(), a.keyCommands(), a.agentCommands(), a.sshConfigCommands())
-	root.AddCommand(a.upCommand(), a.downCommand(), a.runCommand(), a.sshCommand(), a.execCommand(), a.consoleCommand(), a.proxyCommand(), a.forwardCommand(), a.cpCommand(), a.sftpCommand(), a.resizeCommand(), a.cloneCommand(), a.initCommand())
-	root.AddCommand(a.simpleRPC("quota", "Show allocation and billing limits", "quota.get", 0, 0, nil))
-	root.AddCommand(a.estimateCommand())
-	root.AddCommand(a.doctorCommand())
-	ls := a.simpleRPC("ls", "List instances", "instance.list", 0, 0, nil)
-	addListFlags(ls)
-	root.AddCommand(ls)
-	root.AddCommand(a.simpleRPC("inspect INSTANCE", "Inspect an instance", "instance.inspect", 1, 1, targetParams))
-	root.AddCommand(a.taskCommands(), a.auditCommands())
-	root.AddCommand(a.clientCommands())
-	root.AddCommand(&cobra.Command{Use: "version", Short: "Show version", Args: exactArgs(0), Annotations: map[string]string{"skip_config": "true"}, RunE: func(cmd *cobra.Command, _ []string) error { return a.emit(map[string]any{"version": options.Version}) }})
-	root.AddCommand(a.completionCommand(), a.loginCommand(), a.logoutCommand(), a.statusCommand(), a.presetCommands(), a.waitCommand(), a.tuiCommand(), a.resourcesCommand())
-	root.AddCommand(a.apiCommand(), a.computeCommand())
-	root.AddCommand(a.portalCommonCommands()...)
 	installDiscovery(root)
+	a.installObjectCompletion(root)
 	return root
 }
 
@@ -167,18 +198,21 @@ func Execute(ctx context.Context, args []string, in io.Reader, out, errOut io.Wr
 func ExecuteOptions(ctx context.Context, args []string, opts Options) int {
 	root := NewRoot(opts)
 	root.SetArgs(args)
-	err := root.ExecuteContext(ctx)
+	command, err := root.ExecuteContextC(ctx)
 	if err == nil {
 		return 0
 	}
 	var exit *ExitError
+	code := 1
 	if errors.As(err, &exit) {
 		if exit.Code < 0 || exit.Code > 255 {
 			return 1
 		}
-		return exit.Code
+		if exit.Diagnostic == nil {
+			return exit.Code
+		}
+		code, err = exit.Code, exit.Diagnostic
 	}
-	code := 1
 	var ue *UsageError
 	if errors.As(err, &ue) || strings.HasPrefix(err.Error(), "unknown command ") {
 		code = 2
@@ -207,21 +241,62 @@ func ExecuteOptions(ctx context.Context, args []string, opts Options) int {
 	if de.Code == "INTERRUPTED" {
 		code = 130
 	}
-	if machine || lines {
+	format, _ := root.PersistentFlags().GetString("output")
+	if machine || lines || format == "json" || format == "jsonl" || machineRequested(args) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"error": de})
 	} else {
-		fmt.Fprintln(w, de.Error())
+		fmt.Fprintf(w, "BUPT[%s] %s\n", de.Code, de.Message)
 		if de.RunID != "" {
 			fmt.Fprintln(w, "Run:", de.RunID)
 		}
 		if de.TaskID != "" {
 			fmt.Fprintln(w, "Task:", de.TaskID)
 		}
-		if de.Hint != "" {
-			fmt.Fprintln(w, "Next:", de.Hint)
+		if de.RequestID != "" {
+			fmt.Fprintln(w, "请求编号", scalar(de.RequestID))
+		}
+		if de.IdempotencyKey != "" {
+			fmt.Fprintln(w, "重试使用相同请求键 --idempotency-key", shellArg(de.IdempotencyKey))
+		}
+		if !root.PersistentFlags().Changed("field") && !root.PersistentFlags().Changed("non-interactive") && terminalWriter(w, opts.StderrIsTerminal) && isTerminal(root.OutOrStdout()) {
+			if de.Hint != "" {
+				fmt.Fprintln(w, "Next:", de.Hint)
+			}
+			if command != nil && command.Name() != "feedback" && code != 130 && (code == 1 || command.Name() == "tui") {
+				i := feedback.FromError(command.CommandPath(), de)
+				hint := "bupt feedback --template --at " + shellArg(i.Time.Format(time.RFC3339))
+				if i.Operation != "" {
+					hint += " --operation " + shellArg(i.Operation)
+				}
+				for _, arg := range []struct{ flag, value string }{
+					{"code", i.Code}, {"request-id", i.RequestID}, {"run-id", i.RunID}, {"task-id", i.TaskID},
+				} {
+					if arg.value != "" {
+						hint += " --" + arg.flag + " " + shellArg(arg.value)
+					}
+				}
+				fmt.Fprintln(w, "脱敏诊断  bupt doctor --report")
+				fmt.Fprintln(w, "反馈模板 ", hint)
+			}
 		}
 	}
 	return code
+}
+
+func machineRequested(args []string) bool {
+	for i, arg := range args {
+		switch arg {
+		case "--":
+			return false
+		case "--json", "--json=true", "--jsonl", "--jsonl=true", "--output=json", "--output=jsonl":
+			return true
+		case "--output":
+			if i+1 < len(args) && (args[i+1] == "json" || args[i+1] == "jsonl") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (a *app) loadConfig(cmd *cobra.Command) error {
@@ -280,10 +355,6 @@ func (a *app) getBackend() (Backend, error) {
 	return b, nil
 }
 func (a *app) rpc(ctx context.Context, method string, params map[string]any, out any) error {
-	b, err := a.getBackend()
-	if err != nil {
-		return err
-	}
 	if params == nil {
 		params = map[string]any{}
 	}
@@ -293,9 +364,17 @@ func (a *app) rpc(ctx context.Context, method string, params map[string]any, out
 	if a.idempotencyKey != "" {
 		params["idempotency_key"] = a.idempotencyKey
 	}
+	return a.rpcRequest(ctx, method, params, out)
+}
+
+func (a *app) rpcRequest(ctx context.Context, method string, request any, out any) error {
+	b, err := a.getBackend()
+	if err != nil {
+		return err
+	}
 	ctx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
-	return b.Call(ctx, method, params, out)
+	return b.Call(ctx, method, request, out)
 }
 func (a *app) callAndPrint(cmd *cobra.Command, method string, params map[string]any) error {
 	var result json.RawMessage

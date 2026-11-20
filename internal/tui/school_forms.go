@@ -34,7 +34,7 @@ func (w *workspace) quotaForm(key, title string, quota map[string]any) {
 		}
 	}
 	reason := ""
-	pending := false
+	pending := true
 	w.local("申请调整额度", cmdline("compute", "quota", "request", id), func() content {
 		v := content{facts: []string{title + " · 额度 " + id}, empty: "学校未公布可调整的资源。"}
 		if len(fields) == 0 || w.Cached {
@@ -42,6 +42,7 @@ func (w *workspace) quotaForm(key, title string, quota map[string]any) {
 		}
 		v.facts = append(v.facts, "填写要修改的目标上限，至少一项。")
 		args := []string{"compute", "quota", "request"}
+		vals := map[string]string{}
 		facts := []string{title + " · 额度 " + id}
 		for i := range fields {
 			f := &fields[i]
@@ -55,6 +56,7 @@ func (w *workspace) quotaForm(key, title string, quota map[string]any) {
 						newValue += "GiB"
 					}
 				}
+				vals[f.flag] = newValue
 				args = append(args, "--"+f.flag+"="+newValue)
 				target := newValue
 				if f.unit != "GiB" {
@@ -69,8 +71,9 @@ func (w *workspace) quotaForm(key, title string, quota map[string]any) {
 		if pending {
 			mode = "提交后立即返回"
 		}
-		if pending {
-			args = append(args, "--no-wait")
+		if !pending {
+			args = append(args, "--wait")
+			vals["wait"] = "true"
 		}
 		args = append(args, "--reason="+reason, "--", id)
 		goReview := link("go", "核对额度申请", "", cmdline(args...), func() {
@@ -78,7 +81,15 @@ func (w *workspace) quotaForm(key, title string, quota map[string]any) {
 				w.notice = "请填写至少一项目标上限和申请理由。"
 				return
 			}
-			w.runForm(args, true, "提交额度申请", append(facts, "申请理由　"+reason)...)
+			vals["reason"] = reason
+			op := formOperations["compute quota request"]
+			request, err := formParams(op.form(args[:3]), []string{id}, vals)
+			if err != nil {
+				w.notice = err.Error()
+				return
+			}
+			request.command = args
+			w.reviewForm(request, true, "提交额度申请", append(facts, "申请理由　"+reason)...)
 		})
 		goReview.verb = "核对申请"
 		v.rows = append(v.rows, goReview)
@@ -93,7 +104,7 @@ func (w *workspace) remoteOrderForm(renew bool, id, name, unit string) {
 		action, title, target = "renew", "续期远程实例", "实例"
 	}
 	units, instance := "1", ""
-	command := []string{"compute", "remote", "order", action}
+	command := []string{"remote", "order", action}
 	w.local(title, cmdline(command...), func() content {
 		objectName := id
 		if name != "" && name != id {
@@ -133,7 +144,18 @@ func (w *workspace) remoteOrderForm(renew bool, id, name, unit string) {
 				w.notice = "请先填写实例名称。"
 				return
 			}
-			w.runForm(args, true, title)
+			vals := map[string]string{"units": units}
+			if !renew {
+				vals["spec"] = id
+			}
+			op := formOperations[strings.Join(command, " ")]
+			request, err := formParams(op.form(command), []string{selected}, vals)
+			if err != nil {
+				w.notice = err.Error()
+				return
+			}
+			request.command = args
+			w.reviewForm(request, true, title)
 		})
 		r.verb = "查看报价"
 		v.rows = append(v.rows, r)

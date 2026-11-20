@@ -28,7 +28,7 @@ func (a *app) settingsFile(cmd *cobra.Command) (string, error) {
 func presetName(s string) bool { return config.ValidProfileName(s) && !strings.Contains(s, ".") }
 func (a *app) presetCommands() *cobra.Command {
 	group := &cobra.Command{Use: "preset", Short: "Save resource choices and finite runtime defaults"}
-	list := &cobra.Command{Use: "ls", Aliases: []string{"list"}, Short: "List resource presets", Args: exactArgs(0), RunE: func(_ *cobra.Command, _ []string) error {
+	list := &cobra.Command{Use: "ls", Short: "List resource presets", Args: exactArgs(0), RunE: func(_ *cobra.Command, _ []string) error {
 		names := []string{}
 		for name := range a.cfg.Presets {
 			names = append(names, name)
@@ -77,7 +77,7 @@ func (a *app) presetCommands() *cobra.Command {
 			return usage("preset name must be a simple identifier without dots")
 		}
 		if args[0] == a.cfg.DefaultPreset {
-			return domain.E("PRESET_IN_USE", "choose another default with bupt preset use, or clear it with bupt preset use -")
+			return domain.E("PRESET_IN_USE", "choose another default with bupt compute preset use, or clear it with bupt compute preset use -")
 		}
 		path, e := a.settingsFile(cmd)
 		if e != nil {

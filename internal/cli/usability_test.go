@@ -12,22 +12,22 @@ import (
 	"bupt.local/cli/internal/domain"
 )
 
-func TestUpRetainsRecoverableIDWithoutDuplicateSubmission(t *testing.T) {
+func TestCreateRetainsRecoverableIDWithoutDuplicateSubmission(t *testing.T) {
 	b := &fakeBackend{call: func(_ context.Context, method string, p map[string]any) (any, error) {
 		switch method {
-		case "up":
+		case "instance.create":
 			if p["wait"] != false {
 				t.Fatal("allocation must return its receipt before waiting")
 			}
 			return domain.Run{ID: "durable-1", State: "preparing"}, nil
-		case "run.wait":
+		case "instance.wait":
 			return nil, &domain.Error{Code: "CONSOLE_LOGIN_REQUIRED", Message: "password missing"}
 		}
 		t.Fatal(method)
 		return nil, nil
 	}}
 	opts, out, errout := testOptions(t, b)
-	if code := executeTest(t, opts, "up", "gpu", "--adopt", "123", "--max-runtime", "15m", "--json"); code != 1 {
+	if code := executeTest(t, opts, "compute", "instance", "create", "gpu", "--spec", "123", "--max-runtime", "15m", "--max-points-per-day", "10", "--wait", "--json"); code != 1 {
 		t.Fatal(code)
 	}
 	if out.Len() != 0 {
@@ -37,18 +37,18 @@ func TestUpRetainsRecoverableIDWithoutDuplicateSubmission(t *testing.T) {
 	if e := json.Unmarshal(errout.Bytes(), &response); e != nil {
 		t.Fatal(e)
 	}
-	if response.Error.RunID != "durable-1" || !strings.Contains(response.Error.Hint, "bupt auth access") || !strings.Contains(response.Error.Hint, "bupt wait durable-1") {
+	if response.Error.RunID != "durable-1" || !strings.Contains(response.Error.Hint, "bupt auth access") || !strings.Contains(response.Error.Hint, "bupt compute instance wait --operation durable-1") {
 		t.Fatal(response.Error)
 	}
-	if len(b.calls) != 2 || b.calls[0].method != "up" || b.calls[1].method != "run.wait" {
+	if len(b.calls) != 2 || b.calls[0].method != "instance.create" || b.calls[1].method != "instance.wait" {
 		t.Fatal(b.calls)
 	}
 }
 
-func TestUpNoWaitQuietEmitsOnlyID(t *testing.T) {
+func TestCreateAsyncEmitsOnlyID(t *testing.T) {
 	b := &fakeBackend{}
 	opts, out, errout := testOptions(t, b)
-	if code := executeTest(t, opts, "up", "gpu", "--spec", "Ubuntu@24.04", "--max-runtime", "15m", "--no-wait", "-q"); code != 0 {
+	if code := executeTest(t, opts, "compute", "instance", "create", "gpu", "--spec", "Ubuntu@24.04", "--max-runtime", "15m", "--max-points-per-day", "10", "--output=id"); code != 0 {
 		t.Fatal(code, errout.String())
 	}
 	if out.String() != "receipt-1\n" || errout.Len() != 0 || len(b.calls) != 1 {
@@ -75,10 +75,10 @@ func TestPresetRoundTripAndExplicitTemplateOverride(t *testing.T) {
 	if e := os.WriteFile(configFile, []byte("version = 1\n"), 0600); e != nil {
 		t.Fatal(e)
 	}
-	if code := executeTest(t, opts, "preset", "set", "small", "--spec", "Ubuntu", "--max-runtime", "15m"); code != 0 {
+	if code := executeTest(t, opts, "compute", "preset", "set", "small", "--spec", "Ubuntu", "--max-runtime", "15m"); code != 0 {
 		t.Fatal(code, errout.String())
 	}
-	if code := executeTest(t, opts, "preset", "use", "small"); code != 0 {
+	if code := executeTest(t, opts, "compute", "preset", "use", "small"); code != 0 {
 		t.Fatal(code, errout.String())
 	}
 	cfg, e := config.Load(opts.ConfigOptions)
@@ -88,25 +88,25 @@ func TestPresetRoundTripAndExplicitTemplateOverride(t *testing.T) {
 	if cfg.DefaultPreset != "small" || cfg.Presets["small"].Policy.MaxRuntime != "15m" {
 		t.Fatal(cfg)
 	}
-	if code := executeTest(t, opts, "up", "gpu", "--no-wait"); code != 0 {
+	if code := executeTest(t, opts, "compute", "instance", "create", "gpu", "--max-points-per-day", "12.5"); code != 0 {
 		t.Fatal(code, errout.String())
 	}
 	if b.calls[len(b.calls)-1].params["preset"] != "small" {
 		t.Fatal(b.calls)
 	}
-	if code := executeTest(t, opts, "up", "gpu", "--spec", "100", "--max-runtime", "20m", "--no-wait"); code != 0 {
+	if code := executeTest(t, opts, "compute", "instance", "create", "gpu", "--spec", "100", "--max-runtime", "20m", "--max-points-per-day", "12.5"); code != 0 {
 		t.Fatal(code, errout.String())
 	}
 	if _, exists := b.calls[len(b.calls)-1].params["preset"]; exists {
 		t.Fatal("explicit template must not inherit another template's constraints")
 	}
-	if code := executeTest(t, opts, "preset", "rm", "small"); code != 1 {
+	if code := executeTest(t, opts, "compute", "preset", "rm", "small"); code != 1 {
 		t.Fatal("default removal should fail")
 	}
-	if code := executeTest(t, opts, "preset", "use", "-"); code != 0 {
+	if code := executeTest(t, opts, "compute", "preset", "use", "-"); code != 0 {
 		t.Fatal(code, errout.String())
 	}
-	if code := executeTest(t, opts, "preset", "rm", "small"); code != 0 {
+	if code := executeTest(t, opts, "compute", "preset", "rm", "small"); code != 0 {
 		t.Fatal(code, errout.String())
 	}
 	st, e := os.Stat(configFile)
@@ -134,7 +134,7 @@ func TestStatusCachedAndGroupedHelp(t *testing.T) {
 	if code := executeTest(t, opts, "--help"); code != 0 {
 		t.Fatal(code)
 	}
-	for _, text := range []string{"大模型 API 服务", "裸算力服务", "按用途浏览", "help compute", "help api", "model", "usage", "catalog", "help --all", "login", "status"} {
+	for _, text := range []string{"大模型 API 服务", "裸算力服务", "按用途浏览", "usage", "help --all", "login", "compute"} {
 		if !strings.Contains(out.String(), text) {
 			t.Fatal(text, out.String())
 		}
@@ -144,7 +144,7 @@ func TestStatusCachedAndGroupedHelp(t *testing.T) {
 func TestExistingInstanceJobDoesNotRequireAnotherRuntimeFlag(t *testing.T) {
 	b := &fakeBackend{}
 	opts, _, errout := testOptions(t, b)
-	if code := executeTest(t, opts, "run", "--instance", "gpu", "--detach", "--", "true"); code != 0 {
+	if code := executeTest(t, opts, "compute", "job", "run", "--instance", "gpu", "--detach", "--", "true"); code != 0 {
 		t.Fatal(code, errout.String())
 	}
 	if len(b.calls) != 1 || b.calls[0].params["inherit_policy"] != true {

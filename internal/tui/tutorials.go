@@ -1,21 +1,30 @@
 package tui
 
 import (
-	"slices"
-	"strings"
-
 	"bupt.local/cli/internal/navigation"
 )
 
 func (w *workspace) helpHome() {
 	w.local(navigation.HelpTitle, "bupt help tutorial", func() content {
+		v := content{facts: []string{"作者可协助排查。", "账号、计费、审批和权限由学校管理部门处理。"}, rows: []row{
+			navLink("feedback-topics", "反馈问题", "按问题类型生成邮件", "bupt feedback --template", w.feedbackTopics),
+			navLink("usage-help", "使用帮助", "快捷键、模型 API 和裸算力指南", "bupt help tutorial", w.usageHelp),
+			navLink("diagnostics", "运行诊断", "检查程序与控制器并查看脱敏报告", "bupt doctor --report", func() { w.diagnosticPage(nil, nil) }),
+			navLink("author", "联系作者", "查看并复制作者邮箱", "bupt feedback", w.authorContact),
+		}}
+		v.rows = append(v.rows, navLink("access", navigation.AccountTitle, "学校登录、顶栏、公告和控制器设置", "bupt status", func() { a, _ := navigation.Find("access"); w.openArea(a) }))
+		return v
+	})
+}
+
+func (w *workspace) usageHelp() {
+	w.local("使用帮助", "bupt help tutorial", func() content {
 		v := content{}
 		for _, l := range navigation.Lessons {
-			if l.ID == "keys" || l.ID == "api" {
+			if l.ID == "keys" || l.ID == "api" || l.ID == "compute" {
 				v.rows = append(v.rows, w.lessonLink(l, true))
 			}
 		}
-		v.rows = append(v.rows, navLink("access", navigation.AccountTitle, "学校登录、顶栏、公告和控制器设置", "bupt status", func() { a, _ := navigation.Find("access"); w.openArea(a) }))
 		return v
 	})
 }
@@ -61,58 +70,9 @@ func (w *workspace) lessonLink(l navigation.Lesson, offerTutorials bool) row {
 }
 
 func (w *workspace) commandReference() {
-	w.local("CLI 命令参考", "bupt help --all", func() content {
-		v := content{rows: []row{navLink("all", "完整命令树和全局选项", "", "bupt help --all", func() { w.explainCommand("bupt help --all") })}}
-		for _, k := range orderedKeys(w.Commands) {
-			f := w.Commands[k]
-			v.rows = append(v.rows, navLink(f.Title, f.Title, f.Summary, "bupt help "+strings.Join(f.Path, " ")+" --all", func() { w.referenceGroup(f) }))
-		}
-		return v
-	})
-}
-func (w *workspace) referenceGroup(f CommandForm) {
-	name := strings.Join(f.Path, " ")
-	cmd := "bupt help " + name + " --all"
-	usage := func() {
-		if w.Explain != nil {
-			w.textPage(name, cmd, w.Explain(name+" --all"))
-		}
-	}
-	if len(f.Children) == 0 {
-		usage()
-		return
-	}
-	w.local(name, cmd, func() content {
-		v := content{rows: []row{navLink("usage", "用法和选项", f.Summary, cmd, usage)}}
-		for _, sub := range f.Children {
-			v.rows = append(v.rows, navLink(sub.Title, sub.Title, sub.Summary, "bupt help "+strings.Join(sub.Path, " ")+" --all", func() { w.referenceGroup(sub) }))
-		}
-		return v
-	})
+	w.textPage("CLI 命令参考", "bupt help --all", "bupt help COMMAND 查看指定命令\nbupt help --all 查看完整命令树\nbupt help tutorial 查看教程")
 }
 
-// Explain the longest known command prefix. Arguments and shell-quoted input
-// are displayed as examples and never passed to the CLI help interpreter.
 func (w *workspace) explainCommand(command string) {
-	args := strings.Fields(strings.TrimPrefix(command, "bupt "))
-	topic := "--all"
-	if len(args) > 0 {
-		if args[0] == "help" {
-			topic = strings.Join(args[1:], " ")
-		} else if f, ok := w.Commands[args[0]]; ok {
-			for _, part := range args[1:] {
-				i := slices.IndexFunc(f.Children, func(sub CommandForm) bool { return sub.Title == part })
-				if i < 0 {
-					break
-				}
-				f = f.Children[i]
-			}
-			topic = strings.Join(f.Path, " ") + " --all"
-		}
-	}
-	text := command
-	if w.Explain != nil {
-		text += "\n\n" + w.Explain(topic)
-	}
-	w.textPage("CLI 用法", command, text)
+	w.textPage("CLI 命令参考", command, command+"\n\n在终端运行 bupt help COMMAND 查看参数和选项。")
 }

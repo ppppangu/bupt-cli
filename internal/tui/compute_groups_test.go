@@ -169,13 +169,13 @@ func TestComputeRemoteOrderPagingIdentityAndFreshState(t *testing.T) {
 	click(t, w, key)
 	wait()
 	actions := w.view(w.current()).rows
-	if i := slices.Index(computeKeys(actions), "action/compute/remote/order/cancel"); i < 0 || !strings.Contains(actions[i].command, "--confirm="+id) {
+	if i := slices.Index(computeKeys(actions), "action/remote/order/cancel"); i < 0 || !strings.Contains(actions[i].command, "--confirm="+id) {
 		t.Fatal(actions)
 	}
 	finished = true
 	w.refresh()
 	wait()
-	if keys := computeKeys(w.view(w.current()).rows); slices.Contains(keys, "action/compute/remote/order/cancel") {
+	if keys := computeKeys(w.view(w.current()).rows); slices.Contains(keys, "action/remote/order/cancel") {
 		t.Fatal(keys)
 	}
 	w.back()
@@ -216,10 +216,10 @@ func TestComputeReadRoutesAndRoleGates(t *testing.T) {
 		section, cmd, key string
 		actions           []string
 	}{
-		{"job", "job", "31/7", []string{"job/logs"}}, {"cluster", "cluster", "7", []string{"cluster/partition"}},
+		{"job", "job", "31/7", []string{"compute/scheduler/job/logs"}}, {"cluster", "cluster", "7", []string{"cluster/partition"}},
 		{"remote.catalog", "remote catalog", "7", []string{"remote/order/create"}}, {"remote.instance", "remote instance", "7", []string{"remote/order/renew"}},
 		{"remote.order", "remote order", "7", []string{"remote/order/payment-code", "remote/order/cancel"}},
-		{"admin.cluster", "admin cluster", "7", []string{"admin/quota", "admin/quota/set"}}, {"admin.request", "admin request", "7", []string{"admin/approve", "admin/reject"}},
+		{"admin.cluster", "admin cluster", "7", []string{"admin/quota/show", "admin/quota/set"}}, {"admin.request", "admin request", "7", []string{"admin/approve", "admin/reject"}},
 	}
 	for _, tc := range routes {
 		t.Run(tc.section, func(t *testing.T) {
@@ -230,7 +230,7 @@ func TestComputeReadRoutesAndRoleGates(t *testing.T) {
 			waitFor(t, w, func() bool { return !w.current().loading })
 			keys := computeKeys(w.view(w.current()).rows)
 			for _, action := range tc.actions {
-				if !slices.Contains(keys, "action/compute/"+action) {
+				if !slices.Contains(keys, "action/"+action) {
 					t.Fatal(keys)
 				}
 			}
@@ -274,20 +274,18 @@ func TestComputeReadRoutesAndRoleGates(t *testing.T) {
 
 func TestComputeFormRetryUsesSameKeyAndFixedTarget(t *testing.T) {
 	w := fixtureWorkspace(t, &fixtureBackend{})
-	calls := make(chan []string, 5)
 	tries := 0
-	w.Capture = func(_ context.Context, args []string) (string, error) {
-		calls <- args
-		if slices.Contains(args, "--dry-run") {
+	calls := recordFormCalls(w, "compute.admin.approve", func(p map[string]any) (any, error) {
+		if p["dry_run"] == true {
 			return "允许预览", nil
 		}
 		tries++
 		if tries == 1 {
-			return "", errors.New("timeout after acceptance")
+			return nil, errors.New("timeout after acceptance")
 		}
 		return "ok", nil
-	}
-	f := CommandForm{Path: []string{"compute", "admin", "approve"}, Runnable: true, Flags: []FormFlag{{Name: "confirm"}}}
+	})
+	f := formOperations["admin approve"].form([]string{"admin", "approve"})
 	w.boundCommandInputs(f, "批准申请", []string{"--confirm=813", "--", "813"})
 	click(t, w, "go")
 	waitFor(t, w, func() bool { return !w.current().loading })
@@ -298,9 +296,10 @@ func TestComputeFormRetryUsesSameKeyAndFixedTarget(t *testing.T) {
 	click(t, w, "submit")
 	waitFor(t, w, func() bool { return !w.current().submitting })
 	retry := <-calls
-	if !slices.Equal(first, retry) || !strings.HasPrefix(first[0], "--idempotency-key=") || !slices.Contains(preview, first[0]) || !slices.Equal(first[1:], []string{"compute", "admin", "approve", "--confirm=813", "--", "813"}) {
+	if first["idempotency_key"] == "" || first["idempotency_key"] != retry["idempotency_key"] || preview["idempotency_key"] != first["idempotency_key"] || retry["target"] != "813" || retry["confirm"] != "813" {
 		t.Fatal(preview, first, retry)
 	}
+
 }
 
 func TestUnpagedSchoolListsAndMismatchedDetails(t *testing.T) {
@@ -392,20 +391,25 @@ func TestProjectRowsGroupRolesAndRespectScope(t *testing.T) {
 
 func TestRemoteQuoteKeepsLiteralOrderName(t *testing.T) {
 	w := fixtureWorkspace(t, &fixtureBackend{})
-	submitted := make(chan []string, 1)
-	w.Capture = func(_ context.Context, args []string) (string, error) {
-		if slices.Contains(args, "--dry-run") {
-			return `{"quote":"official","details":{"intent":{"action":"create","target":"7","name":"--quote=name","units":1},"spec_id":"7","spec_name":"教学 GPU","unit_price":1.25,"total":1.25,"unit":"点","duration_unit":"天"}}`, nil
+	calls := recordFormCalls(w, "compute.remote.checkout", func(p map[string]any) (any, error) {
+		if p["dry_run"] == true {
+			return json.RawMessage(`{"quote":"official","details":{"intent":{"action":"create","target":"7","name":"--quote=name","units":1},"spec_id":"7","spec_name":"教学 GPU","unit_price":1.25,"total":1.25,"unit":"点","duration_unit":"天"}}`), nil
 		}
-		submitted <- args
 		return "ok", nil
+	})
+	path := []string{"remote", "order", "create"}
+	req, err := formParams(formOperations["remote order create"].form(path), []string{"--quote=name"}, map[string]string{"quote": "previous", "spec": "7", "units": "1"})
+	if err != nil {
+		t.Fatal(err)
 	}
-	w.runForm([]string{"compute", "remote", "order", "create", "--quote=previous", "--spec=7", "--", "--quote=name"}, true, "下单")
+	req.command = path
+	w.reviewForm(req, true, "下单")
 	waitFor(t, w, func() bool { return !w.current().loading })
 	click(t, w, "submit")
 	waitFor(t, w, func() bool { return !w.current().submitting })
-	got := <-submitted
-	if !slices.Equal(got[1:], []string{"compute", "remote", "order", "create", "--quote=official", "--spec=7", "--", "--quote=name"}) {
+	_, got := <-calls, <-calls
+	if got["quote"] != "official" || got["name"] != "--quote=name" || got["target"] != "7" {
 		t.Fatal(got)
 	}
+
 }

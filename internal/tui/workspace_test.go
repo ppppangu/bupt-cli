@@ -93,9 +93,9 @@ func waitFor(t *testing.T, w *workspace, predicate func() bool) {
 func TestNavigationPreviewsThenSubmitsOnceByStableID(t *testing.T) {
 	f := &fixtureBackend{reply: func(_ context.Context, method string, p map[string]any) (any, error) {
 		switch method {
-		case "up":
+		case "instance.start":
 			if p["dry_run"] == true {
-				return map[string]any{"dry_run": true, "run": domain.Run{InstanceID: "101", Deadline: time.Now().Add(20 * time.Minute), Policy: domain.RunPolicy{Cleanup: "release"}}}, nil
+				return map[string]any{"dry_run": true, "points_per_day": "1.25", "billing_start": "从预留开始可能计费", "run": domain.Run{InstanceID: "101", Deadline: time.Now().Add(20 * time.Minute), Policy: domain.RunPolicy{Cleanup: "release"}}}, nil
 			}
 			return domain.Run{ID: "run-receipt"}, nil
 		case "status.get":
@@ -104,6 +104,7 @@ func TestNavigationPreviewsThenSubmitsOnceByStableID(t *testing.T) {
 		return nil, errors.New("unexpected method " + method)
 	}}
 	w := fixtureWorkspace(t, f)
+	w.report.Instances[0].Reserved = true
 	click(t, w, "compute")
 	click(t, w, "instances")
 	click(t, w, "101")
@@ -128,7 +129,7 @@ func TestNavigationPreviewsThenSubmitsOnceByStableID(t *testing.T) {
 	var submitted []observed
 	var previewKey any
 	for _, c := range f.observed() {
-		if c.method != "up" {
+		if c.method != "instance.start" {
 			continue
 		}
 		if c.params["dry_run"] == true {
@@ -327,7 +328,7 @@ func TestPlannedNavigationTreeThroughHomeShortcuts(t *testing.T) {
 	}
 	for _, width := range []int{60, 80, 120} {
 		w.screen.(tcell.SimulationScreen).SetSize(width, 24)
-		check("", "R  模型 API", "S  裸算力服务器", "U  余额与用量", "?  帮助与账户")
+		check("", "R  模型 API", "S  裸算力服务器", "U  余额与用量", "?  帮助与反馈")
 		navType(w, "R")
 		check("", "1  在线调试", "2  模型与价格", "3  在我的程序中调用", "4  API 密钥", "5  排行榜")
 		navPress(w, tcell.KeyEscape)
@@ -364,12 +365,15 @@ func TestPlannedNavigationTreeThroughHomeShortcuts(t *testing.T) {
 		}
 		navPress(w, tcell.KeyEscape)
 		navType(w, "?")
-		check("", "快捷键说明", "API 使用文档", "账户及相关设置")
+		check("", "反馈问题", "使用帮助", "运行诊断", "联系作者", "账户及相关设置")
+		click(t, w, "usage-help")
+		check("", "快捷键说明", "API 使用文档", "申请第一台实例并运行程序")
 		click(t, w, "keys")
 		click(t, w, "tutorials")
 		if _, ok := objectRow(t, w, "compute"); !ok {
 			t.Fatal("complete tutorials inaccessible")
 		}
+		navPress(w, tcell.KeyEscape)
 		navPress(w, tcell.KeyEscape)
 		navPress(w, tcell.KeyEscape)
 		navPress(w, tcell.KeyEscape)

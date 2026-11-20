@@ -26,22 +26,25 @@ type view struct {
 	Relations []relation
 }
 type eventSocket struct {
-	c         *Client
-	conn      *websocket.Conn
-	ctx       context.Context
-	cancel    context.CancelFunc
-	mu        sync.Mutex
-	syncMu    sync.Mutex
-	notify    chan struct{}
-	err       error
-	ready     bool
-	connected bool
-	index     int64
-	views     map[string]*view
-	tasks     map[string]domain.TaskResult
-	requests  map[string]string
-	lastPong  time.Time
+	c            *Client
+	conn         *websocket.Conn
+	ctx          context.Context
+	cancel       context.CancelFunc
+	mu           sync.Mutex
+	syncMu       sync.Mutex
+	notify       chan struct{}
+	err          error
+	ready        bool
+	connected    bool
+	index        int64
+	views        map[string]*view
+	tasks        map[string]domain.TaskResult
+	requests     map[string]string
+	lastPong     time.Time
+	lastFullSync time.Time
 }
+
+const taskReceiptRefreshInterval = 10 * time.Second
 
 func (s *eventSocket) changed() { close(s.notify); s.notify = make(chan struct{}) }
 func (s *eventSocket) fail(e error) {
@@ -56,6 +59,10 @@ func (s *eventSocket) fail(e error) {
 }
 func (s *eventSocket) close() { s.fail(domain.E("CLOSED", "platform event connection closed")) }
 func (s *eventSocket) send(name string, payload any) error {
+	return s.sendContext(s.ctx, name, payload)
+}
+
+func (s *eventSocket) sendContext(parent context.Context, name string, payload any) error {
 	args := []any{name}
 	if payload != nil {
 		args = append(args, payload)
@@ -64,7 +71,7 @@ func (s *eventSocket) send(name string, payload any) error {
 	if e != nil {
 		return e
 	}
-	ctx, cancel := context.WithTimeout(s.ctx, 15*time.Second)
+	ctx, cancel := context.WithTimeout(parent, 15*time.Second)
 	defer cancel()
 	return s.conn.Write(ctx, websocket.MessageText, append([]byte("42"), b...))
 }
@@ -248,13 +255,11 @@ func (s *eventSocket) event(b []byte) error {
 		}
 		s.views = views
 		s.index = integer(m["minIndex"])
-		s.ready = true
+		s.lastFullSync = time.Now()
 		s.tasksFromViews()
 		s.changed()
 		readyAck = true
 	case "SYNCED":
-		s.ready = true
-		s.changed()
 		readyAck = true
 	case "TASK_RET":
 		tid := stringValue(m["id"])
@@ -269,6 +274,9 @@ func (s *eventSocket) event(b []byte) error {
 			s.ready = false
 			resync = true
 			s.changed()
+			break
+		}
+		if terminalTask(r.State) {
 			break
 		}
 		r.ID = tid
@@ -327,6 +335,7 @@ func (s *eventSocket) event(b []byte) error {
 		if tid != "" {
 			r := s.tasks[tid]
 			r.ID = tid
+			before := r
 			switch {
 			case typ == "TaskCompleted":
 				r.State = "complete"
@@ -356,6 +365,16 @@ func (s *eventSocket) event(b []byte) error {
 			if typ == "AppCreated" && r.InstanceID == "" {
 				r.InstanceID = id(payload["appEid"])
 			}
+			if r.TargetID == "" {
+				r.TargetID = id(payload["appEid"])
+			}
+			if r.Kind == "" {
+				r.Kind = typ
+			}
+			r.EventIndex = idx
+			if terminalTask(before.State) {
+				r.State, r.Code, r.Message = before.State, before.Code, before.Message
+			}
 			s.tasks[tid] = r
 		}
 		s.tasksFromViews()
@@ -363,7 +382,14 @@ func (s *eventSocket) event(b []byte) error {
 	}
 	s.mu.Unlock()
 	if readyAck {
-		return s.send("READY_RECEIVE_EVENT", nil)
+		if err := s.send("READY_RECEIVE_EVENT", nil); err != nil {
+			return err
+		}
+		s.mu.Lock()
+		s.ready = true
+		s.changed()
+		s.mu.Unlock()
+		return nil
 	}
 	if resync {
 		return s.send("SYNC", map[string]any{"index": -1})
@@ -388,9 +414,17 @@ func (s *eventSocket) tasksFromViews() {
 			}
 			r := s.tasks[tid]
 			r.ID = tid
-			r.State = stringValue(m["state"])
-			r.Code = int(integer(m["code"]))
-			r.Message = safeTaskMessage(r.Code, r.State)
+			if !terminalTask(r.State) {
+				r.State = stringValue(m["state"])
+				r.Code = int(integer(m["code"]))
+				r.Message = safeTaskMessage(r.Code, r.State)
+			}
+			if r.Kind == "" {
+				r.Kind = stringValue(m["type"])
+			}
+			if r.TargetID == "" {
+				r.TargetID = id(object(m["payload"])["appEid"])
+			}
 			s.tasks[tid] = r
 		}
 	}
@@ -417,6 +451,40 @@ func (s *eventSocket) waitReady(ctx context.Context) error {
 	}
 }
 func (c *Client) Sync(ctx context.Context) (domain.Snapshot, error) {
+	return c.sync(ctx, false)
+}
+
+// SyncTaskReceipts also checks the school snapshot when the incremental stream
+// has not delivered a task receipt. It sends no task frames.
+func (c *Client) SyncTaskReceipts(ctx context.Context) (domain.Snapshot, error) {
+	return c.sync(ctx, true)
+}
+
+func (s *eventSocket) syncViews(ctx context.Context, fresh, full bool) error {
+	s.syncMu.Lock()
+	defer s.syncMu.Unlock()
+	if err := s.waitReady(ctx); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	if fresh || (full && time.Since(s.lastFullSync) < taskReceiptRefreshInterval) {
+		s.mu.Unlock()
+		return nil
+	}
+	index := s.index
+	if full {
+		index = -1
+		s.lastFullSync = time.Now()
+	}
+	s.ready = false
+	s.mu.Unlock()
+	if err := s.sendContext(ctx, "SYNC", map[string]any{"index": index}); err != nil {
+		return err
+	}
+	return s.waitReady(ctx)
+}
+
+func (c *Client) sync(ctx context.Context, full bool) (domain.Snapshot, error) {
 	identity, e := c.WhoAmI(ctx)
 	if e != nil {
 		return domain.Snapshot{}, e
@@ -425,22 +493,8 @@ func (c *Client) Sync(ctx context.Context) (domain.Snapshot, error) {
 	if e != nil {
 		return domain.Snapshot{}, e
 	}
-	s.syncMu.Lock()
-	defer s.syncMu.Unlock()
-	if e = s.waitReady(ctx); e != nil {
+	if e = s.syncViews(ctx, fresh, full); e != nil {
 		return domain.Snapshot{}, e
-	}
-	if !fresh {
-		s.mu.Lock()
-		s.ready = false
-		index := s.index
-		s.mu.Unlock()
-		if e = s.send("SYNC", map[string]any{"index": index}); e != nil {
-			return domain.Snapshot{}, e
-		}
-		if e = s.waitReady(ctx); e != nil {
-			return domain.Snapshot{}, e
-		}
 	}
 	c.mu.Lock()
 	current := c.identity
@@ -481,7 +535,7 @@ func (c *Client) Submit(ctx context.Context, request domain.TaskRequest) (domain
 	}
 	identity, e := c.WhoAmI(ctx)
 	if e != nil {
-		return domain.TaskResult{ID: request.ID}, e
+		return domain.TaskResult{ID: request.ID, Unsent: true}, e
 	}
 	if request.UserID != "" && request.UserID != identity.UID {
 		return domain.TaskResult{ID: request.ID}, domain.E("IDENTITY_MISMATCH", "task user differs from authenticated user")
@@ -489,39 +543,25 @@ func (c *Client) Submit(ctx context.Context, request domain.TaskRequest) (domain
 	request.UserID = identity.UID
 	s, _, e := c.eventConnection(ctx)
 	if e != nil {
-		return domain.TaskResult{ID: request.ID}, e
-	}
-	if e = s.waitReady(ctx); e != nil {
-		return domain.TaskResult{ID: request.ID}, e
+		return domain.TaskResult{ID: request.ID, Unsent: true}, e
 	}
 	payload, e := json.Marshal(request.Payload)
 	if e != nil {
 		return domain.TaskResult{ID: request.ID}, e
 	}
-	wire := map[string]any{"id": request.ID, "type": request.Type, "payload": string(payload), "userId": identity.UID.Number(), "adminUserId": 0}
-	fingerprint := request.Type + "\n" + string(payload)
-	s.mu.Lock()
-	if old, exists := s.requests[request.ID]; exists && old != fingerprint {
-		s.mu.Unlock()
-		return domain.TaskResult{ID: request.ID}, domain.E("TASK_ID_REUSED", "task UUID was already used with a different payload")
+	if result, err := s.sendTask(ctx, request, payload); err != nil {
+		return result, err
 	}
-	s.requests[request.ID] = fingerprint
-	existing := s.tasks[request.ID]
-	s.mu.Unlock()
-	if terminalTask(existing.State) {
-		return taskOutcome(existing)
-	}
-	if existing.State != "running" && existing.State != "received" {
-		if e = s.send("TASK", wire); e != nil {
-			return domain.TaskResult{ID: request.ID}, &domain.Error{Code: "TASK_PENDING", Message: "task send outcome is uncertain; reconcile this UUID", TaskID: request.ID, Retryable: true}
-		}
-	}
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
+	return s.waitTask(ctx, request.ID, taskReceiptRefreshInterval)
+}
+
+func (s *eventSocket) waitTask(ctx context.Context, taskID string, refreshEvery time.Duration) (domain.TaskResult, error) {
+	refresh := time.NewTicker(refreshEvery)
+	defer refresh.Stop()
 	for {
 		s.mu.Lock()
-		result := s.tasks[request.ID]
-		result.ID = request.ID
+		result := s.tasks[taskID]
+		result.ID = taskID
 		ch := s.notify
 		err := s.err
 		s.mu.Unlock()
@@ -529,21 +569,60 @@ func (c *Client) Submit(ctx context.Context, request domain.TaskRequest) (domain
 			return taskOutcome(result)
 		}
 		if err != nil {
-			return result, &domain.Error{Code: "TASK_PENDING", Message: "event connection was lost; reconcile the same task UUID before retrying", TaskID: request.ID, Retryable: true}
+			return result, &domain.Error{Code: "TASK_PENDING", Message: "event connection was lost; reconcile the same task UUID before retrying", TaskID: taskID, Retryable: true}
 		}
 		select {
 		case <-ctx.Done():
-			return result, &domain.Error{Code: "TASK_PENDING", Message: "task outcome is pending; retain this UUID for reconciliation", TaskID: request.ID, Retryable: errors.Is(ctx.Err(), context.DeadlineExceeded)}
+			return result, &domain.Error{Code: "TASK_PENDING", Message: "task outcome is pending; retain this UUID for reconciliation", TaskID: taskID, Retryable: errors.Is(ctx.Err(), context.DeadlineExceeded)}
 		case <-ch:
-		case <-ticker.C:
-			if result.State != "running" && result.State != "received" {
-				if e = s.send("TASK", wire); e != nil {
-					return result, &domain.Error{Code: "TASK_PENDING", Message: "task send outcome is uncertain", TaskID: request.ID, Retryable: true}
-				}
+		case <-refresh.C:
+			// Leave the original task in flight. A full view can contain its
+			// receipt even when the incremental stream stopped updating.
+			bounded, cancel := context.WithTimeout(ctx, 5*time.Second)
+			err := s.syncViews(bounded, false, true)
+			cancel()
+			if err != nil && ctx.Err() == nil {
+				s.fail(err)
 			}
 		}
 	}
 }
+
+func (s *eventSocket) sendTask(ctx context.Context, request domain.TaskRequest, payload []byte) (domain.TaskResult, error) {
+	// Sync temporarily closes the server's event gate. No task may be written
+	// between Sync and the outgoing READY_RECEIVE_EVENT acknowledgement.
+	s.syncMu.Lock()
+	defer s.syncMu.Unlock()
+	if err := s.waitReady(ctx); err != nil {
+		return domain.TaskResult{ID: request.ID, Unsent: true}, err
+	}
+	fingerprint := request.Type + "\n" + string(payload)
+	s.mu.Lock()
+	if err := ctx.Err(); err != nil {
+		s.mu.Unlock()
+		return domain.TaskResult{ID: request.ID, Unsent: true}, err
+	}
+	old, seen := s.requests[request.ID]
+	if seen && old != fingerprint {
+		s.mu.Unlock()
+		return domain.TaskResult{ID: request.ID}, domain.E("TASK_ID_REUSED", "task UUID was already used with a different payload")
+	}
+	s.requests[request.ID] = fingerprint
+	existing := s.tasks[request.ID]
+	if existing.Kind == "" {
+		existing.ID, existing.Kind, existing.TargetID = request.ID, request.Type, request.TargetID
+		s.tasks[request.ID] = existing
+	}
+	s.mu.Unlock()
+	if !seen && existing.State == "" {
+		wire := map[string]any{"id": request.ID, "type": request.Type, "payload": string(payload), "userId": request.UserID.Number(), "adminUserId": 0}
+		if err := s.sendContext(ctx, "TASK", wire); err != nil {
+			return domain.TaskResult{ID: request.ID}, &domain.Error{Code: "TASK_PENDING", Message: "task send outcome is uncertain; reconcile this UUID", TaskID: request.ID, Retryable: true}
+		}
+	}
+	return existing, nil
+}
+
 func taskOutcome(r domain.TaskResult) (domain.TaskResult, error) {
 	if r.State == "complete" && r.Code == 0 {
 		return r, nil

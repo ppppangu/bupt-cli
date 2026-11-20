@@ -10,8 +10,9 @@ import (
 
 type trialPortal struct {
 	testPortal
-	key   domain.PortalKey
-	calls int
+	key       domain.PortalKey
+	calls     int
+	lostReply bool
 }
 
 func (b *trialPortal) PortalPage(_ context.Context, a domain.PortalAccount, q domain.PortalInput) (domain.PortalPage, error) {
@@ -31,6 +32,9 @@ func (b *trialPortal) RunModelTrial(_ context.Context, base string, r domain.Tri
 		return domain.TrialResult{}, domain.E("FIXTURE", "wrong decision")
 	}
 	b.calls++
+	if b.lostReply {
+		return domain.TrialResult{}, domain.E("MODEL_RESULT_UNKNOWN", "fixture consumed the request and dropped the response")
+	}
 	return domain.TrialResult{Model: r.Model, Kind: r.Kind, Answer: "mock-output"}, nil
 }
 func TestTrialChecksOwnerCurrentKeyAndScopeAndDoesNotReplay(t *testing.T) {
@@ -85,5 +89,52 @@ func TestTrialChecksOwnerCurrentKeyAndScopeAndDoesNotReplay(t *testing.T) {
 		if strings.Contains(string(v), "my original text") || strings.Contains(string(v), "mock-output") {
 			t.Fatal("trial transcript persisted")
 		}
+	}
+}
+
+func TestModelUnknownEffectRequiresReconciliationAcrossControllerRestart(t *testing.T) {
+	c, _ := coreController(t)
+	p := &trialPortal{key: domain.PortalKey{ID: "k1", Status: "active", Models: []string{"model-x"}}, lostReply: true}
+	c.opts.Factory = func(domain.Profile, domain.SecretStore) (domain.PlatformAPI, error) { return p, nil }
+	ns := c.portalNamespace("bupt")
+	if err := c.Vault.Put(portalCacheKey(ns, "campus-001", "secret/k1"), "fixture-vault-secret"); err != nil {
+		t.Fatal(err)
+	}
+	request := domain.ModelInvocation{Model: "model-x", KeyID: "k1", Input: domain.TrialInput{Texts: []string{"charged once"}}, IdempotencyKey: "first"}
+	rpc := domain.RPCRequest{Profile: "bupt", Method: "portal.trial"}
+	run := func(c *Controller) (any, error) {
+		p, err := Decode(domain.Result(request))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c.Handle(t.Context(), rpc, p)
+	}
+	if _, err := run(c); managedCode(err) != "MODEL_RESULT_UNKNOWN" || p.calls != 1 {
+		t.Fatal(err, p.calls)
+	}
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+	next, err := New(c.opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer next.Close()
+	request.IdempotencyKey = "second"
+	if _, err := run(next); managedCode(err) != "MODEL_RECONCILIATION_REQUIRED" || p.calls != 1 {
+		t.Fatal(err, p.calls)
+	}
+	p.lostReply = false
+	request.ResendAfter = "first"
+	out, err := run(next)
+	if err != nil || out.(domain.TrialResult).Answer != "mock-output" || p.calls != 2 {
+		t.Fatal(out, err, p.calls)
+	}
+	if _, err := run(next); managedCode(err) != "TRIAL_ALREADY_SUBMITTED" || p.calls != 2 {
+		t.Fatal(err, p.calls)
+	}
+	request.IdempotencyKey, request.ResendAfter = "third", ""
+	if _, err := run(next); err != nil || p.calls != 3 {
+		t.Fatal(err, p.calls)
 	}
 }

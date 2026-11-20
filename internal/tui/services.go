@@ -20,7 +20,7 @@ func (w *workspace) serviceHome() content {
 		navLink("api", "R  "+navigation.APITitle, "在线调试，或在自己的程序中调用模型", "bupt api", w.apiHome),
 		navLink("compute", "S  "+navigation.ComputeTitle, "创建、连接和管理 CPU / GPU 实例", "bupt compute", w.computeHome),
 		navLink("usage", "U  余额与用量", "查看模型用量与服务器账单", "bupt api usage", func() { w.usagePage(7) }),
-		navLink("tutorial", "?  "+navigation.HelpTitle, "快捷键、API 使用文档和学校登录", "bupt help tutorial", w.helpHome),
+		navLink("tutorial", "?  "+navigation.HelpTitle, "使用帮助、诊断和问题反馈", "bupt feedback", w.helpHome),
 	}}
 }
 func (w *workspace) objectPage(title, cmd string, obj any) {
@@ -36,7 +36,7 @@ func ntext(n *float64) string {
 func (w *workspace) apiHome() {
 	w.push(&page{title: navigation.APITitle, area: "api", command: "bupt api", shortcuts: map[rune]string{'1': "trial", '2': "model", '3': "guide", '4': "key", '5': "leaderboard"}, build: func() content {
 		return content{rows: []row{
-			navLink("trial", "1  在线调试", "编辑输入，发送并就地查看结果", "bupt help api model try --all", w.chooseTrialModel),
+			navLink("trial", "1  在线调试", "编辑输入，发送并就地查看结果", "bupt help api model invoke --all", w.chooseTrialModel),
 			navLink("model", "2  模型与价格", "按用途选模型，查看输入和输出单价", "bupt api model", func() { w.portalPage("model", "模型与价格", "bupt api model", nil) }),
 			navLink("guide", "3  在我的程序中调用", "生成 Python 或 curl 代码", "bupt api guide", func() { w.integrationExamples(nil) }),
 			navLink("key", "4  API 密钥", "创建密钥、查看授权、启用或停用", "bupt api key", func() { w.portalPage("key", "API 密钥", "bupt api key", nil) }),
@@ -231,7 +231,7 @@ func (w *workspace) modelDetail(initial domain.PortalModel) {
 			v.facts = append(v.facts, m.Description)
 		}
 		if t, err := domain.TrialFor(m); err == nil {
-			v.rows = append(v.rows, navLink("try", "在线调试", capability, "bupt help api model try --all", func() {
+			v.rows = append(v.rows, navLink("try", "在线调试", capability, "bupt help api model invoke --all", func() {
 				f := w.modelPlayground(m, t)
 				if createdKey != "" {
 					f.key = createdKey
@@ -366,12 +366,12 @@ func (w *workspace) portalKey(k domain.PortalKey) {
 			}))
 		}
 		if k.Stored {
-			v.rows = append(v.rows, link("export", "导出到新私有文件", "", cmdline("api", "key", "export", k.ID, "--output", "FILE"), func() {
+			v.rows = append(v.rows, link("export", "导出到新私有文件", "", cmdline("api", "key", "export", k.ID, "--file", "FILE"), func() {
 				w.edit("新文件路径", "", func(path string) error {
 					if strings.TrimSpace(path) == "" || path == "-" {
 						return fmt.Errorf("请输入新文件路径")
 					}
-					w.terminalReview("导出 API Key", path, []string{"api", "key", "export", k.ID, "--output", path})
+					w.terminalReview("导出 API Key", path, []string{"api", "key", "export", k.ID, "--file", path}, TerminalAction{Name: "api key export", Args: []string{k.ID}, Options: map[string]string{"file": path}})
 					return nil
 				})
 			}))

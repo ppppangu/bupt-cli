@@ -347,7 +347,7 @@ func defaults(paths Paths) map[string]any {
 			"relay": map[string]any{"port_min": int64(24000), "port_max": int64(24999)},
 		}},
 		"presets": map[string]any{},
-		"policy":  map[string]any{"cleanup": "release", "stop_grace": "60s", "force_stop": true, "auto_renew": false},
+		"policy":  map[string]any{"cleanup": "release", "stop_grace": "60s", "force_stop": false, "auto_renew": false},
 	}
 }
 

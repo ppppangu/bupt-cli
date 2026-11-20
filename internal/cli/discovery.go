@@ -11,38 +11,45 @@ import (
 	"github.com/spf13/pflag"
 )
 
+func completeValues(cmd *cobra.Command, flag string, values ...string) {
+	_ = cmd.RegisterFlagCompletionFunc(flag, func(_ *cobra.Command, _ []string, prefix string) ([]string, cobra.ShellCompDirective) {
+		var matches []string
+		for _, value := range values {
+			if strings.HasPrefix(value, prefix) {
+				matches = append(matches, value)
+			}
+		}
+		return matches, cobra.ShellCompDirectiveNoFileComp
+	})
+}
+
 // The root prints the short command index. The full index is generated from
 // Cobra so that new flags and commands remain discoverable.
 func installDiscovery(root *cobra.Command) {
+	completeValues(root, "output", "table", "json", "jsonl", "id")
+	completeValues(root, "field", "balance")
 	native := root.HelpFunc()
-	defaults := map[string]string{"instance": "ls", "spec": "ls", "preset": "ls", "job": "ls", "data": "stores", "auth": "status", "task": "ls"}
-	for name, sub := range defaults {
-		group, _, _ := root.Find([]string{name})
-		child, _, _ := group.Find([]string{sub})
-		group.Flags().AddFlagSet(child.LocalNonPersistentFlags())
-		group.Args = exactArgs(0)
-		group.RunE = child.RunE
+	for path, sub := range map[string]string{"auth": "status", "compute preset": "ls", "compute task": "ls"} {
+		if group, remaining, _ := root.Find(strings.Fields(path)); group != nil && group != root && len(remaining) == 0 {
+			defaultTo(group, sub)
+		}
 	}
 	root.SetHelpFunc(func(cmd *cobra.Command, args []string) {
 		if cmd != root {
-			briefCommand(cmd, defaults[cmd.Name()])
+			briefCommand(cmd, cmd.Annotations["default_child"])
 			return
 		}
 		w := cmd.OutOrStdout()
 		fmt.Fprintln(w, "bupt   北邮算力平台")
-		fmt.Fprintln(w, "\n用法  bupt <命令> [选项]")
-		fmt.Fprintln(w, "\n平台    bupt login     bupt logout     bupt status     bupt account     bupt tui")
-		fmt.Fprintln(w, "\n按用途浏览")
-		fmt.Fprintln(w, "  bupt api             模型 API（大模型 API 服务）")
-		fmt.Fprintln(w, "    model              可调用模型、ID、能力、上下文、价格、健康状态")
-		fmt.Fprintln(w, "    usage              余额与用量")
-		fmt.Fprintln(w, "    key                密钥与模型范围")
-		fmt.Fprintln(w, "  bupt compute         裸算力服务器（裸算力服务）")
-		fmt.Fprintln(w, "    catalog            资源池、模板和可申请规格")
-		fmt.Fprintln(w, "    instance           实例、预留、期限与节点")
-		fmt.Fprintln(w, "    quota              账号与存储配额")
-		fmt.Fprintln(w, "\nbupt help api 或 bupt help compute 查看业务命令。bupt help resources 查看模板相关快捷命令。")
-		fmt.Fprintln(w, "\nbupt help tutorial  阅读教程\nbupt help --all  查看完整命令树和全局选项")
+		fmt.Fprintln(w, "\n用法  bupt <命令> [选项]\n\n按用途浏览")
+		fmt.Fprintln(w, "  login / logout      登录与退出学校账号\n  tui                 打开交互工作台")
+		for _, c := range root.Commands() {
+			if !c.Hidden && !slices.Contains([]string{"login", "logout", "tui", "help", "version", "completion"}, c.Name()) {
+				fmt.Fprintf(w, "  bupt %-14s %s\n", c.Name(), c.Short)
+			}
+		}
+		fmt.Fprintln(w, "\nbupt help COMMAND  查看命令和选项\nbupt help tutorial  阅读教程\nbupt help --all  查看完整命令树")
+
 	})
 	help := &cobra.Command{Use: "help [TOPIC|COMMAND...]", Short: "Browse commands by purpose or show the full command tree", Annotations: map[string]string{"skip_config": "true"}}
 	all := help.Flags().BoolP("all", "a", false, "Show the complete command tree and global options")
@@ -69,19 +76,9 @@ func installDiscovery(root *cobra.Command) {
 			return nil
 		}
 		if *all && len(args) == 0 {
-			for _, area := range navigation.Areas {
-				printArea(w, root, area, true)
-			}
-			fmt.Fprintln(w, "其他命令")
+			fmt.Fprintln(w, "完整命令树")
 			for _, c := range root.Commands() {
-				if c.Hidden {
-					continue
-				}
-				known := false
-				for _, area := range navigation.Areas {
-					known = known || slices.Contains(area.Commands, c.Name())
-				}
-				if !known {
+				if discoverable(c) {
 					printBranch(w, c, "  ", true)
 				}
 			}
@@ -103,6 +100,11 @@ func installDiscovery(root *cobra.Command) {
 		if *all {
 			found.InitDefaultHelpFlag()
 			native(found, nil)
+			for _, child := range found.Commands() {
+				if child.Hidden && discoverable(child) {
+					printBranch(w, child, "  ", true)
+				}
+			}
 			return nil
 		}
 		return found.Help()
@@ -112,8 +114,8 @@ func installDiscovery(root *cobra.Command) {
 func printArea(w io.Writer, root *cobra.Command, area navigation.Area, full bool) {
 	fmt.Fprintf(w, "\n%s · %s\n", area.Name, area.Summary)
 	for _, name := range area.Commands {
-		cmd, _, err := root.Find([]string{name})
-		if err == nil && cmd != root {
+		cmd, rest, err := root.Find(strings.Fields(name))
+		if err == nil && cmd != root && len(rest) == 0 && (full || !cmd.Hidden) {
 			printBranch(w, cmd, "  ", full)
 		}
 	}
@@ -122,7 +124,7 @@ func printBranch(w io.Writer, cmd *cobra.Command, indent string, recursive bool)
 	fmt.Fprintf(w, "%s%-28s %s\n", indent, strings.TrimPrefix(cmd.CommandPath(), "bupt "), cmd.Short)
 	if recursive {
 		for _, child := range cmd.Commands() {
-			if !child.Hidden {
+			if discoverable(child) {
 				printBranch(w, child, indent+"  ", true)
 			}
 		}
@@ -132,22 +134,30 @@ func printBranch(w io.Writer, cmd *cobra.Command, indent string, recursive bool)
 // Most people choosing a template or starting a session need a handful of
 // options. The full Cobra help remains available for every command path.
 var commonOptions = map[string][]string{
-	"bupt up":              {"adopt", "preset", "spec", "max-runtime", "ssh", "no-wait"},
-	"bupt down":            {"cleanup", "no-wait"},
-	"bupt run":             {"instance", "preset", "name", "max-runtime", "detach"},
-	"bupt job run":         {"instance", "preset", "name", "max-runtime", "detach"},
-	"bupt instance create": {"spec", "preset", "gpu", "max-runtime", "no-wait"},
-	"bupt preset set":      {"from", "spec", "max-runtime", "project"},
-	"bupt init":            {"mode", "foreground", "install"},
-	"bupt login":           {"sso-password", "username", "wait", "no-wait", "qr-file"},
-	"bupt auth login":      {"sso-password", "username", "wait", "no-wait", "qr-file"},
+	"bupt feedback":                {"template", "diagnostics", "category"},
+	"bupt doctor":                  {"report", "offline"},
+	"bupt compute instance create": {"spec", "preset", "gpu", "max-runtime", "allocate-only", "max-points-per-day", "wait"},
+	"bupt init":                    {"mode", "foreground", "install"},
+	"bupt login":                   {"sso-password", "username", "wait", "no-wait", "qr-file"},
 }
+
+func markAdvanced(c *cobra.Command) {
+	if c.Annotations == nil {
+		c.Annotations = map[string]string{}
+	}
+	c.Annotations["advanced"] = "true"
+	c.Hidden = true
+}
+
+func advancedCommand(c *cobra.Command) *cobra.Command { markAdvanced(c); return c }
+
+func discoverable(c *cobra.Command) bool { return !c.Hidden || c.Annotations["advanced"] == "true" }
 
 func briefCommand(cmd *cobra.Command, defaultChild string) {
 	w := cmd.OutOrStdout()
 	fmt.Fprintln(w, cmd.Short)
 	fmt.Fprintln(w, "\n用法  "+cmd.UseLine())
-	if defaultChild != "" && cmd.Parent() == cmd.Root() {
+	if defaultChild != "" {
 		fmt.Fprintf(w, "直接运行等同于 %s %s\n", cmd.CommandPath(), defaultChild)
 	}
 	if cmd.HasAvailableSubCommands() {

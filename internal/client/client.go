@@ -57,6 +57,24 @@ func (c *Client) open(ctx context.Context) (io.ReadWriteCloser, error) {
 	}
 	return OpenCommand(ctx, domain.RelayConfig{Address: c.Profile.Controller, User: c.Profile.ControllerUser, IdentityFile: c.Profile.ControllerIdentityFile, HostKey: c.Profile.ControllerHostKey}, "rpc")
 }
+func connectionError(ctx context.Context, code string, err error) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	var detail *domain.Error
+	if errors.As(err, &detail) {
+		return err
+	}
+	if code != "CONTROLLER_CONNECT" {
+		var parse *json.SyntaxError
+		var wrongType *json.UnmarshalTypeError
+		if errors.As(err, &parse) || errors.As(err, &wrongType) {
+			return domain.E("PROTOCOL_ERROR", "invalid controller response")
+		}
+	}
+	return &domain.Error{Code: code, Message: "controller transport failed", Retryable: true}
+}
+
 func (c *Client) request(method string, p any) domain.RPCRequest {
 	return domain.RPCRequest{ID: uuid.NewString(), Method: method, Profile: c.Profile.Name, Params: domain.Result(p)}
 }
@@ -69,30 +87,32 @@ func (c *Client) Call(ctx context.Context, method string, params, out any) error
 	stop := watchContext(ctx, n)
 	defer stop()
 	if e = wire.WriteJSON(n, c.request(method, params)); e != nil {
-		return e
+		return connectionError(ctx, "CONTROLLER_IO", e)
 	}
 	var r domain.RPCResponse
 	if e = wire.ReadJSON(bufio.NewReader(n), &r); e != nil {
-		return e
+		return connectionError(ctx, "CONTROLLER_IO", e)
 	}
 	if r.Error != nil {
 		return r.Error
 	}
 	if out != nil && len(r.Result) > 0 {
-		return json.Unmarshal(r.Result, out)
+		if e = json.Unmarshal(r.Result, out); e != nil {
+			return connectionError(ctx, "CONTROLLER_IO", e)
+		}
 	}
 	return nil
 }
 func (c *Client) streamOpen(ctx context.Context, method string, params any) (io.ReadWriteCloser, *bufio.Reader, map[string]any, error) {
 	n, e := c.open(ctx)
 	if e != nil {
-		return nil, nil, nil, e
+		return nil, nil, nil, connectionError(ctx, "CONTROLLER_CONNECT", e)
 	}
 	stop := watchContext(ctx, n)
 	defer stop()
 	if e = wire.WriteJSON(n, c.request(method, params)); e != nil {
 		n.Close()
-		return nil, nil, nil, e
+		return nil, nil, nil, connectionError(ctx, "CONTROLLER_IO", e)
 	}
 	r := bufio.NewReader(n)
 	var response domain.RPCResponse
@@ -101,7 +121,7 @@ func (c *Client) streamOpen(ctx context.Context, method string, params any) (io.
 		if ctx.Err() != nil {
 			e = ctx.Err()
 		}
-		return nil, nil, nil, e
+		return nil, nil, nil, connectionError(ctx, "CONTROLLER_IO", e)
 	}
 	if response.Error != nil {
 		n.Close()
@@ -120,6 +140,9 @@ func (c *Client) SessionNode(ctx context.Context, target, node string, opts conn
 		return 255, e
 	}
 	defer n.Close()
+	if opts.OnConnected != nil {
+		opts.OnConnected()
+	}
 	stop := watchContext(ctx, n)
 	defer stop()
 	fw := &wire.Writer{W: n}
@@ -162,7 +185,7 @@ func (c *Client) SessionNode(ctx context.Context, target, node string, opts conn
 			if ctx.Err() != nil {
 				return 255, ctx.Err()
 			}
-			return 255, e
+			return 255, connectionError(ctx, "CONTROLLER_IO", e)
 		}
 		switch k {
 		case wire.Output:
@@ -178,15 +201,15 @@ func (c *Client) SessionNode(ctx context.Context, target, node string, opts conn
 			if json.Unmarshal(b, &de) == nil {
 				return 255, &de
 			}
-			return 255, domain.E("REMOTE_ERROR", "session failed")
+			return 255, domain.E("PROTOCOL_ERROR", "invalid controller session failure frame")
 		case wire.Exit:
 			var v struct {
-				Code int `json:"code"`
+				Code *int `json:"code"`
 			}
-			if e = json.Unmarshal(b, &v); e != nil {
-				return 255, e
+			if e = json.Unmarshal(b, &v); e != nil || v.Code == nil || *v.Code < 0 || *v.Code > 255 {
+				return 255, domain.E("PROTOCOL_ERROR", "invalid controller session exit frame")
 			}
-			return v.Code, nil
+			return *v.Code, nil
 		}
 	}
 }
@@ -226,13 +249,15 @@ func (c *Client) Stream(ctx context.Context, method string, params any, in io.Re
 		if v, ok := meta["offset"].(float64); ok {
 			offset = int64(v)
 		}
-		if s, ok := in.(io.Seeker); ok {
-			if _, e = s.Seek(offset, io.SeekStart); e != nil {
-				return meta, e
-			}
-		} else if offset > 0 {
-			if _, e = io.CopyN(io.Discard, in, offset); e != nil {
-				return meta, e
+		if offset > 0 {
+			if s, ok := in.(io.Seeker); ok {
+				if _, e = s.Seek(offset, io.SeekStart); e != nil {
+					return meta, e
+				}
+			} else {
+				if _, e = io.CopyN(io.Discard, in, offset); e != nil {
+					return meta, e
+				}
 			}
 		}
 		go func() {

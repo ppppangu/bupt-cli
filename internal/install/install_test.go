@@ -138,7 +138,7 @@ func TestInitWritesPrivateSecretFreeConfigAndPreservesExistingKeys(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.Profiles[cfg.Selected].Controller != "local" || loaded.Policy.Cleanup != "release" || !loaded.Policy.ForceStop {
+	if loaded.Profiles[cfg.Selected].Controller != "local" || loaded.Policy.Cleanup != "release" || loaded.Policy.ForceStop {
 		t.Fatalf("wrong defaults: %#v", loaded)
 	}
 	if _, err = h.handle(context.Background(), loaded, "init", params, nil, nil, nil); err != nil {

@@ -9,18 +9,19 @@ import (
 )
 
 type draft struct {
-	restore          bool
-	pool             string
-	catalog          map[string]any
-	quote            *instanceQuote
-	instance         *domain.Instance
-	spec             domain.Spec
-	preset           *domain.Preset
-	name, limit      string
-	policy           domain.RunPolicy
-	resources        map[string]string
-	group, groupName string
-	node             domain.Node
+	restore                 bool
+	pool                    string
+	catalog                 map[string]any
+	quote                   *instanceQuote
+	instance                *domain.Instance
+	spec                    domain.Spec
+	preset                  *domain.Preset
+	name, limit             string
+	allocateOnly, forceStop bool
+	policy                  domain.RunPolicy
+	resources               map[string]string
+	group, groupName        string
+	node                    domain.Node
 }
 
 func (w *workspace) startForm(i domain.Instance) {
@@ -70,9 +71,10 @@ func (w *workspace) startAllocation(r domain.Run, n domain.Node) {
 		return
 	}
 	policy := r.Policy
+	policy.ForceStop = false
 	policy.Until, policy.MaxRuntime = r.Deadline, ""
 	id := string(r.InstanceID)
-	args := []string{"up", "--adopt", id, "--until", r.Deadline.Format(time.RFC3339Nano), "--no-wait"}
+	args := []string{"compute", "instance", "start", "--until", r.Deadline.Format(time.RFC3339Nano)}
 	params := map[string]any{"target": id, "name": r.Name, "adopt": true, "until": r.Deadline, "policy": policy}
 	facts := []string{"启动已分配的实例 " + r.Name, "沿用当前托管截止时间，启动后验证 SSH 连接。"}
 	if n.ID != "" {
@@ -80,7 +82,7 @@ func (w *workspace) startAllocation(r domain.Run, n domain.Node) {
 		args = append(args, "--node", string(n.ID))
 		facts = append(facts, "SSH 节点  "+n.Name)
 	}
-	w.review(change{title: "启动并准备 SSH", method: "up", args: append(args, "--", r.Name), params: params, facts: facts})
+	w.review(change{title: "启动并准备 SSH", method: "instance.start", args: append(args, "--", id), params: params, facts: facts})
 }
 func (w *workspace) createForm(s domain.Spec, preset *domain.Preset) {
 	policy := w.Config.Policy
@@ -88,6 +90,7 @@ func (w *workspace) createForm(s domain.Spec, preset *domain.Preset) {
 		policy = preset.Policy
 	}
 	d := &draft{spec: s, preset: preset, policy: policy, limit: policy.MaxRuntime, resources: map[string]string{}}
+	w.restoreCreateDraft(d)
 	w.resourceForm("创建实例", d)
 }
 
@@ -96,6 +99,7 @@ func (w *workspace) createForm(s domain.Spec, preset *domain.Preset) {
 func (w *workspace) createFromTemplate(t domain.TemplateSummary, pool string) {
 	policy := w.Config.Policy
 	d := &draft{spec: domain.Spec{ID: t.ID}, policy: policy, limit: policy.MaxRuntime, pool: pool, catalog: t.Resources, resources: map[string]string{}}
+	w.restoreCreateDraft(d)
 	p := queryPage(w, "创建实例", cmdline("compute", "catalog", "show", string(t.ID)), "spec.show", map[string]any{"target": t.ID}, true, func(spec domain.Spec) content {
 		if spec.ID == "" || spec.ID != t.ID {
 			return content{empty: "模板已变更，请返回资源目录重新选择。"}
@@ -116,7 +120,15 @@ func (w *workspace) resourceForm(title string, d *draft) {
 
 func (w *workspace) resourceFields(title string, d *draft) content {
 	op := d.change(title)
-	until := "必填，例如 30m 或 2h"
+	if slot := d.slot(); slot != "" {
+		op.afterSubmit = func() { w.clearDraft(slot) }
+	}
+	limitLabel, until := "运行上限", "必填，例如 30m 或 2h"
+	previewTitle, previewDetail := "核对"+title, "查看截止时间、资源和到期处理"
+	if d.restore {
+		limitLabel, until = "分配与运行总时长", "从提交分配开始算，例如 30m"
+		previewTitle, previewDetail = "核对价格与时限", "查看学校日价和到期处理"
+	}
 	if !d.policy.Until.IsZero() {
 		until = "截止 " + moment(d.policy.Until)
 	}
@@ -127,19 +139,19 @@ func (w *workspace) resourceFields(title string, d *draft) content {
 	if !d.restore {
 		v.rows = append(v.rows, w.field("name", "实例名称", &d.name, "必填，给这次实验起名"))
 	}
-	v.rows = append(v.rows, w.field("limit", "运行上限", &d.limit, until))
+	v.rows = append(v.rows, w.field("limit", limitLabel, &d.limit, until, func() { w.saveCreateDraft(d) }))
 	needsProject := d.needsProject()
 	if needsProject {
 		v.rows = append(v.rows, w.projectField(d))
 	}
-	preview := link("preview", "核对"+title, "查看截止时间、资源和到期处理", cmdline(op.args...), func() {
+	preview := link("preview", previewTitle, previewDetail, cmdline(op.args...), func() {
 		target := ""
 		if !d.restore && d.name == "" {
 			target = "name"
 			w.notice = "请先填写实例名称"
 		} else if d.limit == "" && d.policy.Until.IsZero() {
 			target = "limit"
-			w.notice = "请先填写运行上限，例如 30m"
+			w.notice = "请先填写" + limitLabel + "，例如 30m"
 		} else if d.limit != "" {
 			if n, err := time.ParseDuration(d.limit); err != nil || n <= 0 {
 				target = "limit"
@@ -158,11 +170,29 @@ func (w *workspace) resourceFields(title string, d *draft) content {
 	})
 	preview.verb = "核对"
 	if d.instance == nil {
-		price := link("estimate", "刷新学校估价", "按当前配置查询每日积分", "bupt estimate", func() { w.loadDraftQuote(d) })
+		mode := "创建并启动"
+		if d.allocateOnly {
+			mode = "仅申请或分配"
+		}
+		v.rows = append(v.rows, link("allocate", "创建方式", mode, "", func() { d.allocateOnly = !d.allocateOnly; w.saveCreateDraft(d) }))
+		price := link("estimate", "刷新学校估价", "按当前配置查询每日积分", "bupt compute catalog estimate", func() { w.loadDraftQuote(d) })
 		price.verb = "查询估价"
 		v.rows = append(v.rows, price)
 	}
 	v.rows = append(v.rows, preview)
+	if d.slot() != "" && !w.Cached {
+		v.rows = append(v.rows, link("clear-draft", "清除本机草稿", "恢复默认时限和创建方式", "", func() {
+			if w.clearDraft(d.slot()) {
+				d.limit, d.allocateOnly = d.policy.MaxRuntime, false
+				w.notice = "已清除本机草稿"
+			}
+		}))
+	}
+	force := "关闭"
+	if d.forceStop {
+		force = "已授权"
+	}
+	v.rows = append(v.rows, link("force-stop", "宽限期后强制停机", force, "", func() { d.forceStop = !d.forceStop }))
 	if d.instance == nil {
 		if d.preset == nil {
 			v.rows = append(v.rows, navLink("options", "调整资源和项目", "GPU、CPU、内存、磁盘和项目归属", "", func() { w.draftOptions(d) }),
@@ -242,8 +272,8 @@ func (w *workspace) projectField(d *draft) row {
 			detail = "个人 / 模板默认"
 		}
 	}
-	return navLink("group", "所属项目", detail, "bupt compute project", func() {
-		w.popup(queryPage(w, "选择所属项目", "bupt compute project", "compute.read", map[string]any{"section": "project", "cached": w.Cached}, true, func(members []domain.ProjectMembership) content {
+	return navLink("group", "所属项目", detail, "bupt project", func() {
+		w.popup(queryPage(w, "选择所属项目", "bupt project", "compute.read", map[string]any{"section": "project", "cached": w.Cached}, true, func(members []domain.ProjectMembership) content {
 			v := content{empty: "当前账号没有已核验的可用项目。可返回选择个人模板。"}
 			if !d.needsProject() {
 				v.rows = append(v.rows, link("personal", "个人 / 模板默认", "", "", func() { d.group, d.groupName = "", ""; w.back() }))
@@ -324,13 +354,21 @@ func (d *draft) resourceFacts() []string {
 }
 
 func (d *draft) change(title string) change {
-	op := change{title: title, method: "instance.create", params: map[string]any{"name": d.name, "policy": d.policy}, args: []string{"instance", "create"}}
+	policy := d.policy
+	policy.ForceStop = d.forceStop
+	op := change{title: title, method: "instance.create", params: map[string]any{"name": d.name, "policy": policy, "allocate_only": d.allocateOnly}, args: []string{"compute", "instance", "create"}}
+	if d.allocateOnly {
+		op.args = append(op.args, "--allocate-only")
+	}
+	if d.forceStop {
+		op.args = append(op.args, "--force-stop")
+	}
 	if d.instance != nil {
 		id := string(d.instance.ID)
-		op.method = "up"
+		op.method = "instance.start"
 		op.params["target"] = id
 		op.params["adopt"] = true
-		op.args = []string{"up", "--adopt", id}
+		op.args = []string{"compute", "instance", "start"}
 		op.facts = []string{"原实例 " + d.instance.Name + " · " + id + "，启动后准备 SSH。"}
 		if d.node.ID != "" {
 			op.params["node"] = d.node.ID
@@ -342,7 +380,7 @@ func (d *draft) change(title string) change {
 			delete(op.params, "adopt")
 			delete(op.params, "name")
 			op.args = []string{"compute", "instance", "restore"}
-			op.facts = []string{"实例  " + d.instance.Name + " · " + id, "恢复此实例的计算预留，保留原磁盘。"}
+			op.facts = []string{"实例  " + d.name + " · " + id, "原磁盘保留。", "分配完成后，选择「启动并准备 SSH」。"}
 		}
 	} else if d.preset != nil {
 		op.params["preset"] = d.preset.Name
@@ -384,11 +422,9 @@ func (d *draft) change(title string) change {
 		}
 	}
 	if d.instance == nil {
-		op.quote = d.quote
-		op.facts = append(op.facts, "连接方式  启动后可在实例详情准备 SSH。Web IDE 按节点提供的服务显示。", "获得计算预留或保留存储可能产生费用。实际计费起点与金额以学校账单为准。")
+		op.facts = append(op.facts, "连接方式  默认启动并验证 SSH。Web IDE 按节点提供的服务显示。", "获得计算预留或保留存储可能产生费用。实际计费起点与金额以学校账单为准。")
 	}
 	if d.limit != "" {
-		policy := d.policy
 		policy.Until = time.Time{}
 		policy.MaxRuntime = d.limit
 		op.params["policy"] = policy
@@ -407,10 +443,10 @@ func (d *draft) change(title string) change {
 		op.args = append(op.args, "--no-renew")
 	}
 	target := d.name
-	if d.restore {
+	if d.instance != nil {
 		target = string(d.instance.ID)
 	}
-	op.args = append(op.args, "--no-wait", "--", target)
+	op.args = append(op.args, "--", target)
 	return op
 }
 

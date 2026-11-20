@@ -46,7 +46,7 @@ func (c *Controller) ResolveSpec(ctx context.Context, profile, selector string) 
 		}
 	}
 	if len(matches) == 0 {
-		return domain.Spec{}, domain.E("SPEC_NOT_FOUND", "template name was not found; use bupt spec ls")
+		return domain.Spec{}, domain.E("SPEC_NOT_FOUND", "template name was not found; use bupt compute catalog ls")
 	}
 	if len(matches) != 1 {
 		return domain.Spec{}, domain.E("AMBIGUOUS_SPEC", "template name matches multiple versions; use NAME@VERSION or an ID")

@@ -33,9 +33,10 @@ bupt api usage
 bupt api key
 bupt compute catalog
 bupt compute instance
-bupt up experiment --preset gpu-small --max-runtime 2h
+bupt compute instance create experiment --spec SPEC_ID
+bupt compute instance wait experiment
 bupt ssh experiment
-bupt down experiment
+bupt compute instance stop experiment
 .fi
 .PP
 Configure the preset from the actual platform catalogue before allocation.
@@ -53,7 +54,8 @@ The resources, work, files and access shortcuts also remain available.
 Use --cached with tui to browse controller records and saved catalogues.
 .PP
 bupt help TOPIC shows related commands. COMMAND --help shows common flags.
-bupt help COMMAND --all displays full options, and bupt help --all lists the command tree.
+bupt help COMMAND --all displays full options, and bupt help --all lists the
+command tree.
 .SH COMMANDS
 .TP
 .B init, agent
@@ -61,32 +63,39 @@ Initialize, install, inspect, or run a local or optional remote controller.
 .TP
 .B api
 Show the model service overview. Use api model for model IDs, capabilities,
-context, prices and observed health. Use api usage for period totals and balance.
+context, prices and observed health. Use api usage for period totals and
+balance.
 Use api key to list, create, enable, disable, export or delete a scoped key.
 Only an explicit export releases the secret held by the selected controller.
 Use api guide for the current gateway address and SDK examples.
 In the trial screen choose a question, text embeddings, or document ranking.
 A trial opened from a model detail uses that model. Enter inserts a newline.
-Down on the last line selects the editing action. Press Enter to return to the draft.
-Ctrl-S saves the field and Ctrl-D sends one request with an eligible key.
+Down on the last line selects the editing action. Press Enter to return to the
+draft.
+Esc or Ctrl-S saves the field. Choose Send to make one billable request.
 api model example MODEL_ID previews the request.
-api model try MODEL_ID --key KEY_ID sends the supplied input using a scoped key.
+api model invoke MODEL_ID --key KEY_ID sends the supplied input using a scoped
+key.
 .TP
 .B compute
 Show the compute workspace. Browse catalog, instance, quota, project, storage,
-school scheduler jobs, managed runs, or operation receipts. Use compute features
+school scheduler jobs, managed runs, or operation receipts. Use compute
+features
 to inspect published module settings. Administrative views verify school roles.
 .TP
 .B account, news, agreement
-Inspect the signed-in portal account, read campus notices or review the service agreement.
+Inspect the signed-in portal account, read campus notices or review the service
+agreement.
 .TP
 .B login, logout, auth
 Manage WebVPN QR approval, university SSO, and the platform callback.
 University SSO uses QR by default. Use bupt login --sso-password for campus
-username and password. The legacy --local option selects a compute-platform password.
+username and password. The legacy --local option selects a compute-platform
+password.
 The access subcommand stores the separate instance-console bootstrap password.
-Use bupt logout (also available as bupt auth logout) to end the selected session
-and clear saved platform and instance-console passwords. Active managed runs block
+Use bupt logout to end the selected session
+and clear saved platform and instance-console passwords. Active managed runs
+block
 logout by default. Use bupt logout --dry-run to preview the operation.
 .TP
 .B profile, config
@@ -96,25 +105,26 @@ Select account profiles and inspect or change layered non-secret settings.
 Show live authentication and resource status; --cached reads only saved state.
 Status never starts a login or takes over another school session.
 .TP
-.B preset
+.B compute preset
 Save verified resource choices, select defaults, or remove local presets.
 The set, ls, show, use, and rm subcommands support reusable finite limits.
 .TP
-.B wait
+.B compute lease wait
 Resume waiting for a durable run ID; --for finished waits for cleanup.
 Interrupting a wait does not cancel the controller-owned run.
 .TP
-.B resources, spec, quota, estimate
+.B compute catalog, compute quota
 Inspect personal resource limits and visible templates grouped by pool.
-Use resources --cached for the saved catalogue, or spec show to inspect one template.
+Use compute catalog --cached for the saved catalogue.
+Use compute catalog show to inspect one template.
 .TP
-.B instance, up, down
+.B compute instance
 Create, adopt, start, stop, release, restore, and explicitly delete instances.
 .TP
-.B lease
+.B compute lease
 Inspect or change the current finite runtime and renewal policy.
 .TP
-.B run, job
+.B compute job, compute scheduler
 Launch bounded detached jobs; inspect, follow logs, wait, cancel,
 or update policy.
 .TP
@@ -125,21 +135,25 @@ and file transfers.
 .B console
 Use the platform terminal. This path still requires platform authentication.
 .TP
-.B data
+.B compute storage
 List, upload, or download persistent platform storage.
 .TP
-.B resize, snapshot, clone, service
+.B compute instance resize, compute instance clone, compute snapshot, compute service
 Use capabilities actually supported by the selected platform template.
 .TP
-.B key, client, ssh-config
+.B client key, client, ssh-config
 Manage dedicated instance keys, scoped controller clients,
 and optional OpenSSH configuration.
 ssh-config install INSTANCE --alias bupt-gpu installs a short SSH alias
 with a verified host key and a recoverable configuration backup.
 .TP
-.B task, audit, doctor
+.B compute task, compute audit, doctor
 Inspect operation receipts, sanitized controller events,
 and independent health checks.
+.TP
+.B feedback, doctor --report
+Show the maintainer contact or prepare an allowlisted diagnostic report.
+Use feedback --template to write a plain-text mail draft to stdout.
 .TP
 .B completion
 Generate Bash, Zsh, or Fish completion scripts.
@@ -157,9 +171,10 @@ Select or ignore a project configuration.
 .BR --controller " local|ssh://HOST", " --socket " PATH
 Override the controller connection for this invocation.
 .TP
-.BR --json ", " --jsonl ", " --quiet
-Write one JSON value, one record per line, or identifiers only.
+.BR --json ", " --jsonl ", " --output
+Select table, json, jsonl, or id. ID prints one stable identifier per line.
 These options are mutually exclusive and are rejected for raw SSH/proxy output.
+Use api usage --field balance to print the published balance.
 .TP
 .B --non-interactive
 Do not prompt. Authentication requiring human approval returns a real error.
@@ -174,6 +189,15 @@ Limit RPC waiting. Interactive SSH sessions have no default session timeout.
 .BR --idempotency-key " KEY"
 Reuse a stable request identifier for retries of the same intended operation.
 Changing the payload with the same key is an error.
+.SH CREATE AND BILLING
+Create submits allocation and startup. Interactive use shows the school
+estimate
+and asks for confirmation. Scripts authorize a daily rate with
+--max-points-per-day RATE and supply a finite run limit.
+--allocate-only requests allocation without starting. Reservation and retained
+storage can incur charges. --wait waits for completion. By default the command
+returns a durable operation ID. Use compute instance wait to verify SSH
+readiness.
 .SH RUNTIME POLICY
 Managed allocation and jobs require an explicit finite
 .B --max-runtime
@@ -188,7 +212,8 @@ allocation into the platform recycle bin. Delete is separate and permanent.
 School authentication is still required for platform renewal and cleanup.
 A sleeping local controller cannot submit these requests until it resumes.
 .SH INPUT AND OUTPUT
-Results and remote program bytes use stdout. Prompts and diagnostics use stderr.
+Results and remote program bytes use stdout. Prompts and diagnostics use
+stderr.
 Interactive terminals wait for school approval. With --sso-password, WebVPN
 still uses QR. The CLI prompts for the campus username and a hidden password
 only when CAS needs them. Use --username to prefill the campus ID. The
@@ -198,39 +223,46 @@ QR filenames receive private per-stage suffixes
 and never replace existing files.
 For scripted campus login, combine --sso-password with --username and
 --password-stdin, or with --credentials-stdin JSON containing username,
-password and optional captcha_code. Use auth poll --wait to resume a staged login. Password and token argument flags are not provided.
+password and optional captcha_code. Use auth poll --wait to resume a staged
+login. Password and token argument flags are not provided.
 Use -- before the remote argv of exec or run;
 shell syntax is not expanded locally.
+For uploads from stdin, use &- as the source with --size BYTES.
 .SH EXIT STATUS
 0 indicates success. 1 indicates an operational failure. 2 indicates invalid
-CLI usage. 130 indicates interruption. Native exec and completed jobs preserve
+CLI usage. 130 indicates interruption. Diagnostics on stderr begin with
+BUPT[CODE] in text mode. Native exec and completed jobs preserve
 the remote command's exit status, so those statuses can overlap local codes.
 .SH FILES
 .TP
 .I ~/.bupt/config.toml
-Trusted profiles and non-secret defaults. An explicit XDG_CONFIG_HOME overrides this directory.
+Trusted profiles and non-secret defaults. An explicit XDG_CONFIG_HOME overrides
+this directory.
 .TP
 .I .bupt.toml
 Project selection, presets, and runtime policy. Trusted endpoint and identity
 settings are not accepted from this file.
 .TP
 .I ~/.bupt/state/
-Controller database, Unix socket and private per-profile status.json snapshots. An explicit XDG_STATE_HOME overrides this directory.
+Controller database, Unix socket and private per-profile status.json snapshots.
+An explicit XDG_STATE_HOME overrides this directory.
 .TP
 .I ~/.bupt/data/
-Encrypted credentials, protected master key and dedicated keys. An explicit XDG_DATA_HOME overrides this directory.
+Encrypted credentials, protected master key and dedicated keys. An explicit
+XDG_DATA_HOME overrides this directory.
 .TP
 .I ~/.bupt/tui.toml
 Device-local header preferences and automatic account checks.
 .SH EXAMPLES
 .nf
-bupt run --preset gpu-small --max-runtime 4h -- python3 train.py
-bupt job run --instance experiment --max-runtime 1h --detach -- make test
+bupt compute job run --preset gpu-small --max-runtime 4h --dry-run -- python3 train.py
+bupt compute job run --preset gpu-small --max-runtime 4h --max-points-per-day RATE -- python3 train.py
+bupt compute job run --instance experiment --max-runtime 1h --detach -- make test
 bupt ssh experiment --session work --reconnect
 bupt exec experiment -- printf '%s\\n' 'an exact argument'
-bupt lease set experiment --max-runtime 6h
-bupt lease set experiment --no-renew
-bupt data pull output/model.bin - > model.bin
+bupt compute lease set experiment --max-runtime 6h
+bupt compute lease set experiment --no-renew
+bupt compute storage pull output/model.bin - > model.bin
 bupt cp --recursive ./src experiment:work/src
 .fi
 .SH SEE ALSO

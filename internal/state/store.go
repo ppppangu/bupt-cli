@@ -287,6 +287,11 @@ func conflictTask(id string) error {
 	return &domain.Error{Code: "IDEMPOTENCY_CONFLICT", Message: "request ID already belongs to a different operation or payload", TaskID: id}
 }
 func (s *Store) CreateTask(v domain.TaskRecord) (domain.TaskRecord, bool, error) {
+	return s.CreateTaskWithIntent(v, nil)
+}
+
+// The authorized request and its rebuild parameters must survive the same crash.
+func (s *Store) CreateTaskWithIntent(v domain.TaskRecord, intent any) (domain.TaskRecord, bool, error) {
 	v, e := normalizedTask(v)
 	if e != nil {
 		return v, false, e
@@ -304,6 +309,11 @@ func (s *Store) CreateTask(v domain.TaskRecord) (domain.TaskRecord, bool, error)
 			}
 			v = x
 			return nil
+		}
+		if intent != nil {
+			if err := put(tx, "task_intents", v.ID, intent); err != nil {
+				return err
+			}
 		}
 		created = true
 		return put(tx, tasksBucket, v.ID, v)
@@ -325,6 +335,7 @@ func (s *Store) PutTask(v domain.TaskRecord) error {
 				return conflictTask(v.ID)
 			}
 			v.CreatedAt = x.CreatedAt
+			v.Verified = v.Verified || x.Verified
 		}
 		v.UpdatedAt = time.Now().UTC()
 		return put(tx, tasksBucket, v.ID, v)
@@ -611,6 +622,14 @@ func (s *Store) AppendAudit(v domain.AuditEvent) error {
 	})
 }
 func (s *Store) ListAudits(after time.Time, limit int) ([]domain.AuditEvent, error) {
+	return s.listAudits("", "", after, limit)
+}
+
+func (s *Store) ListInstanceAudits(profile, target string, limit int) ([]domain.AuditEvent, error) {
+	return s.listAudits(profile, target, time.Time{}, limit)
+}
+
+func (s *Store) listAudits(profile, target string, after time.Time, limit int) ([]domain.AuditEvent, error) {
 	if limit <= 0 {
 		limit = 100
 	}
@@ -625,7 +644,7 @@ func (s *Store) ListAudits(after time.Time, limit int) ([]domain.AuditEvent, err
 			if e := decodeJSON(v, &x); e != nil {
 				return e
 			}
-			if !after.IsZero() && !x.Time.After(after) {
+			if profile != "" && x.Profile != profile || target != "" && x.Target != target || !after.IsZero() && !x.Time.After(after) {
 				continue
 			}
 			out = append(out, x)

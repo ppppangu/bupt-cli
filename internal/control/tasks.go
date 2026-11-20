@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"bupt.local/cli/internal/domain"
+	"bupt.local/cli/internal/state"
 	"github.com/google/uuid"
 )
 
@@ -17,6 +18,11 @@ func (c *Controller) buildTask(ctx context.Context, profile, op string, p Params
 	if e != nil {
 		return domain.TaskRequest{}, e
 	}
+	return c.buildTaskFromSnapshot(ctx, profile, op, p, s)
+}
+
+func (c *Controller) buildTaskFromSnapshot(ctx context.Context, profile, op string, p Params, s domain.Snapshot) (domain.TaskRequest, error) {
+	var e error
 	if op == "quota-request" {
 		return quotaRequest(s, p)
 	}
@@ -206,6 +212,16 @@ func (c *Controller) buildTask(ctx context.Context, profile, op string, p Params
 		if source != nil {
 			t.Payload["cloneAppEid"] = source.ID.Number()
 		}
+		if expected := p.String("expected_create_hash"); expected != "" {
+			if createRequestHash(t) != expected {
+				return t, domain.E("COST_SELECTION_CHANGED", "学校规格或账单归属已变化，请重新核对费用")
+			}
+			if p.Has("max_points_per_day") {
+				if err := c.priceCreate(ctx, profile, p, t, nil); err != nil {
+					return t, err
+				}
+			}
+		}
 		return t, nil
 	}
 	i, e := Resolve(s, p.String("target"))
@@ -239,21 +255,32 @@ func (c *Controller) buildTask(ctx context.Context, profile, op string, p Params
 		t.Type = "ForceStopAppTask"
 		t.Payload = map[string]any{"appEid": i.ID.Number()}
 	case "release":
-		if i.State == "running" || i.State == "starting" {
-			return t, domain.E("INSTANCE_RUNNING", "stop the instance before release; use down for both")
+		if i.State != "stopped" && i.State != "approved" {
+			return t, domain.E("INSTANCE_RUNNING", "请先运行 compute instance stop")
 		}
 		t.Type = "AppUnreserveTask"
 		t.Payload = base
 	case "restore":
+		if p.String("restore_quote_hash") != "" {
+			if _, err := c.priceRestore(ctx, profile, p, i, nil); err != nil {
+				return t, err
+			}
+		}
 		t.Type = "AppReserveTask"
 		t.Payload = map[string]any{"appEid": i.ID.Number(), "gid": i.GroupID.Number(), "appUid": i.UserID.Number(), "domain": i.Domain}
 	case "delete":
-		if i.State == "running" || i.Reserved {
+		if p.Bool("confirm_delete") && !p.Bool("dry_run") && p.String("confirm") != string(i.ID) {
+			return t, domain.E("CONFIRM_REQUIRED", "请用 --confirm INSTANCE_ID 确认目标")
+		}
+		if (i.State != "stopped" && i.State != "approved" && i.State != "released") || i.Reserved {
 			return t, domain.E("RELEASE_REQUIRED", "stop and release before permanent deletion")
 		}
 		t.Type = "RemoveAppTask"
 		t.Payload = map[string]any{"appEid": i.ID.Number(), "gid": i.GroupID.Number(), "appUid": i.UserID.Number(), "domain": i.Domain}
 	case "cancel-queue":
+		if !strings.Contains(i.State, "queuing") {
+			return t, domain.E("INVALID_STATE", "仅可取消排队中的实例")
+		}
 		if i.State == "reserve_queuing" {
 			t.Type = "CancelAppReserveQueuingTask"
 		} else {
@@ -330,11 +357,12 @@ func (c *Controller) buildTask(ctx context.Context, profile, op string, p Params
 			if i.State != "stopped" && i.State != "approved" {
 				return t, domain.E("STOP_REQUIRED", "stop before disk expansion")
 			}
-			if p.Int("size_gb") <= 0 {
+			var request domain.GrowDiskRequest
+			if err := json.Unmarshal(domain.Result(p), &request); err != nil || request.TargetCapacityGB <= 0 {
 				return t, domain.E("INVALID_SIZE", "supply total target disk capacity in GB")
 			}
 			t.Type = "EnlargeQemuNodeDiskTask"
-			t.Payload = map[string]any{"nodeEid": n.ID.Number(), "gid": n.GroupID.Number(), "domain": i.Domain, "eaasIndex": n.Index.Number(), "newSizeInGb": p.Int("size_gb")}
+			t.Payload = map[string]any{"nodeEid": n.ID.Number(), "gid": n.GroupID.Number(), "domain": i.Domain, "eaasIndex": n.Index.Number(), "newSizeInGb": request.TargetCapacityGB}
 		case "snapshot-create", "snapshot-restore", "snapshot-delete":
 			if n.Type != "qemu" {
 				return t, domain.E("UNSUPPORTED", "this template does not expose QEMU snapshots")
@@ -437,192 +465,259 @@ func (c *Controller) Operation(ctx context.Context, profile, op string, p Params
 func (c *Controller) prepareTask(ctx context.Context, profile, op string, p Params) (domain.TaskRecord, error) {
 	c.intentMu.Lock()
 	defer c.intentMu.Unlock()
+	return c.prepareTaskLocked(ctx, profile, op, p, "")
+}
+
+type taskAlias struct {
+	TaskID string
+	Hash   string
+}
+
+func (c *Controller) taskReceipt(id, hash string) (domain.TaskRecord, error) {
+	var alias taskAlias
+	if err := c.Store.Get("task_keys", id, &alias); err == nil {
+		if alias.Hash != hash {
+			return domain.TaskRecord{}, domain.E("IDEMPOTENCY_CONFLICT", "request key was used with different arguments")
+		}
+		return c.Store.GetTask(alias.TaskID)
+	} else if !state.IsNotFound(err) {
+		return domain.TaskRecord{}, err
+	}
+	task, err := c.Store.GetTask(id)
+	if err == nil && task.IntentHash != hash {
+		err = domain.E("IDEMPOTENCY_CONFLICT", "request key was used with different arguments")
+	}
+	return task, err
+}
+
+func (c *Controller) prepareTaskLocked(ctx context.Context, profile, op string, p Params, runID string) (domain.TaskRecord, error) {
 	id := TaskID(profile, op, p.String("idempotency_key"))
 	hash := intentHash(profile, op, p)
-	if existing, e := c.Store.GetTask(id); e == nil {
-		if existing.IntentHash != hash {
-			return existing, domain.E("IDEMPOTENCY_CONFLICT", "request key was used with different arguments")
-		}
-		return existing, nil
+	if existing, err := c.taskReceipt(id, hash); !state.IsNotFound(err) {
+		return existing, err
 	}
-	req, e := c.buildTask(ctx, profile, op, p)
-	if e != nil {
-		return domain.TaskRecord{}, e
+	req, err := c.buildTask(ctx, profile, op, p)
+	if err != nil {
+		return domain.TaskRecord{}, err
+	}
+	if runID == "" && req.TargetID != "" && lifecycleTask(op) {
+		if task, err := c.pendingInstanceTask(ctx, profile, domain.Instance{ID: req.TargetID, State: "unknown"}); err != nil {
+			return task, err
+		} else if task.ID != "" {
+			return task, lifecycleBusy(task)
+		}
+		if run, err := c.GetRun(profile, string(req.TargetID)); err == nil && !managedRunTerminal(run.State) && run.Phase != "active" {
+			return domain.TaskRecord{}, runBusy(run)
+		}
 	}
 	req.ID = id
-	now := time.Now().UTC()
-	rec := domain.TaskRecord{ID: id, Profile: profile, Operation: op, Request: req, IntentHash: hash, State: "prepared", CreatedAt: now, UpdatedAt: now}
-	rec, _, e = c.Store.CreateTask(rec)
-	if e != nil {
-		return rec, e
-	}
-	if e = c.Store.Put("task_intents", id, p); e != nil {
-		return rec, e
-	}
-	c.Audit("task.prepared", profile, string(req.TargetID), id, "", op)
-	return rec, nil
+	return c.savePreparedTask(domain.TaskRecord{
+		ID: id, Profile: profile, Operation: op, Request: req, IntentHash: hash, RunID: runID,
+	}, p)
 }
+
+func (c *Controller) savePreparedTask(t domain.TaskRecord, p Params) (domain.TaskRecord, error) {
+	t, created, err := c.Store.CreateTaskWithIntent(t, p)
+	if err == nil && created {
+		c.Audit("task."+t.State, t.Profile, string(t.Request.TargetID), t.ID, t.RunID, t.Operation)
+	}
+	return t, err
+}
+
 func (c *Controller) resumeTask(t domain.TaskRecord) {
-	c.spawn("task/"+t.ID, func() {
-		api, e := c.api(t.Profile)
-		if e != nil {
-			return
-		}
-		request := t.Request
-		var recovered *domain.TaskResult
-		if len(t.AttemptIDs) > 0 {
-			if child, ce := c.Store.GetTask(t.AttemptIDs[len(t.AttemptIDs)-1]); ce == nil {
-				request = child.Request
-			}
-		}
-		if blocked, be := c.allocationBlocked(t); be != nil || blocked {
-			if t.State == "prepared" {
-				t.State = "aborted"
-				t.Result = &domain.TaskResult{ID: t.ID, State: "aborted", Message: "managed activation cancelled before submission"}
-			} else {
-				s, se := c.snapshot(c.ctx, t.Profile)
-				if se == nil {
-					for _, known := range s.Tasks {
-						if known.ID == request.ID && terminalTask(known.State) {
-							t.Result = &known
-							t.State = known.State
-						}
-					}
-				}
-				if !terminalTask(t.State) {
-					t.State = "uncertain"
-				}
-			}
-			t.UpdatedAt = time.Now().UTC()
-			_ = c.Store.PutTask(t)
-			return
-		}
-		if t.State == "uncertain" || t.State == "submitted" || t.State == "auth_required" {
-			s, se := c.snapshot(c.ctx, t.Profile)
-			if se != nil {
-				t.State = "auth_required"
-				t.UpdatedAt = time.Now().UTC()
-				_ = c.Store.PutTask(t)
-				return
-			}
-			for _, known := range s.Tasks {
-				if known.ID == request.ID && terminalTask(known.State) {
-					if known.Code == 1165 {
-						recovered = &known
-						break
-					}
-					t.Result = &known
-					t.State = known.State
-					t.UpdatedAt = time.Now().UTC()
-					_ = c.Store.PutTask(t)
-					return
-				}
-			}
-			if time.Since(t.CreatedAt) > time.Hour && recovered == nil {
-				t.State = "uncertain"
-				_ = c.Store.PutTask(t)
-				return
-			}
-		}
-		t.State = "submitted"
-		t.UpdatedAt = time.Now().UTC()
-		_ = c.Store.PutTask(t)
-		ctx, cancel := context.WithTimeout(c.ctx, 30*time.Minute)
-		defer cancel()
-		guardDone := make(chan struct{})
-		guardStopped := make(chan struct{})
-		guardTask := t
-		defer func() { close(guardDone); <-guardStopped }()
-		go func() {
-			defer close(guardStopped)
-			tick := time.NewTicker(250 * time.Millisecond)
-			defer tick.Stop()
-			for {
-				select {
-				case <-guardDone:
-					return
-				case <-ctx.Done():
-					return
-				case <-tick.C:
-					blocked, e := c.allocationBlocked(guardTask)
-					if e != nil || blocked {
-						cancel()
-						return
-					}
-				}
-			}
-		}()
-		var result domain.TaskResult
-		var err error
-		if recovered != nil {
-			result = *recovered
-			err = domain.E("TASK_1165", "recovered stale view rejection")
-		} else {
-			result, err = api.Submit(ctx, request)
-		}
-		if result.Code == 1165 {
-			var params Params
-			if c.Store.Get("task_intents", t.ID, &params) == nil {
-				blocked, be := c.allocationBlocked(t)
-				if req, re := c.buildTask(ctx, t.Profile, t.Operation, params); re == nil && !blocked && be == nil {
-					req.ID = uuid.NewString()
-					child := domain.TaskRecord{ID: req.ID, ParentID: t.ID, IntentHash: t.IntentHash, Profile: t.Profile, Operation: t.Operation, Request: req, State: "prepared", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
-					if saved, _, ce := c.Store.CreateTask(child); ce == nil {
-						t.AttemptIDs = append(t.AttemptIDs, req.ID)
-						t.UpdatedAt = time.Now().UTC()
-						_ = c.Store.PutTask(t)
-						result, err = api.Submit(ctx, req)
-						saved.Result = &result
-						saved.State = result.State
-						if saved.State == "" {
-							saved.State = "uncertain"
-						}
-						_ = c.Store.PutTask(saved)
-					}
-				}
-			}
-		}
-		t.UpdatedAt = time.Now().UTC()
+	c.spawn("task/"+t.ID, func() { c.reconcileTask(t.ID) })
+}
+
+func (c *Controller) reconcileTask(id string) {
+	t, err := c.Store.GetTask(id)
+	if err != nil || terminalTask(t.State) {
+		return
+	}
+	if t.Manual && c.bindManualTask(t) != nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.ctx, 90*time.Second)
+	defer cancel()
+
+	request := t.Request
+	if len(t.AttemptIDs) > 0 {
+		child, err := c.Store.GetTask(t.AttemptIDs[len(t.AttemptIDs)-1])
 		if err != nil {
-			if terminalTask(result.State) {
-				t.State = result.State
-				t.Result = &result
-			} else {
-				t.State = "uncertain"
-				if strings.Contains(err.Error(), "AUTH") || strings.Contains(err.Error(), "CAPTCHA") {
-					t.State = "auth_required"
-				}
-			}
-			_ = c.Store.PutTask(t)
-			c.Audit("task.pending", t.Profile, string(t.Request.TargetID), t.ID, "", "task requires reconciliation")
 			return
 		}
-		t.State = result.State
-		t.Result = &result
-		_ = c.Store.PutTask(t)
-		c.Audit("task."+result.State, t.Profile, string(t.Request.TargetID), t.ID, "", fmt.Sprintf("code=%d", result.Code))
+		request = child.Request
+	}
+
+	maySubmit := t.State == "prepared" || t.SubmissionUnsent
+	var stale bool
+	if !maySubmit {
+		snapshot, err := c.syncSnapshot(ctx, t.Profile, true)
+		if err != nil {
+			return
+		}
+		for _, known := range snapshot.Tasks {
+			if known.ID != request.ID || !terminalTask(known.State) {
+				continue
+			}
+			if known.Code == 1165 && len(t.AttemptIDs) == 0 {
+				stale = true
+				break
+			}
+			c.saveTaskResult(t, known, nil)
+			return
+		}
+		if !stale {
+			t.State = "uncertain"
+			_ = c.Store.PutTask(t)
+			return // Missing receipt alone is never permission to resend.
+		}
+	}
+	blocked, err := c.allocationBlocked(t)
+	if err != nil {
+		return
+	}
+	if blocked {
+		c.saveTaskResult(t, domain.TaskResult{ID: t.ID, State: "aborted", Message: "managed activation cancelled before submission"}, nil)
+		return
+	}
+	api, err := c.api(t.Profile)
+	if err != nil {
+		return
+	}
+	if !stale {
+		t.State, t.SubmissionUnsent = "submitted", false
+		if c.Store.PutTask(t) != nil {
+			return
+		}
+		result, err := c.submitTaskForRun(ctx, api, t, request)
+		if result.Code != 1165 || len(t.AttemptIDs) > 0 {
+			c.saveTaskResult(t, result, err)
+			return
+		}
+	}
+	// 1165 definitively rejects the old view. Only now may a fresh UUID be
+	// allocated, and only once, after repeating ownership and price checks.
+	var params Params
+	if err := c.Store.Get("task_intents", t.ID, &params); err != nil {
+		return
+	}
+	fresh, err := c.buildTask(ctx, t.Profile, t.Operation, params)
+	if err != nil {
+		if managedRetryable(err) {
+			return
+		}
+		c.saveTaskResult(t, domain.TaskResult{ID: t.ID, State: "rejected", Code: 1165, Message: err.Error()}, nil)
+		return
+	}
+	fresh.ID = uuid.NewString()
+	child := domain.TaskRecord{ID: fresh.ID, ParentID: t.ID, IntentHash: t.IntentHash, Profile: t.Profile, Operation: t.Operation, RunID: t.RunID, Request: fresh, State: "prepared"}
+	if _, _, err := c.Store.CreateTask(child); err != nil {
+		return
+	}
+	t.AttemptIDs = append(t.AttemptIDs, fresh.ID)
+	t.State, t.SubmissionUnsent = "submitted", false
+	if err := c.Store.PutTask(t); err != nil {
+		return
+	}
+	result, err := c.submitTaskForRun(ctx, api, t, fresh)
+	c.saveTaskResult(child, result, err)
+	c.saveTaskResult(t, result, err)
+}
+
+func (c *Controller) submitTaskForRun(ctx context.Context, api domain.PlatformAPI, t domain.TaskRecord, req domain.TaskRequest) (domain.TaskResult, error) {
+	if t.RunID == "" || !allocatingTask(t.Operation) {
+		return api.Submit(ctx, req)
+	}
+	if blocked, err := c.allocationBlocked(t); err != nil {
+		return domain.TaskResult{ID: req.ID, Unsent: true}, err
+	} else if blocked {
+		return domain.TaskResult{ID: req.ID, State: "aborted", Message: "managed activation expired before submission"}, nil
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		tick := time.NewTicker(200 * time.Millisecond)
+		defer tick.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-tick.C:
+				if blocked, err := c.allocationBlocked(t); blocked || err != nil {
+					cancel()
+					return
+				}
+			}
+		}
+	}()
+	result, err := api.Submit(ctx, req)
+	cancel()
+	<-done
+	return result, err
+}
+
+func allocatingTask(op string) bool {
+	switch op {
+	case "create", "clone", "start", "restore", "renew":
+		return true
+	}
+	return false
+}
+
+func (c *Controller) saveTaskResult(t domain.TaskRecord, result domain.TaskResult, err error) {
+	t.SubmissionUnsent = result.Unsent
+	switch {
+	case terminalTask(result.State):
+		t.State, t.Result = result.State, &result
+	case result.Unsent && (strings.Contains(managedCode(err), "AUTH") || strings.Contains(managedCode(err), "CAPTCHA")):
+		t.State = "auth_required"
+	case result.Unsent:
+		t.State = "prepared"
+	default:
+		t.State = "uncertain"
+	}
+	if c.Store.PutTask(t) == nil {
+		c.Audit("task."+t.State, t.Profile, string(t.Request.TargetID), t.ID, t.RunID, fmt.Sprintf("code=%d", result.Code))
+		if t.ParentID == "" && t.RunID != "" && terminalTask(t.State) {
+			c.wakeRunForReceipt(t)
+		}
+	}
+}
+
+func (c *Controller) wakeRunForReceipt(t domain.TaskRecord) {
+	c.spawn("receipt/"+t.ID, func() {
+		for range 10 {
+			if c.kickRun(t.RunID) {
+				return
+			}
+			select {
+			case <-c.ctx.Done():
+				return
+			case <-time.After(100 * time.Millisecond):
+			}
+		}
 	})
 }
 
 // Prepared allocating tasks must not outlive the finite run that authorized
 // them. Unknown outcomes are reconciled by UUID without another submission.
 func (c *Controller) allocationBlocked(t domain.TaskRecord) (bool, error) {
-	switch t.Operation {
-	case "create", "clone", "start", "restore", "renew":
-	default:
+	if !allocatingTask(t.Operation) {
 		return false, nil
 	}
-	var p Params
-	if e := c.Store.Get("task_intents", t.ID, &p); e != nil {
-		return false, e
-	}
-	key := p.String("idempotency_key")
-	runID, _, ok := strings.Cut(key, "/")
-	if !ok {
-		return false, nil
-	}
-	if _, e := uuid.Parse(runID); e != nil {
-		return false, nil
+	runID := t.RunID
+	if runID == "" {
+		var p Params
+		if e := c.Store.Get("task_intents", t.ID, &p); e != nil {
+			return false, e
+		}
+		var ok bool
+		runID, _, ok = strings.Cut(p.String("idempotency_key"), "/")
+		if _, e := uuid.Parse(runID); !ok || e != nil {
+			return false, nil
+		}
 	}
 	r, e := c.Store.GetRun(runID)
 	if e != nil {

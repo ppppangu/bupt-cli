@@ -203,9 +203,9 @@ func TestLoginAtBlockedReadReturnsToSamePage(t *testing.T) {
 		t.Fatalf("unexpected request %s", method)
 		return nil, nil
 	}})
-	w.Foreground = func(_ context.Context, args []string) error {
-		if !slices.Equal(args, []string{"login"}) {
-			return fmt.Errorf("unexpected args %v", args)
+	w.Foreground = func(_ context.Context, action TerminalAction) error {
+		if action.Name != "login" || len(action.Args) != 0 {
+			return fmt.Errorf("unexpected action %v", action)
 		}
 		if prompts.Add(1) == 1 {
 			return errors.New("用户取消")

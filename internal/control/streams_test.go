@@ -89,10 +89,13 @@ func streamTestController(t *testing.T, profile domain.Profile, factory func(dom
 func streamTestParams(value any) Params { p, _ := Decode(domain.Result(value)); return p }
 
 type streamTestSSH struct {
-	listener        net.Listener
-	home, key, host string
-	mu              sync.Mutex
-	conns           map[net.Conn]bool
+	listener         net.Listener
+	home, key, host  string
+	mu               sync.Mutex
+	conns            map[net.Conn]bool
+	interactiveShell bool
+	demoHostname     string
+	shellInput       []string
 }
 
 func newStreamTestSSH(t *testing.T) *streamTestSSH {
@@ -248,6 +251,55 @@ func (f *streamTestSSH) session(ch ssh.Channel, requests <-chan *ssh.Request) {
 				server.Serve()
 				server.Close()
 				return
+			case "shell":
+				request.Reply(true, nil)
+				go func() {
+					f.mu.Lock()
+					interactive := f.interactiveShell
+					f.mu.Unlock()
+					if !interactive {
+						ch.Write([]byte("offline shell\n"))
+						finish(0)
+						return
+					}
+					prompt := "fixture-shell> "
+					if f.demoHostname != "" {
+						prompt = "student@" + f.demoHostname + ":~$ "
+					}
+					fmt.Fprint(ch, prompt)
+					scan := bufio.NewScanner(ch)
+					if f.demoHostname != "" {
+						// A demo SSH PTY accepts Return as well as Line Feed.
+						scan.Split(func(data []byte, eof bool) (int, []byte, error) {
+							if i := bytes.IndexAny(data, "\r\n"); i >= 0 {
+								return i + 1, data[:i], nil
+							}
+							return bufio.ScanLines(data, eof)
+						})
+					}
+					for scan.Scan() {
+						line := scan.Text()
+						if f.demoHostname != "" {
+							if line == "" {
+								continue
+							}
+							fmt.Fprint(ch, line+"\r\n")
+						}
+						f.mu.Lock()
+						f.shellInput = append(f.shellInput, line)
+						f.mu.Unlock()
+						if line == "exit" {
+							break
+						}
+						if f.demoHostname != "" && line == "hostname" {
+							fmt.Fprint(ch, f.demoHostname+"\r\n")
+							fmt.Fprint(ch, prompt)
+						} else {
+							fmt.Fprintln(ch, "fixture-echo: "+line)
+						}
+					}
+					finish(0)
+				}()
 			case "exec":
 				var p struct{ Command string }
 				ssh.Unmarshal(request.Payload, &p)
