@@ -59,6 +59,14 @@ def run_installer(bundle, dest, env, *, ok=True):
     check((result.returncode == 0) == ok, result.stderr or "Unexpected installer result")
 
 
+def run_online_installer(work, dest, env, *, ok=True):
+    result = subprocess.run(
+        ["sh", "-s", "--", "--bin-dir", str(dest)], input=(ROOT / "dist/install.sh").read_bytes(),
+        cwd=work, env=env, capture_output=True,
+    )
+    check((result.returncode == 0) == ok, result.stderr.decode() or "Unexpected online installer result")
+
+
 def main():
     version = os.environ.get("VERSION") or (ROOT / "VERSION").read_text().strip()
     with tempfile.TemporaryDirectory(prefix="bupt release check ") as tmp:
@@ -77,6 +85,20 @@ def main():
         uname = shims / "uname"
         uname.write_text('#!/bin/sh\ncase "$1" in -s) echo "$TEST_SYSTEM";; -m) echo "$TEST_MACHINE";; *) exit 2;; esac\n')
         uname.chmod(0o755)
+        curl = shims / "curl"
+        curl.write_text("""#!/bin/sh
+set -eu
+while [ "$1" != "-o" ]; do shift; done
+[ "$3" = "$TEST_RELEASE_URL/$TEST_PROGRAM" ]
+cp "$TEST_BIN_DIR/$TEST_PROGRAM" "$2"
+case ${TEST_DOWNLOAD_FAULT-} in
+    interrupted) exit 18 ;;
+    corrupt) printf 'damaged' >> "$2" ;;
+esac
+""")
+        curl.chmod(0o755)
+        env.update(TEST_RELEASE_URL=f"https://github.com/ppppangu/bupt-cli/releases/download/v{version}",
+                   TEST_BIN_DIR=str(bundle / "bin"), TEST_DOWNLOAD_FAULT="")
         env["PATH"] = str(shims) + os.pathsep + env["PATH"]
         go = os.environ.get("GO", "go")
         for (system, machine), target in PLATFORMS.items():
@@ -88,18 +110,26 @@ def main():
             check(settings["CGO_ENABLED"] == "0", "Expected a standalone build")
             run_installer(bundle, dest, env)
             check(binary.read_bytes() == packaged.read_bytes(), f"Wrong installer selection for {target}")
+            env["TEST_PROGRAM"] = f"bupt-{target}"
+            run_online_installer(work, dest, env)
+            check(binary.read_bytes() == packaged.read_bytes(), f"Wrong downloaded binary for {target}")
 
         original = sha(binary.read_bytes())
         env.update(TEST_SYSTEM="Linux", TEST_MACHINE="riscv64")
         run_installer(bundle, dest, env, ok=False)
+        run_online_installer(work, dest, env, ok=False)
         check(sha(binary.read_bytes()) == original, "Unsupported target replaced the previous binary")
         env.update(TEST_SYSTEM="Darwin", TEST_MACHINE="arm64")
+        for fault in ("interrupted", "corrupt"):
+            env.update(TEST_PROGRAM="bupt-darwin-arm64", TEST_DOWNLOAD_FAULT=fault)
+            run_online_installer(work, dest, env, ok=False)
+            check(sha(binary.read_bytes()) == original, f"{fault} download replaced the previous binary")
         with (bundle / "bin/bupt-darwin-arm64").open("ab") as f:
             f.write(b"corrupt fixture")
         run_installer(bundle, dest, env, ok=False)
         check(sha(binary.read_bytes()) == original, "Corrupt package replaced the previous binary")
         check(list(dest.iterdir()) == [binary], "Installer left a staging file")
-    print("Verified archive, checksums, native execution, four platform selections and failed upgrades.")
+    print("Verified archive, checksums, native execution, online/offline installs for four platforms and failed upgrades.")
 
 
 if __name__ == "__main__":

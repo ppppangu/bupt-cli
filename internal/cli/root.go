@@ -130,6 +130,13 @@ func NewRoot(options Options) *cobra.Command {
 		if cmd.Name() == cobra.ShellCompRequestCmd {
 			return nil
 		}
+		if agentLoginRequested(cmd) && a.format == "" && !a.jsonl {
+			a.json = true
+		}
+		// Treat incompatible options as usage errors, including in machine mode.
+		if err := cmd.ValidateFlagGroups(); err != nil {
+			return &UsageError{err}
+		}
 		selected := 0
 		for _, name := range []string{"output", "json", "jsonl", "field"} {
 			if cmd.Flags().Changed(name) {
@@ -187,7 +194,7 @@ func NewRoot(options Options) *cobra.Command {
 		markAdvanced(cmd)
 		root.AddCommand(cmd)
 	}
-	installDiscovery(root)
+	a.installDiscovery(root)
 	a.installObjectCompletion(root)
 	return root
 }
@@ -242,7 +249,7 @@ func ExecuteOptions(ctx context.Context, args []string, opts Options) int {
 		code = 130
 	}
 	format, _ := root.PersistentFlags().GetString("output")
-	if machine || lines || format == "json" || format == "jsonl" || machineRequested(args) {
+	if machine || lines || format == "json" || format == "jsonl" || machineRequested(command, args) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"error": de})
 	} else {
 		fmt.Fprintf(w, "BUPT[%s] %s\n", de.Code, de.Message)
@@ -283,20 +290,30 @@ func ExecuteOptions(ctx context.Context, args []string, opts Options) int {
 	return code
 }
 
-func machineRequested(args []string) bool {
+func machineRequested(cmd *cobra.Command, args []string) bool {
+	// Flag parsing can stop at an unknown option before reaching --agent.
+	agent := false
+	table := false
 	for i, arg := range args {
 		switch arg {
 		case "--":
-			return false
+			return agent && !table
+		case "--agent", "--agent=true":
+			agent = cmd != nil && cmd.Flags().Lookup("agent") != nil
+		case "--agent=false":
+			agent = false
+		case "--output=table":
+			table = true
 		case "--json", "--json=true", "--jsonl", "--jsonl=true", "--output=json", "--output=jsonl":
 			return true
 		case "--output":
+			table = i+1 < len(args) && args[i+1] == "table"
 			if i+1 < len(args) && (args[i+1] == "json" || args[i+1] == "jsonl") {
 				return true
 			}
 		}
 	}
-	return false
+	return agent && !table
 }
 
 func (a *app) loadConfig(cmd *cobra.Command) error {

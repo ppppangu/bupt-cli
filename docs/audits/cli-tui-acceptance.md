@@ -366,3 +366,9 @@ mandoc -Tlint docs/bupt.1
 最终只读复验中，`config validate --json` 返回 `valid=true`，`instance events` 从学校快照查到上述新旧恢复和启动回执，且 `history_complete=false`。CLI 实例详情返回 `stopped`、`reserved=false`、`ssh_state=stopped`。再次等待 SSH 的退出码为 1，stdout 空，stderr 返回 `INSTANCE_NOT_STARTED`。80×24 的真实 PTY 经生产 Socket 打开 `tui compute`，显示该实例已停止，退出码为 0。实网 SSH 命令由 CLI 完成，TUI 的 SSH 终端交接和返回原页面由隔离会话测试覆盖。
 
 最终回归中，`go test ./...`、`go test -race -count=1 ./...`、`go vet ./...` 均退出 0。对候选制品运行 `python3 scripts/check_cli_acceptance.py PATH_TO_BUPT` 得到 289/289。单独运行 `go test ./internal/control -run '^TestTUISingleSessionPTY$' -count=1 -v` 耗时 43.37 秒，通过同一会话的算力与 SSH、模型调用、程序接入与费用明细流程，以及退出后的草稿恢复。
+
+### 2026-11-27 · Agent 登录的会话内扫码
+
+在 macOS arm64 的独立伪终端中启动 Pi 1.5.2、Codex CLI 0.172.0 和 Claude Code 2.1.239。每个客户端都通过自己的 shell 命令入口运行编译后的 CLI，连接临时 Unix socket 上的模拟控制器。
+
+三个会话中，`login --agent` 的 WebVPN 步骤都显示了本地 PNG 路径。`auth poll --agent --output table` 的统一认证步骤都显示了完整字符码，Pi 可用 Ctrl+O 展开工具输出。将三个终端屏幕上的字符矩阵分别还原为图片，macOS Vision 均识别出预期的合成统一认证地址；第一步生成的 PNG 也解出了预期的 WebVPN 地址。三个会话随后均读到 `complete/authenticated`。本次验证范围为 CLI 命令、宿主显示与二维码解码，认证状态由模拟控制器推进。

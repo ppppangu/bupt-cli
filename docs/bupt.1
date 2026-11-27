@@ -218,6 +218,9 @@ Interactive terminals wait for school approval. With --sso-password, WebVPN
 still uses QR. The CLI prompts for the campus username and a hidden password
 only when CAS needs them. Use --username to prefill the campus ID. The
 controller saves the verified session and uses the campus password once.
+For an agent, use bupt login --agent, display qr_file, and run bupt auth poll
+--agent at poll_after_ms intervals until stage=complete and state=authenticated.
+Use --output table for a scannable text code, or --open to open the PNG locally.
 Without a terminal, use --device --wait and optionally --qr-file FILE.
 QR filenames receive private per-stage suffixes
 and never replace existing files.

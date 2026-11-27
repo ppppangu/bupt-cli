@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"slices"
@@ -25,7 +26,7 @@ func completeValues(cmd *cobra.Command, flag string, values ...string) {
 
 // The root prints the short command index. The full index is generated from
 // Cobra so that new flags and commands remain discoverable.
-func installDiscovery(root *cobra.Command) {
+func (a *app) installDiscovery(root *cobra.Command) {
 	completeValues(root, "output", "table", "json", "jsonl", "id")
 	completeValues(root, "field", "balance")
 	native := root.HelpFunc()
@@ -34,6 +35,7 @@ func installDiscovery(root *cobra.Command) {
 			defaultTo(group, sub)
 		}
 	}
+	validateGroupCommands(root)
 	root.SetHelpFunc(func(cmd *cobra.Command, args []string) {
 		if cmd != root {
 			briefCommand(cmd, cmd.Annotations["default_child"])
@@ -55,6 +57,9 @@ func installDiscovery(root *cobra.Command) {
 	all := help.Flags().BoolP("all", "a", false, "Show the complete command tree and global options")
 	help.RunE = func(cmd *cobra.Command, args []string) error {
 		w := cmd.OutOrStdout()
+		if a.json || a.jsonl {
+			return writeCommandHelp(w, root, args, *all)
+		}
 		if len(args) > 0 && args[0] == "tutorial" {
 			if len(args) > 2 {
 				return usage("bupt help tutorial [TOPIC]")
@@ -111,6 +116,68 @@ func installDiscovery(root *cobra.Command) {
 	}
 	root.SetHelpCommand(help)
 }
+
+// Cobra prints help for a non-runnable group before validating its arguments.
+// Make bare groups runnable so a misspelling cannot look like success.
+func validateGroupCommands(parent *cobra.Command) {
+	for _, cmd := range parent.Commands() {
+		if !cmd.HasSubCommands() {
+			continue
+		}
+		if !cmd.Runnable() {
+			cmd.Args = func(group *cobra.Command, args []string) error {
+				if len(args) != 0 {
+					return usage("unknown command %q for %q", args[0], group.CommandPath())
+				}
+				return nil
+			}
+			cmd.RunE = func(group *cobra.Command, _ []string) error { return group.Help() }
+			if cmd.Annotations == nil {
+				cmd.Annotations = map[string]string{}
+			}
+			cmd.Annotations["skip_config"] = "true"
+		}
+		validateGroupCommands(cmd)
+	}
+}
+
+func writeCommandHelp(w io.Writer, root *cobra.Command, args []string, all bool) error {
+	cmd, remaining, err := root.Find(args)
+	if err != nil || len(remaining) > 0 || (len(args) > 0 && (cmd == root || !discoverable(cmd))) {
+		return usage("unknown command %q", strings.Join(args, " "))
+	}
+	children := []string{}
+	var collect func(*cobra.Command)
+	collect = func(parent *cobra.Command) {
+		for _, child := range parent.Commands() {
+			if !discoverable(child) {
+				continue
+			}
+			children = append(children, child.CommandPath())
+			if all {
+				collect(child)
+			}
+		}
+	}
+	collect(cmd)
+	cmd.InitDefaultHelpFlag()
+	cmd.InheritedFlags() // Merge global and local options before walking Flags.
+	type option struct {
+		Name        string `json:"name"`
+		Type        string `json:"type"`
+		Description string `json:"description"`
+		Default     string `json:"default"`
+		Shorthand   string `json:"shorthand,omitempty"`
+	}
+	flags := []option{}
+	cmd.Flags().VisitAll(func(f *pflag.Flag) {
+		if !f.Hidden {
+			flags = append(flags, option{f.Name, f.Value.Type(), f.Usage, f.DefValue, f.Shorthand})
+		}
+	})
+	return json.NewEncoder(w).Encode(map[string]any{"path": cmd.CommandPath(), "usage": cmd.UseLine(), "description": cmd.Short, "commands": children, "flags": flags})
+}
+
 func printArea(w io.Writer, root *cobra.Command, area navigation.Area, full bool) {
 	fmt.Fprintf(w, "\n%s · %s\n", area.Name, area.Summary)
 	for _, name := range area.Commands {
@@ -138,7 +205,7 @@ var commonOptions = map[string][]string{
 	"bupt doctor":                  {"report", "offline"},
 	"bupt compute instance create": {"spec", "preset", "gpu", "max-runtime", "allocate-only", "max-points-per-day", "wait"},
 	"bupt init":                    {"mode", "foreground", "install"},
-	"bupt login":                   {"sso-password", "username", "wait", "no-wait", "qr-file"},
+	"bupt login":                   {"agent", "open", "sso-password", "username", "wait", "no-wait", "qr-file"},
 }
 
 func markAdvanced(c *cobra.Command) {

@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -55,15 +56,22 @@ func (a *app) runCommand() *cobra.Command {
 		p["detach"] = detach
 		p["wait"] = false
 		var result any
-		if e = a.rpc(cmd.Context(), "job.run", p, &result); e != nil {
-			return e
+		if a.dryRun {
+			return a.callAndPrint(cmd, "job.run", p)
 		}
-		if detach || a.dryRun {
-			return a.emit(result)
+		key := a.submissionKey(p)
+		submitCtx, stopSubmit := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+		e = a.rpc(submitCtx, "job.run", p, &result)
+		stopSubmit()
+		if e != nil {
+			return submissionError(e, key)
 		}
 		id := resultID(result)
 		if id == "" {
-			return domain.E("PROTOCOL_ERROR", "job.run returned no job identifier")
+			return submissionError(domain.E("PROTOCOL_ERROR", "job.run returned no job identifier"), key)
+		}
+		if detach {
+			return a.emit(result)
 		}
 		a.humanHint("作业 " + id + " 已提交")
 		b, e := a.getBackend()
@@ -75,6 +83,7 @@ func (a *app) runCommand() *cobra.Command {
 		osSignals := make(chan os.Signal, 1)
 		signal.Notify(osSignals, os.Interrupt, syscall.SIGTERM)
 		defer signal.Stop(osSignals)
+		cancelResult := make(chan error, 1)
 		done := make(chan struct{})
 		defer close(done)
 		go func() {
@@ -87,21 +96,15 @@ func (a *app) runCommand() *cobra.Command {
 				stopCtx, stopCancel := context.WithTimeout(context.Background(), 15*time.Second)
 				defer stopCancel()
 				var ignored any
-				if e := b.Call(stopCtx, "job.cancel", map[string]any{"target": id}, &ignored); e != nil {
-					fmt.Fprintln(a.options.Err, "cancel request:", e)
-				}
+				cancelResult <- b.Call(stopCtx, "job.cancel", map[string]any{"target": id}, &ignored)
 				cancel()
 			}
 		}()
 		logsDone := make(chan struct{})
-		if !a.ids {
-			logOut := a.options.Out
-			if a.json || a.jsonl {
-				logOut = a.options.Err
-			}
+		if !a.ids && !a.json && !a.jsonl {
 			go func() {
 				defer close(logsDone)
-				_, e := b.Stream(ctx, "job.logs", map[string]any{"target": id, "follow": true}, nil, logOut)
+				_, e := b.Stream(ctx, "job.logs", map[string]any{"target": id, "follow": true}, nil, a.options.Out)
 				if e != nil && ctx.Err() == nil {
 					fmt.Fprintln(a.options.Err, "logs:", e)
 				}
@@ -112,7 +115,14 @@ func (a *app) runCommand() *cobra.Command {
 		defer func() { cancel(); <-logsDone }()
 		run, e := a.waitJob(ctx, cmd, id)
 		if e != nil {
-			return e
+			select {
+			case err := <-cancelResult:
+				if err != nil {
+					e = &domain.Error{Code: "INTERRUPTED", Message: "取消请求未获确认，请检查作业状态", Retryable: true}
+				}
+			default:
+			}
+			return jobWaitError(e, id)
 		}
 		drain := time.NewTimer(5 * time.Second)
 		select {
@@ -139,6 +149,29 @@ func (a *app) runCommand() *cobra.Command {
 	}
 	return cmd
 }
+func jobWaitError(err error, id string) *domain.Error {
+	result := domain.Error{Code: "JOB_WAIT_FAILED", Message: err.Error()}
+	var problem *domain.Error
+	switch {
+	case errors.As(err, &problem):
+		result = *problem
+	case errors.Is(err, context.DeadlineExceeded):
+		result.Code, result.Retryable = "TIMEOUT", true
+	case errors.Is(err, context.Canceled):
+		result.Code = "INTERRUPTED"
+	}
+	result.RunID = id
+	// Preserve actionable auth/SSH hints before adding the job-specific wait.
+	base := result
+	base.RunID, base.TaskID = "", ""
+	result.Hint = withHint(&base).Hint
+	if result.Hint != "" {
+		result.Hint += "。"
+	}
+	result.Hint += "bupt compute job wait " + shellArg(id) + " --json"
+	return &result
+}
+
 func resultID(v any) string {
 	b, _ := json.Marshal(v)
 	var m map[string]any

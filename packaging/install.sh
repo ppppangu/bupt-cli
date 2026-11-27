@@ -1,5 +1,12 @@
 #!/bin/sh
+
+# With curl | sh, start only after the whole function has arrived.
+install_bupt() (
 set -eu
+
+release_url=''
+release_sums=''
+# @online-release@
 
 usage() {
     printf '%s\n' '用法  sh install.sh [--bin-dir 目录]' '默认安装到 ~/.local/bin。'
@@ -28,16 +35,20 @@ case $(uname -m) in
     *) printf '%s\n' '此安装包支持 arm64 和 x86_64 处理器。' >&2; exit 1 ;;
 esac
 
-bundle_dir=$(CDPATH='' cd -P "$(dirname "$0")" && pwd -P)
-member="bin/bupt-$os_name-$arch"
-expected=$(awk -v member="$member" '$2 == member && length($1) == 64 && $1 ~ /^[0-9a-f]+$/ { print $1; count++ } END { if (count != 1) exit 1 }' "$bundle_dir/SHA256SUMS") || {
-    printf '%s\n' 'SHA256SUMS 缺少当前平台的唯一校验值，请重新解压完整安装包。' >&2
+program="bupt-$os_name-$arch"
+member="bin/$program"
+if [ -z "$release_url" ]; then
+    bundle_dir=$(CDPATH='' cd -P "$(dirname "$0")" && pwd -P)
+    if [ ! -f "$bundle_dir/$member" ] || [ -L "$bundle_dir/$member" ]; then
+        printf '%s\n' '安装包缺少当前平台的程序，请重新解压。' >&2
+        exit 1
+    fi
+    release_sums=$(cat "$bundle_dir/SHA256SUMS")
+fi
+expected=$(printf '%s\n' "$release_sums" | awk -v member="$member" '$2 == member && length($1) == 64 && $1 ~ /^[0-9a-f]+$/ { print $1; count++ } END { if (count != 1) exit 1 }') || {
+    printf '%s\n' '缺少当前平台的唯一 SHA-256 校验值。' >&2
     exit 1
 }
-if [ ! -f "$bundle_dir/$member" ] || [ -L "$bundle_dir/$member" ]; then
-    printf '%s\n' '安装包缺少当前平台的程序，请重新解压。' >&2
-    exit 1
-fi
 if command -v sha256sum >/dev/null 2>&1; then
     hash_file() { sha256sum < "$1"; }
 elif command -v shasum >/dev/null 2>&1; then
@@ -55,7 +66,11 @@ fi
 stage=$(mktemp "$bin_dir/.bupt-install.XXXXXXXX")
 trap 'rm -f "$stage"' 0
 trap 'exit 1' HUP INT TERM
-cp "$bundle_dir/$member" "$stage"
+if [ -n "$release_url" ]; then
+    curl --proto '=https' --proto-redir '=https' -fsSL --retry 2 -o "$stage" "$release_url/$program"
+else
+    cp "$bundle_dir/$member" "$stage"
+fi
 actual=$(hash_file "$stage")
 if [ "${actual%% *}" != "$expected" ]; then
     printf '%s\n' '程序校验失败，请从分发者处重新获取安装包。' >&2
@@ -73,4 +88,6 @@ case ":${PATH-}:" in
             printf '请将 %s 加入 PATH，或使用程序的完整路径。\n' "$bin_dir"
         fi ;;
 esac
-printf '%s\n' '初次使用依次运行 bupt init、bupt login、bupt tui。'
+printf '%s\n' '首次使用运行 bupt init，再运行 bupt login。AI agent 使用 bupt login --agent。'
+)
+install_bupt "$@"

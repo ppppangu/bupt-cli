@@ -20,6 +20,10 @@ import (
 // Default login follows the controller's challenge state. The CLI does not
 // choose CAS endpoints, exchange tickets, or advance between login providers.
 func (a *app) login(cmd *cobra.Command, args []string) error {
+	if agentLoginRequested(cmd) {
+		return a.agentLogin(cmd, "auth.start")
+	}
+	a.cleanLoginQRs()
 	local, _ := cmd.Flags().GetBool("local")
 	passwordStdin, _ := cmd.Flags().GetBool("password-stdin")
 	credentialsStdin, _ := cmd.Flags().GetBool("credentials-stdin")
@@ -81,7 +85,12 @@ func (a *app) authPollCommand() *cobra.Command {
 	cmd.Flags().Bool("password-stdin", false, "Read the university password from stdin")
 	cmd.Flags().Bool("credentials-stdin", false, "Read university username/password and optional captcha_code JSON from stdin")
 	cmd.Flags().String("qr-file", "", "Save private QR images using this filename with stage suffixes")
+	addAgentLoginFlags(cmd)
 	cmd.RunE = func(cmd *cobra.Command, _ []string) error {
+		if agentLoginRequested(cmd) {
+			return a.agentLogin(cmd, "auth.poll")
+		}
+		a.cleanLoginQRs()
 		ps, _ := cmd.Flags().GetBool("password-stdin")
 		cs, _ := cmd.Flags().GetBool("credentials-stdin")
 		if ps && cs {
@@ -107,6 +116,22 @@ func (a *app) runAuthChallenge(cmd *cobra.Command, firstMethod, pollMethod strin
 	defer cancel()
 	qrFile, _ := cmd.Flags().GetString("qr-file")
 	renderer := newAuthChallengeRenderer(a.options.Err, a.interactive(), qrFile, fallbackStage)
+	if open, _ := cmd.Flags().GetBool("open"); open {
+		renderer.open = func(ch domain.AuthChallenge, qr *qrcode.QRCode, path string) error {
+			if path == "" {
+				var err error
+				path, err = a.cacheLoginQR(ch, qr)
+				if err != nil {
+					return err
+				}
+				fmt.Fprintln(a.options.Err, "二维码文件", path)
+			}
+			if err := a.openImage(ctx, path); err != nil {
+				fmt.Fprintln(a.options.Err, "请手动打开二维码文件", path)
+			}
+			return nil
+		}
+	}
 	var challenge domain.AuthChallenge
 	if e := a.rpc(ctx, firstMethod, firstParams, &challenge); e != nil {
 		return challenge, e
@@ -285,6 +310,7 @@ type authChallengeRenderer struct {
 	lastStage, lastState, lastAction, lastMessage string
 	seenURLs                                      map[string]bool
 	fileCounts                                    map[string]int
+	open                                          func(domain.AuthChallenge, *qrcode.QRCode, string) error
 }
 
 func newAuthChallengeRenderer(out io.Writer, interactive bool, qrFile, fallbackStage string) *authChallengeRenderer {
@@ -339,47 +365,61 @@ func (r *authChallengeRenderer) Show(c domain.AuthChallenge) error {
 	if r.interactive {
 		fmt.Fprintln(r.out, qr.ToSmallString(false))
 	}
+	var filename string
 	if r.qrFile != "" {
-		slug := "login"
-		switch stage {
-		case "webvpn":
-			slug = "webvpn"
-		case "university_sso":
-			slug = "sso"
-		case "complete":
-			slug = "complete"
-		}
-		r.fileCounts[slug]++
-		number := r.fileCounts[slug]
-		base := r.qrFile
-		if strings.EqualFold(filepath.Ext(base), ".png") {
-			base = strings.TrimSuffix(base, filepath.Ext(base))
-		}
-		filename := base + "." + slug
-		if number > 1 {
-			filename += fmt.Sprintf(".%d", number)
-		}
-		filename += ".png"
-		png, e := qr.PNG(320)
+		filename, e = r.writeQR(stage, qr)
 		if e != nil {
 			return e
-		}
-		f, e := os.OpenFile(filename, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
-		if e != nil {
-			return e
-		}
-		_, writeErr := f.Write(png)
-		closeErr := f.Close()
-		if writeErr != nil {
-			_ = os.Remove(filename)
-			return writeErr
-		}
-		if closeErr != nil {
-			_ = os.Remove(filename)
-			return closeErr
 		}
 		fmt.Fprintf(r.out, "二维码文件 / QR file: %s\n", filename)
 	}
+	if r.open != nil {
+		if e := r.open(c, qr, filename); e != nil {
+			return e
+		}
+	}
 	r.seenURLs[key] = true
 	return nil
+}
+
+func (r *authChallengeRenderer) writeQR(stage string, qr *qrcode.QRCode) (string, error) {
+	slug := "login"
+	switch stage {
+	case "webvpn":
+		slug = "webvpn"
+	case "university_sso":
+		slug = "sso"
+	case "complete":
+		slug = "complete"
+	}
+	r.fileCounts[slug]++
+	number := r.fileCounts[slug]
+	base := r.qrFile
+	if strings.EqualFold(filepath.Ext(base), ".png") {
+		base = strings.TrimSuffix(base, filepath.Ext(base))
+	}
+	filename := base + "." + slug
+	if number > 1 {
+		filename += fmt.Sprintf(".%d", number)
+	}
+	filename += ".png"
+	png, e := qr.PNG(320)
+	if e != nil {
+		return "", e
+	}
+	f, e := os.OpenFile(filename, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if e != nil {
+		return "", e
+	}
+	_, writeErr := f.Write(png)
+	closeErr := f.Close()
+	if writeErr != nil {
+		_ = os.Remove(filename)
+		return "", writeErr
+	}
+	if closeErr != nil {
+		_ = os.Remove(filename)
+		return "", closeErr
+	}
+	return filename, nil
 }

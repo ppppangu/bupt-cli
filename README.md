@@ -2,25 +2,52 @@
 
 面向北邮学生和教师的第三方终端工具，在命令行或全屏界面调用模型、申请 GPU 服务器和连接 SSH。
 
-## 创建并连接 GPU 服务器
+## 安装
 
-<img src="docs/demo/assets/tui-compute.gif" width="780" alt="在 TUI 核对 GPU 配置与费用，创建实例，连接 SSH，再回到详情页停机">
-
-核对价格后创建实例，就绪后进入 SSH。退出远端终端即可回到原实例详情并停机。
-
-## 快速开始
-
-从 [Releases](https://github.com/ppppangu/bupt-cli/releases) 下载并解压安装包，在包含 `install.sh` 的目录打开终端。
+在 macOS、Linux 或 WSL2 终端运行以下命令。
 
 ```sh
-sh ./install.sh
+curl -fsSL https://github.com/ppppangu/bupt-cli/releases/latest/download/install.sh | sh
+```
+
+脚本自动识别系统和架构，校验 SHA-256，安装到 `~/.local/bin/bupt`。[离线安装包](https://github.com/ppppangu/bupt-cli/releases/latest) · [安装说明](packaging/使用说明.txt)
+
+**交给 agent 安装**
+
+> 从 GitHub 仓库 `ppppangu/bupt-cli` 的最新 Release 下载并运行 `install.sh`，然后用 `~/.local/bin/bupt version --json` 验证安装。
+
+## 首次使用
+
+```sh
 export PATH="$HOME/.local/bin:$PATH"
 bupt init
 bupt login
 bupt tui
 ```
 
-同一份安装包支持 macOS、64 位 Linux 和 WSL2。[完整安装说明](packaging/使用说明.txt)
+## 在 Pi、Codex 或 Claude Code 中使用
+
+让 agent 运行 `bupt login --agent`，展示 `qr_file` 指向的二维码。你扫码确认后，它用 `bupt auth poll --agent` 继续登录。[扫码选项](docs/usage.md#登录与凭据)
+
+```sh
+bupt status --json
+bupt compute catalog ls --jsonl
+# 从目录选取 SPEC_ID，查看预计日价
+bupt compute job run --spec "$SPEC_ID" --max-runtime 1h --dry-run --json -- python3 --version
+
+# AUTHORIZED_RATE 是你接受的日价上限（积分/天）。每次提交用唯一的 REQUEST_KEY，重试时复用。
+job_id=$(bupt compute job run --spec "$SPEC_ID" --max-runtime 1h \
+  --max-points-per-day "$AUTHORIZED_RATE" --idempotency-key "$REQUEST_KEY" \
+  --detach --output id -- python3 --version) && bupt compute job wait "$job_id" --json
+```
+
+等待超时，用同一作业 ID 再运行 `bupt compute job wait ID --json`。用 `bupt help --all --json` 查命令。
+
+## 创建并连接 GPU 服务器
+
+<img src="docs/demo/assets/tui-compute.gif" width="780" alt="在 TUI 核对 GPU 配置与费用，创建实例，连接 SSH，再回到详情页停机">
+
+核对价格后创建实例，就绪后进入 SSH。退出远端终端即可回到原实例详情并停机。
 
 ## 模型 API
 

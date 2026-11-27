@@ -322,18 +322,12 @@ func TestRunForegroundKeepsJSONSeparateAndReturnsRemoteStatus(t *testing.T) {
 		default:
 			return nil, errors.New("unexpected RPC " + method)
 		}
-	}, stream: func(_ context.Context, method string, _ map[string]any, _ io.Reader, out io.Writer) (map[string]any, error) {
-		if method != "job.logs" {
-			return nil, errors.New("unexpected stream")
-		}
-		_, e := io.WriteString(out, "program log\n")
-		return nil, e
 	}}
 	opts, out, errOut := testOptions(t, b)
 	if code := executeTest(t, opts, "compute", "job", "run", "--max-runtime", "1h", "--max-points-per-day", "1.25", "--json", "--", "false"); code != 9 {
 		t.Fatalf("exit=%d err=%q", code, errOut)
 	}
-	if !json.Valid(out.Bytes()) || errOut.String() != "program log\n" {
+	if !json.Valid(out.Bytes()) || errOut.Len() != 0 || len(b.calls) != 2 {
 		t.Fatalf("mixed program/results: stdout=%q stderr=%q", out, errOut)
 	}
 }

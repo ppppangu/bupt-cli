@@ -527,6 +527,7 @@ func (a *app) loginCommand() *cobra.Command {
 	login.Flags().Bool("wait", false, "Wait for device approval, including without a TTY")
 	login.Flags().Bool("no-wait", false, "Return the device challenge without waiting")
 	login.Flags().String("qr-file", "", "Save private QR images using this filename with stage suffixes")
+	addAgentLoginFlags(login)
 	login.RunE = a.login
 	return login
 }

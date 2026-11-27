@@ -45,6 +45,14 @@ class Mock(socketserver.StreamRequestHandler):
             self.wfile.write(struct.pack(">BI", t, len(data)) + data)
 
         try:
+            if fault == "job-finished" and m == "job.get":
+                reply({"id": "audit-receipt", "state": "done", "exit_code": 0})
+                return
+            if fault == "login-step" and m in ("auth.start", "auth.poll"):
+                stage = "webvpn" if m == "auth.start" else "university_sso"
+                reply({"stage": stage, "state": "waiting", "required_action": "scan_qr",
+                       "url": "https://example.invalid/scan/" + stage, "poll_after_ms": 1000})
+                return
             if fault == "timeout":
                 time.sleep(.35)
                 return
@@ -234,6 +242,59 @@ for cmd, want, status, out, err, stdin in [
         stderr_ok = bool(r.stderr) if err is None else r.stderr == err
         return stdout_ok and stderr_ok and check_argv_and_options(cmd)
     good += [case(cmd, want, status, stdin, stream_check)]
+# The machine index comes from the same public tree as human help.
+index = run("help --all --json", bare=True)
+good.append(index.returncode == 0 and not index.stderr and
+            json.loads(index.stdout)["commands"] == ["bupt " + path for path in paths])
+good.append(case("help login --output json", "", check=lambda r:
+                 {"agent", "open", "non-interactive"} <= {f["name"] for f in json.loads(r.stdout)["flags"]}))
+for group in ("config", "compute scheduler"):
+    good.append(case(group + " xyz --json", "", 2, check=lambda r:
+                     not r.stdout and json.loads(r.stderr)["error"]["code"] == "USAGE"))
+
+for bad in ("login --agent --wait", "auth poll --bad --agent"):
+    good.append(case(bad, "", 2, check=lambda r: not r.stdout and json.loads(r.stderr)["error"]["code"] == "USAGE"))
+
+fault = "login-step"
+for command, stage, method in (("login", "webvpn", "auth.start"), ("auth poll", "university_sso", "auth.poll")):
+    def qr_result(r):
+        step = json.loads(r.stdout)
+        image = Path(step["qr_file"])
+        return (not r.stderr and b"example.invalid" not in r.stdout and step["stage"] == stage and
+                image.is_absolute() and image.stat().st_mode & 0o777 == 0o600 and
+                image.read_bytes().startswith(b"\x89PNG\r\n\x1a\n"))
+    good.append(case(command + " --agent", method, check=qr_result))
+good.append(case("auth poll --agent --output table", "auth.poll", check=lambda r:
+                 "█" in r.stdout.decode() and b"example.invalid" not in r.stdout and not r.stderr))
+good.append(case("auth captcha --file ./captcha.png --json --dry-run", "", check=lambda r:
+                 json.loads(r.stdout)["dry_run"] and not (root/"captcha.png").exists()))
+
+fault = None
+good.append(case("compute job run --instance lab --timeout 100ms --json -- true", "job.run,job.get", 1,
+                 check=lambda r: not r.stdout and json.loads(r.stderr)["error"]["run_id"] == "audit-receipt" and
+                 "compute job wait" in json.loads(r.stderr)["error"]["hint"] and
+                 json.loads(r.stderr)["error"]["code"] == "TIMEOUT"))
+fault = "job-finished"
+good.append(case("compute job wait audit-receipt --json", "job.get",
+                 check=lambda r: not r.stderr and json.loads(r.stdout)["id"] == "audit-receipt"))
+# Execute the README shell example with the same isolated controller and inputs.
+readme = (Path(__file__).resolve().parents[1] / "README.md").read_text()
+section = readme.split("## 在 Pi、Codex 或 Claude Code 中使用", 1)[1].split("\n## ", 1)[0]
+example = re.search(r"```sh\n(.*?)\n```", section, re.S).group(1)
+shell = 'set -eu\nbupt() { ' + ' '.join(shlex.quote(arg) for arg in base) + ' "$@"; }\n'
+reqs.clear()
+demo = subprocess.run(["sh", "-c", shell + example], cwd=root, capture_output=True, timeout=5,
+                      env=dict(env, SPEC_ID="9", AUTHORIZED_RATE="12", REQUEST_KEY="readme-job"))
+runs = [q["params"] for q in reqs if q["method"] == "job.run"]
+success = (demo.returncode == 0 and not demo.stderr and len(runs) == 2 and runs[0].get("dry_run")
+           and not runs[1].get("dry_run") and runs[1]["idempotency_key"] == "readme-job"
+           and runs[1]["max_points_per_day"] == "12" and json.loads(demo.stdout.splitlines()[-1])["state"] == "done")
+print("PASS" if success else "FAIL", "README agent job example")
+good.append(success)
+fault = "drop"
+good.append(case("compute job run --instance lab --detach --json -- true", "job.run", 1,
+                 check=lambda r: not r.stdout and json.loads(r.stderr)["error"]["code"] == "SUBMISSION_UNKNOWN" and
+                 json.loads(r.stderr)["error"]["idempotency_key"] == reqs[0]["params"]["idempotency_key"]))
 fault = "denied"
 good += [case('admin quota set us u --quota-field maxGpu --value 5 --revision r --json','compute.admin.update',1,check=lambda r:not r.stdout and json.loads(r.stderr)['error']['code']=='OWNER_REQUIRED')]
 fault = "drop"

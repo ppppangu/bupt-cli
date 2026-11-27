@@ -232,7 +232,11 @@ bupt login --device --wait
 | 手机扫码 | `bupt login` | 先扫 WebVPN 码，再扫统一认证码 |
 | 学工号和密码 | `bupt login --sso-password` | 先扫 WebVPN 码，再在终端输入统一认证账号和密码 |
 
-`bupt login` 和 `bupt login` 接受相同选项。学校会话仍有效时会跳过对应步骤。两种方式都以门户确认校园身份为登录成功。裸算力服务在首次使用时核对自己的会话。`bupt tui access` 的「学校登录」也可选择这两种方式。
+学校会话仍有效时会跳过对应步骤。两种方式都以门户确认校园身份为登录成功。裸算力服务在首次使用时核对自己的会话。`bupt tui access` 的「学校登录」也可选择这两种方式。
+
+Pi、Codex 和 Claude Code 使用 `bupt login --agent` 获取当前步骤，再用相同 profile 和控制器运行 `bupt auth poll --agent`。每次调用只取一步，默认 stdout 是单个 JSON。成功退出表示已取到步骤。认证完成看 `stage=complete` 和 `state=authenticated`。等待期间遵循 `poll_after_ms`，按 `required_action` 提示扫码或手机确认；无图片时继续轮询。有 `qr_file` 时展示实际图片或可打开的本机链接，并记住路径避免重复提示。路径属于运行 CLI 的机器。
+
+`--agent --output table` 即使通过管道也能打印等宽字符码，可展开工具输出扫码。显式加 `--open` 会用本机查看器打开图片。查看器不可用时查看返回的路径。自动 PNG 保存在状态目录的 `login-qr/` 中，权限为 0600，有效期后的下一次登录或轮询会清理。自定义 `--qr-file` 使用下文的文件命名规则，由调用者保管。过期后用 `bupt login --agent` 获取新码；要求接管其他登录时先征得用户确认。
 
 统一认证密码在终端隐藏输入。控制器只在本次向学校 CAS 提交时使用它，之后保存登录会话。可用 `--username` 预填学工号。出现图形验证码时按提示填写，遇到其他额外验证可改用 `bupt login` 扫码。脚本可以让密码管理器通过标准输入向 CLI 提供密码。
 
@@ -276,7 +280,7 @@ secret-provider read platform-credentials-json | \
 `secret-provider` 代表你使用的凭据管理器，不是本工具内置命令。JSON 输入可包含 `username`、`password`，以及本地接口确实要求时的 `token`、`captcha_uuid`、`captcha_code`。口令参数不接受明文 argv。不要把真实凭据放进命令历史、项目 TOML、仓库文件或 CI 日志。本地口令登录遇到图形验证码时保留本次已输入的密码，最多请求三张验证码，由你输入答案；Ghostty/kitty 可直接显示 PNG，其他环境保存私有图片供查看。
 
 ```sh
-bupt auth captcha --output ./captcha.png --json
+bupt auth captcha --file ./captcha.png --json
 bupt auth setup
 bupt logout
 ```
@@ -348,7 +352,7 @@ bupt compute job update JOB_ID --max-runtime 5h
 bupt compute job cancel JOB_ID
 ```
 
-`run` 默认跟随输出并返回作业退出码；终端中断会请求取消并执行既定清理。`--detach` 只返回作业身份，控制器继续管理。`job wait` / `job logs -f` 被中断只停止等待或查看，不默认取消作业。`job attach` 是跟随持久输出直到结束，后台作业的 stdin 是 `/dev/null`，不是交互式 PTY。
+前台 `run` 返回作业退出码。文本模式跟随日志，JSON/JSONL 模式只输出作业结果或结构化诊断，实时日志用 `bupt compute job logs JOB_ID --follow` 查看。提交后等待超时可读取错误的 `run_id` 并用 `bupt compute job wait RUN_ID --json` 续等。提交响应丢失时用返回的 `idempotency_key` 和原参数重试。终端中断会请求取消并执行既定清理。`--detach` 只返回作业身份，控制器继续管理。`job wait` / `job logs -f` 被中断只停止等待或查看，不默认取消作业。`job attach` 是跟随持久输出直到结束，后台作业的 stdin 是 `/dev/null`，不是交互式 PTY。
 
 真正需要交互式长会话时，使用实例已有的 tmux：
 
@@ -473,6 +477,8 @@ CLI 与 TUI 共用的分层与类型化接口见 [架构说明](architecture.md)
 
 
 ## 脚本契约与命令迁移
+
+`bupt help --all --json` 返回完整命令路径列表 `commands`。`bupt help COMMAND --json` 返回命令的用法、直接子命令和本地及继承的选项。未知子命令以用法错误退出。
 
 `--output table|json|jsonl|id` 选择结果格式。保留 `--json` 和 `--jsonl`。支持 ID 的列表用 `--output id` 逐行输出，同一行一个 ID。模型账户余额用 `bupt api usage --field balance`。余额缺失时返回明确错误，学校报告的零值输出 `0`。文件目的地用 `--file`，并在支持的文件操作中继续使用 `-` 表示标准流。
 

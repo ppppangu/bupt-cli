@@ -129,28 +129,41 @@ func (a *app) createInstanceCommand() *cobra.Command {
 	return cmd
 }
 
-func (a *app) submitInstance(cmd *cobra.Command, method string, p map[string]any) error {
-	p["wait"] = false
+// Give the caller a durable retry key even if the submission response is lost.
+func (a *app) submissionKey(p map[string]any) string {
+	if a.dryRun {
+		return ""
+	}
 	key := a.idempotencyKey
-	if !a.dryRun && key == "" {
+	if key == "" {
 		key = uuid.NewString()
 		p["idempotency_key"] = key
 	}
+	return key
+}
+
+func submissionError(err error, key string) error {
+	var problem *domain.Error
+	lost := errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) ||
+		errors.As(err, &problem) && (problem.Code == "CONTROLLER_IO" || problem.Code == "PROTOCOL_ERROR")
+	if key == "" || !lost {
+		return err
+	}
+	code := "SUBMISSION_UNKNOWN"
+	if errors.Is(err, context.Canceled) {
+		code = "INTERRUPTED"
+	}
+	return &domain.Error{Code: code, Message: "请求结果待核对。恢复连接后请用相同参数和请求键重试", IdempotencyKey: key, Retryable: true}
+}
+
+func (a *app) submitInstance(cmd *cobra.Command, method string, p map[string]any) error {
+	p["wait"] = false
+	key := a.submissionKey(p)
 	ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	var result map[string]any
 	if err := a.rpc(ctx, method, p, &result); err != nil {
-		var problem *domain.Error
-		lost := errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) ||
-			errors.As(err, &problem) && (problem.Code == "CONTROLLER_IO" || problem.Code == "PROTOCOL_ERROR")
-		if key != "" && !a.dryRun && lost {
-			code := "SUBMISSION_UNKNOWN"
-			if errors.Is(err, context.Canceled) {
-				code = "INTERRUPTED"
-			}
-			return &domain.Error{Code: code, Message: "请求结果待核对。恢复连接后请用相同参数和请求键重试", IdempotencyKey: key, Retryable: true}
-		}
-		return err
+		return submissionError(err, key)
 	}
 	if a.dryRun {
 		return a.emit(result)

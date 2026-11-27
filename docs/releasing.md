@@ -19,7 +19,7 @@ shasum -a 256 -c bupt-版本号.zip.sha256
 sha256sum -c bupt-版本号.zip.sha256
 ```
 
-包内的 `SHA256SUMS` 记录展开后各文件的散列。安装脚本自动校验即将写入的二进制，用临时文件完成替换。需要自选安装路径时可用 `sh install.sh --bin-dir 目录`。同目录的原始四平台二进制和 `dist/SHA256SUMS` 也可单独用于控制器升级。
+包内的 `SHA256SUMS` 记录展开后各文件的散列。安装脚本自动校验即将写入的二进制，用临时文件完成替换。需要自选安装路径时可用 `sh install.sh --bin-dir 目录`。在线安装入口为 GitHub Release 附件 `install.sh`。发布标签须为 `v版本号`，并上传同一次构建的 `dist/install.sh`、四个 `dist/bupt-{darwin,linux}-{amd64,arm64}` 程序和 `dist/SHA256SUMS`，连同 ZIP、ZIP 校验文件一起发布。安装脚本内嵌本版本的下载地址和四个程序的 SHA-256。README 的 `releases/latest/download/install.sh` 指向最新正式版。
 
 `make check-release` 检查压缩包内容、内外校验和、四种平台选择及安装失败时对旧程序的保护。包内第三方声明从参与编译的 Go 依赖和工具链读取。当前分发使用 ZIP 和 SHA-256，未办理 Apple Developer ID 签名与公证。
 

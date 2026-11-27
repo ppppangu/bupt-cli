@@ -124,11 +124,20 @@ def main():
         write_zip(stage / zip_name, folder, files)
         sidecar = zip_name + ".sha256"
         (stage / sidecar).write_text(f"{digest((stage / zip_name).read_bytes())}  {zip_name}\n")
+        # The online installer uses the same verification and atomic install as
+        # the offline bundle, with downloads pinned to this release.
+        release_url = f"https://github.com/ppppangu/bupt-cli/releases/download/v{version}"
+        sums = "\n".join(f"{digest(files['bin/' + name])}  bin/{name}" for name in binaries)
+        installer = files["install.sh"].decode()
+        marker = "# @online-release@"
+        if installer.count(marker) != 1:
+            raise ValueError("Missing online installer template marker")
+        (stage / "install.sh").write_text(installer.replace(marker, f"release_url='{release_url}'\nrelease_sums='{sums}'"))
         # Keep a concurrent build from interleaving the two sets of release files.
         lock = os.open(DIST, os.O_RDONLY)
         try:
             fcntl.flock(lock, fcntl.LOCK_EX)
-            for name in [*binaries, "SHA256SUMS", zip_name, sidecar]:
+            for name in [*binaries, "SHA256SUMS", "install.sh", zip_name, sidecar]:
                 (stage / name).replace(DIST / name)
         finally:
             os.close(lock)
