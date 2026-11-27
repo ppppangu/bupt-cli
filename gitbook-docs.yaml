@@ -1,0 +1,19 @@
+$schema: https://api.gitbook.com/gitbook-docs.yaml
+site:
+  title: "bupt 使用指南"
+  structure:
+    - type: space
+      key: guide
+      title: "使用指南"
+      path: guide
+      default: true
+      content:
+        directory: ./docs/guide
+        language: zh
+    - type: space
+      key: documentation
+      title: Documentation
+      path: documentation
+      draft: true
+      content:
+        directory: null

@@ -4,6 +4,8 @@ description: "按当前看到的提示恢复安装、登录、实例连接或作
 
 # 解决常见问题
 
+先看卡在哪一步：打开工作台时先查本机控制器；扫码时看认证阶段；已经提交的任务先找回执。
+
 ## 安装后找不到 bupt
 
 新开终端，运行 `bupt version`。如果仍提示找不到命令，试试 `~/.local/bin/bupt version`。能看到版本号说明程序已经安装，可直接用 `~/.local/bin/bupt tui` 打开工作台。使用自选安装目录时，把路径换成实际目录。
@@ -24,7 +26,7 @@ description: "按当前看到的提示恢复安装、登录、实例连接或作
 
 ## 终端断开，任务还在吗？
 
-提交实例后的操作 ID 可用于 `bupt compute instance wait --operation 操作ID`。后台作业用 `bupt compute job show JOB_ID` 查看当前状态，再用 `bupt compute job wait JOB_ID` 续等。请替换为各自的实际 ID。若清理状态仍为 `cleanup_pending`，检查登录状态及实例的预留情况。[作业与输出](jobs.md)
+提交实例后的操作 ID 可用于 `bupt compute instance wait --operation 操作ID`。后台作业用 `bupt compute job show JOB_ID` 查看当前状态，再用 `bupt compute job wait JOB_ID` 续等。请替换为各自的实际 ID。若清理状态仍为 `cleanup_pending`，检查登录状态及实例的预留情况。[按回执恢复任务](tasks/receipts.md)
 
 ## 反馈问题
 

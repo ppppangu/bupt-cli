@@ -1,15 +1,23 @@
-# 目录
+# 使用指南
 
-* [安装并登录 bupt](README.md)
+* [快速开始](README.md)
 
-## 使用校园算力
+## 核心概念
 
-* [试用模型并生成调用代码](models.md)
-* [申请 GPU 并连接 SSH](gpu.md)
-* [上传文件并运行后台作业](jobs.md)
+* [模型调用与 GPU 实例](concepts/resources.md)
+* [工作区、登录与密钥](concepts/access.md)
+
+## 操作指南
+
+* [模型 API：完成第一次对话](models.md)
+    * [把模型接入自己的程序](tasks/model-code.md)
+* [GPU 实例：申请并连接](gpu.md)
+    * [上传代码并运行后台作业](jobs.md)
+    * [结束实验并归还算力](tasks/release.md)
+* [AI agent：登录与查询](agents.md)
+    * [用回执恢复任务](tasks/receipts.md)
+
+## 参考与排错
+
 * [查看余额和账单](usage.md)
-
-## 自动化与排错
-
-* [在 AI agent 中使用 bupt](agents.md)
 * [解决常见问题](troubleshooting.md)

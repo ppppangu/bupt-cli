@@ -1,39 +1,48 @@
 ---
-description: "向已就绪的托管实例上传代码，提交后台作业，并在新终端继续查看结果。"
+description: "把一个可直接运行的小程序放到 lab，保存作业 ID，并从新的本地终端取回输出。"
 ---
 
-# 上传文件并运行后台作业
+# 上传代码并运行后台作业
 
-先准备一台由 bupt 托管、SSH 已就绪且安装了 Python 3 的实例。下面用 `lab` 指代这台实例，假设本地已有一个 `train.py`。
+接着使用[上一节](gpu.md)已验证 SSH 的 `lab`。一个**作业**是这台机器上运行的一次程序，有自己的输出和退出码。本例用 Python 3 打印机器名，把结果写入作业日志；远端实例需已安装 Python 3。
 
-提交前，在实例详情核对剩余运行时间和清理策略。下面的作业会沿用当前托管周期。如果策略包含停机或释放，作业结束后控制器会执行相应操作。需要保留的实验结果应由脚本写入持久存储。
+## 1. 从本机送一份代码到实例
 
-## 上传并提交
+在本机的空目录中新建 `hello_bupt.py`。内容只需两行：
 
-在本地脚本所在的目录上传文件，并检查远端文件名。
-
-```sh
-bupt cp ./train.py lab:train.py
-bupt exec lab -- ls -l train.py
+```python
+import socket
+print("running on", socket.gethostname())
 ```
 
-看到远端文件后，提交后台作业。
+在这个目录运行：
 
 ```sh
-bupt compute job run --instance lab --detach --output id -- python3 train.py
+bupt cp ./hello_bupt.py lab:hello_bupt.py
+bupt exec lab -- ls -l hello_bupt.py
 ```
 
-输出的一行就是作业 ID，请保存。最后一个 `--` 后面是远端要执行的程序和参数。使用 `--detach` 后即可关闭当前终端。
+`lab:` 表示实例上的路径。看到远端文件名后再提交，这样可以把「没传上去」和「程序运行失败」区分开。
 
-## 查看进度和结果
+## 2. 提交并保存作业 ID
 
-把 `JOB_ID` 换成刚保存的 ID。在使用同一控制器和账号的终端中查看状态和日志。
+先在实例详情核对剩余运行时间和清理策略。这个作业沿用当前托管周期；如果策略包含停机或释放，作业结束后控制器会开始清理。实际实验的大文件应事先安排写入持久存储。
 
 ```sh
-bupt compute job show JOB_ID
-bupt compute job logs JOB_ID --follow
+bupt compute job run --instance lab --detach --output id -- python3 hello_bupt.py
 ```
 
-按 Ctrl+C 可以结束日志查看。要等到作业结束，运行 `bupt compute job wait JOB_ID --json`。这个命令会返回作业结果，并传递远端程序的退出码。等待超时后，用原 ID 再等一次即可。
+输出的一行就是**作业 ID**，请复制保存。最后一个 `--` 后是远端要运行的程序。用了 `--detach`，提交后可以关闭本地终端。
 
-如果脚本会写出结果文件，在实例仍可通过 SSH 连接时用 `bupt cp lab:result.txt ./result.txt` 下载，把两端文件名换成实际路径。需要长期保留的结果，请事先安排写入持久存储或及时取回，并核对作业结束后的清理状态。
+## 3. 在新终端查看结果
+
+在使用同一工作区和账号的终端中，把 `JOB_ID` 换成刚保存的 ID：
+
+```sh
+bupt compute job wait JOB_ID --json
+bupt compute job logs JOB_ID
+```
+
+在日志中看到 `running on` 和实例主机名，说明你上传的程序已经在实例上执行。长作业可以先用 `bupt compute job logs JOB_ID --follow` 查看实时进度，按 Ctrl+C 结束查看。
+
+实验结束后继续[检查清理状态、归还算力](tasks/release.md)。等待超时或丢失响应时，先看[如何用回执恢复任务](tasks/receipts.md)。

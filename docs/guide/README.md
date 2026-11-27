@@ -1,48 +1,50 @@
 ---
-description: "在 macOS、Linux 或 WSL2 上安装 bupt，用自己的北邮账号打开算力工作台。"
+description: "装好 bupt，用校园账号登录，查到第一份可用资源。"
 ---
 
-# 安装并登录 bupt
+# 快速开始
 
-准备一台 x86_64 或 arm64 电脑、一个有平台使用权限的北邮账号，以及能完成学校扫码认证的手机。Windows 用户在 WSL2 的 Linux 终端中操作。
+想给现成的模型发一条消息？用**模型 API**。想把自己的代码放到 GPU 上跑？用 **GPU 实例**。两者从同一个工作台进入，安装和登录只需做一次。本页先带你看见自己可以使用的资源，全程只做查询。
 
-## 安装
+## 1. 安装并打开工作台
+
+准备好有平台使用权限的北邮账号和用于扫码的手机。在 macOS、Linux 或 WSL2 的终端运行以下命令，支持 x86_64 和 arm64。
 
 ```sh
 curl -fsSL https://github.com/ppppangu/bupt-cli/releases/latest/download/install.sh | sh
 ```
 
-看到安装成功和程序路径后，新开一个终端，运行以下命令。
+看到安装成功的提示后，**新开一个终端**，运行：
 
 ```sh
 bupt tui
 ```
 
-如果想在当前终端立即打开，可以运行 `~/.local/bin/bupt tui`。
+屏幕会切换到「校园算力平台」。用方向键选择，Enter 打开，Esc 返回，q 退出。如果旧终端找不到命令，可直接运行 `~/.local/bin/bupt tui`。
 
 <details>
-<summary>已经下载了 ZIP 安装包？</summary>
+<summary>离线安装或使用 WSL2</summary>
 
-解压整份安装包，在包含 `install.sh` 的目录运行 `sh ./install.sh`，然后打开工作台。
+已有 ZIP 安装包时，完整解压，在包含 `install.sh` 的目录运行 `sh ./install.sh`。Windows 用户在 WSL2 的 Linux 终端中运行同样的安装命令。首次设置提示无法启动用户服务时，在工作台选择「作为本机进程启动」。
 
 </details>
 
-## 扫码登录
+## 2. 登录校园账号
 
-1. 首页选择「首次设置这台电脑」，按 Enter 创建个人工作区。工作区负责保存会话和跟踪作业，设置一次即可。
-2. 选择「登录学校账号」。如果学校要求 WebVPN 认证，先扫 WebVPN 码并在手机上确认，再扫统一身份认证码。仍有效的认证步骤会自动跳过。
-3. 回到首页，按 **R** 打开「模型 API」，选择「模型与价格」。看到模型列表后，就可以选模型试用。按 Esc 返回首页，按 **S** 进入「裸算力服务器」。
+在首页选择「首次设置这台电脑」，按提示创建个人工作区。以后 bupt 会在这里记住你的登录会话和任务。接着选择「登录学校账号」，按手机提示完成认证。如果先出现 WebVPN 码，确认后再扫统一身份认证码。已有会话仍有效时会跳过对应步骤。
 
-方向键选择，Enter 打开，Esc 返回，q 退出。Linux 或 WSL2 提示无法启动用户服务时，可在工作台选择「作为本机进程启动」。[解决常见问题](troubleshooting.md)
+## 3. 做一次只读查询
 
-## 接下来做什么
+回到首页，选与你要做的事相符的一行。**看见列表，就是这次快速开始的完成标志。**
 
-| 我想做什么 | 操作指南 |
-| --- | --- |
-| 发一个问题给模型，取得 Python 或 curl 示例 | [试用模型并生成调用代码](models.md) |
-| 租用 GPU、通过 SSH 连接、用完归还 | [申请 GPU 并连接 SSH](gpu.md) |
-| 把代码上传到实例，关闭终端后继续运行 | [上传文件并运行后台作业](jobs.md) |
-| 核对积分、调用量和实例账单 | [查看余额和账单](usage.md) |
-| 让 Pi、Codex 或 Claude Code 代为登录和查询 | [在 AI agent 中使用 bupt](agents.md) |
+![登录后的工作台示例，R 打开模型 API，S 打开裸算力服务器，U 查看用量](.gitbook/assets/workbench.png)
 
-要配置远程控制器、SSH 中继或 CI 身份，请查阅[详细命令与配置手册](https://github.com/ppppangu/bupt-cli/blob/main/docs/usage.md)。
+<table data-view="cards">
+  <thead><tr><th></th><th></th><th data-hidden data-card-target data-type="content-ref"></th></tr></thead>
+  <tbody>
+    <tr><td><strong>我想用现成的模型</strong></td><td>按 R →「模型与价格」。看到模型名称和价格后，可以试着发一条消息。</td><td><a href="models.md">完成第一次对话</a></td></tr>
+    <tr><td><strong>我想运行自己的代码</strong></td><td>按 S →「资源与价格」。看到可申请的模板和配额后，再选一台适合实验的机器。</td><td><a href="gpu.md">申请并连接 GPU 实例</a></td></tr>
+  </tbody>
+</table>
+
+到这里可以退出工作台，下次用 `bupt tui` 回来。如果还拿不准该选哪条路线，先读[模型调用与 GPU 实例](concepts/resources.md)。如果由工具代你运行 shell，直接看 [AI agent 登录与查询](agents.md)。

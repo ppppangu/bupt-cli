@@ -1,0 +1,13 @@
+root: ./
+structure:
+  readme: README.md
+  summary: SUMMARY.md
+redirects:
+  an-zhuang-bing-deng-lu-bupt: README.md
+  mu-lu: README.md
+  zai-ai-agent-zhong-shi-yong-bupt: agents.md
+  shen-qing-gpu-bing-lian-jie-ssh: gpu.md
+  shi-yong-mo-xing-bing-sheng-cheng-diao-yong-dai-ma: models.md
+  shang-chuan-wen-jian-bing-yun-xing-hou-tai-zuo-ye: jobs.md
+  jie-jue-chang-jian-wen-ti: troubleshooting.md
+  cha-kan-yuehe-zhang-dan: usage.md
