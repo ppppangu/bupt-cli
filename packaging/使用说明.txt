@@ -17,18 +17,15 @@ Windows      在 PowerShell 运行 wsl -l -v，查看 Linux 发行版的 VERSION
              在解压目录打开 Windows 终端，输入 wsl。进入 Linux 后，运行 ls install.sh
              确认当前目录能看到安装脚本，再执行下面的安装命令。
 
-依次执行以下命令。安装脚本会识别处理器，校验程序，并安装到当前用户的 ~/.local/bin。
+在解压目录运行：
 
     sh ./install.sh
-    export PATH="$HOME/.local/bin:$PATH"
-    bupt version
 
-如果新开终端后提示找不到 bupt，把上面的 export 行加入当前 shell 的启动文件。
-macOS 默认 zsh 可放在 ~/.zshrc，Linux 或 WSL 常用的交互 bash 可放在 ~/.bashrc。
-
-首次登录
+默认安装到 ~/.local/bin。安装器会为常见 shell 配置 PATH。新开终端后运行：
 
     bupt tui
+
+要在当前终端立即打开，可运行 ~/.local/bin/bupt tui。自选安装目录使用 sh install.sh --bin-dir 目录。
 
 在首页选「首次设置这台电脑」，再选「登录学校账号」。命令行也可依次运行 bupt init 和 bupt login。
 校外网络认证过期时，先扫码通过 WebVPN，再完成学校统一身份认证。

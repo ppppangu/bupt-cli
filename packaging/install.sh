@@ -12,6 +12,43 @@ usage() {
     printf '%s\n' '用法  sh install.sh [--bin-dir 目录]' '默认安装到 ~/.local/bin。'
 }
 
+append_path_rule() {
+    if [ -e "$1" ] || [ -L "$1" ]; then
+        [ -f "$1" ] || return 1
+        if grep -Fqx "$2" "$1"; then return 0; fi
+    fi
+    mkdir -p "$(dirname "$1")" || return 1
+    printf '\n%s\n' "$2" >> "$1"
+}
+
+configure_path() {
+    rule='case ":${PATH-}:" in *":$HOME/.local/bin:"*) ;; *) export PATH="$HOME/.local/bin${PATH:+:$PATH}" ;; esac'
+    login_shell=${SHELL-}
+    if [ -z "$login_shell" ]; then
+        case $os_name in
+            darwin) login_shell=$(dscl . -read "/Users/$(id -un)" UserShell 2>/dev/null | awk '{print $2}') ;;
+            linux) login_shell=$(getent passwd "$(id -u)" 2>/dev/null | cut -d: -f7) ;;
+        esac
+    fi
+    case ${login_shell##*/} in
+        zsh) append_path_rule "${ZDOTDIR:-$HOME}/.zshenv" "$rule" ;;
+        bash)
+            # Bash reads only the first readable login profile.
+            profile=$HOME/.profile
+            for candidate in "$HOME/.bash_profile" "$HOME/.bash_login"; do
+                if [ -f "$candidate" ] && [ -r "$candidate" ]; then profile=$candidate; break; fi
+            done
+            append_path_rule "$profile" "$rule" && append_path_rule "$HOME/.bashrc" "$rule"
+            ;;
+        fish)
+            append_path_rule "${XDG_CONFIG_HOME:-$HOME/.config}/fish/conf.d/bupt-path.fish" \
+                'contains -- "$HOME/.local/bin" $PATH; or set -gx PATH "$HOME/.local/bin" $PATH'
+            ;;
+        sh|dash|ksh|'') append_path_rule "$HOME/.profile" "$rule" ;;
+        *) return 1 ;;
+    esac
+}
+
 case ${1-} in
     -h|--help) usage; exit 0 ;;
 esac
@@ -79,15 +116,17 @@ fi
 chmod 755 "$stage"
 mv -f "$stage" "$bin_dir/bupt"
 printf '已通过 SHA-256 校验并安装到 %s\n' "$bin_dir/bupt"
-case ":${PATH-}:" in
-    *":$bin_dir:"*) ;;
-    *)
-        if [ "$bin_dir" = "${HOME-}/.local/bin" ]; then
-            printf '%s\n' '在当前终端执行以下命令以启用 bupt' 'export PATH="$HOME/.local/bin:$PATH"'
-        else
-            printf '请将 %s 加入 PATH，或使用程序的完整路径。\n' "$bin_dir"
-        fi ;;
-esac
-printf '%s\n' '首次使用运行 bupt init，再运行 bupt login。AI agent 使用 bupt login --agent。'
+if [ "$#" -eq 0 ]; then
+    if configure_path; then
+        case ":${PATH-}:" in
+            *":$bin_dir:"*) printf '%s\n' '运行 bupt tui 打开工作台。' ;;
+            *) printf '%s\n' '新开终端运行 bupt tui，或现在运行 ~/.local/bin/bupt tui。' ;;
+        esac
+    else
+        printf '%s\n' '未能配置当前 shell 的 PATH。可直接运行 ~/.local/bin/bupt tui。' >&2
+    fi
+else
+    printf '打开工作台：%s/bupt tui\n' "$bin_dir"
+fi
 )
 install_bupt "$@"

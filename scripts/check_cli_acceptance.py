@@ -277,19 +277,19 @@ good.append(case("compute job run --instance lab --timeout 100ms --json -- true"
 fault = "job-finished"
 good.append(case("compute job wait audit-receipt --json", "job.get",
                  check=lambda r: not r.stderr and json.loads(r.stdout)["id"] == "audit-receipt"))
-# Execute the README shell example with the same isolated controller and inputs.
-readme = (Path(__file__).resolve().parents[1] / "README.md").read_text()
-section = readme.split("## 在 Pi、Codex 或 Claude Code 中使用", 1)[1].split("\n## ", 1)[0]
+# Execute the usage guide example with the same isolated controller and inputs.
+guide = (Path(__file__).resolve().parents[1] / "docs/usage.md").read_text()
+section = guide.split("### 用脚本提交作业", 1)[1].split("\n## ", 1)[0]
 example = re.search(r"```sh\n(.*?)\n```", section, re.S).group(1)
 shell = 'set -eu\nbupt() { ' + ' '.join(shlex.quote(arg) for arg in base) + ' "$@"; }\n'
 reqs.clear()
 demo = subprocess.run(["sh", "-c", shell + example], cwd=root, capture_output=True, timeout=5,
-                      env=dict(env, SPEC_ID="9", AUTHORIZED_RATE="12", REQUEST_KEY="readme-job"))
+                      env=dict(env, SPEC_ID="9", AUTHORIZED_RATE="12", REQUEST_KEY="guide-job"))
 runs = [q["params"] for q in reqs if q["method"] == "job.run"]
 success = (demo.returncode == 0 and not demo.stderr and len(runs) == 2 and runs[0].get("dry_run")
-           and not runs[1].get("dry_run") and runs[1]["idempotency_key"] == "readme-job"
+           and not runs[1].get("dry_run") and runs[1]["idempotency_key"] == "guide-job"
            and runs[1]["max_points_per_day"] == "12" and json.loads(demo.stdout.splitlines()[-1])["state"] == "done")
-print("PASS" if success else "FAIL", "README agent job example")
+print("PASS" if success else "FAIL", "usage guide job example")
 good.append(success)
 fault = "drop"
 good.append(case("compute job run --instance lab --detach --json -- true", "job.run", 1,

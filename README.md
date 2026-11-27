@@ -10,38 +10,9 @@
 curl -fsSL https://github.com/ppppangu/bupt-cli/releases/latest/download/install.sh | sh
 ```
 
-脚本自动识别系统和架构，校验 SHA-256，安装到 `~/.local/bin/bupt`。[离线安装包](https://github.com/ppppangu/bupt-cli/releases/latest) · [安装说明](packaging/使用说明.txt)
+装好后，在新终端运行 `bupt tui`，按提示设置并扫码登录。
 
-**交给 agent 安装**
-
-> 从 GitHub 仓库 `ppppangu/bupt-cli` 的最新 Release 下载并运行 `install.sh`，然后用 `~/.local/bin/bupt version --json` 验证安装。
-
-## 首次使用
-
-```sh
-export PATH="$HOME/.local/bin:$PATH"
-bupt init
-bupt login
-bupt tui
-```
-
-## 在 Pi、Codex 或 Claude Code 中使用
-
-让 agent 运行 `bupt login --agent`，展示 `qr_file` 指向的二维码。你扫码确认后，它用 `bupt auth poll --agent` 继续登录。[扫码选项](docs/usage.md#登录与凭据)
-
-```sh
-bupt status --json
-bupt compute catalog ls --jsonl
-# 从目录选取 SPEC_ID，查看预计日价
-bupt compute job run --spec "$SPEC_ID" --max-runtime 1h --dry-run --json -- python3 --version
-
-# AUTHORIZED_RATE 是你接受的日价上限（积分/天）。每次提交用唯一的 REQUEST_KEY，重试时复用。
-job_id=$(bupt compute job run --spec "$SPEC_ID" --max-runtime 1h \
-  --max-points-per-day "$AUTHORIZED_RATE" --idempotency-key "$REQUEST_KEY" \
-  --detach --output id -- python3 --version) && bupt compute job wait "$job_id" --json
-```
-
-等待超时，用同一作业 ID 再运行 `bupt compute job wait ID --json`。用 `bupt help --all --json` 查命令。
+[离线安装](packaging/使用说明.txt) · [Agent 用法](docs/usage.md#登录与凭据)
 
 ## 创建并连接 GPU 服务器
 

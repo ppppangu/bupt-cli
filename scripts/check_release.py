@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import stat
 import subprocess
 import tempfile
@@ -67,6 +68,45 @@ def run_online_installer(work, dest, env, *, ok=True):
     check((result.returncode == 0) == ok, result.stderr.decode() or "Unexpected online installer result")
 
 
+def check_shell_setup(bundle, work, env):
+    for shell in ("bash", "zsh", "fish", "sh"):
+        home = work / f"{shell} home"
+        home.mkdir()
+        config_dir = home / "shell configs"
+        paths = {
+            "bash": [home / ".bash_login", home / ".bashrc"],
+            "zsh": [config_dir / ".zshenv"],
+            "fish": [config_dir / "fish/conf.d/bupt-path.fish"],
+            "sh": [home / ".profile"],
+        }[shell]
+        for path in paths:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("# existing config", encoding="utf-8")
+        clean = dict(env, HOME=str(home), SHELL=f"/bin/{shell}", ZDOTDIR=str(config_dir),
+                     XDG_CONFIG_HOME=str(config_dir), PATH=os.defpath)
+        def install():
+            subprocess.run(["sh", str(bundle / "install.sh")], cwd=work, env=clean,
+                           check=True, capture_output=True)
+        install()
+        configs = [path.read_text() for path in paths]
+        install()
+        check(configs == [path.read_text() for path in paths], f"Duplicate PATH setup for {shell}")
+        check(all(text.startswith("# existing config\n") and ".local/bin" in text for text in configs),
+              f"Invalid PATH setup for {shell}")
+        check(not (home / ".bash_profile").exists(), "Installer shadowed an existing bash login file")
+        binary = str(home / ".local/bin/bupt")
+        if shell in ("bash", "sh"):
+            for path in paths:
+                output = subprocess.check_output([shell, "-c", '. "$1"; . "$1"; command -v bupt; echo "$PATH"',
+                                                  shell, str(path)], cwd=work, env=clean, text=True)
+                resolved, search_path = output.splitlines()
+                check(resolved == binary and search_path.split(":").count(str(Path(binary).parent)) == 1,
+                      f"PATH lookup failed after sourcing {path}")
+        elif executable := shutil.which(shell):
+            output = subprocess.check_output([executable, "-c", "command -v bupt"], cwd=work, env=clean, text=True)
+            check(output.strip() == binary, f"Fresh {shell} failed to find bupt")
+
+
 def main():
     version = os.environ.get("VERSION") or (ROOT / "VERSION").read_text().strip()
     with tempfile.TemporaryDirectory(prefix="bupt release check ") as tmp:
@@ -74,8 +114,9 @@ def main():
         bundle = verify_bundle(ROOT / "dist", version, work)
         dest = work / "local bin"
         binary = dest / "bupt"
-        env = dict(os.environ, XDG_CONFIG_HOME=str(work / "config"),
+        env = dict(os.environ, HOME=str(work), XDG_CONFIG_HOME=str(work / "config"),
                    XDG_STATE_HOME=str(work / "state"), XDG_DATA_HOME=str(work / "data"))
+        check_shell_setup(bundle, work, env)
         run_installer(bundle, dest, env)
         installed = subprocess.check_output([str(binary), "version", "--json"], cwd=work, env=env, text=True)
         check(json.loads(installed)["version"] == version, "Installed version mismatch")

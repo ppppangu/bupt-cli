@@ -337,6 +337,22 @@ bupt compute lease renew experiment --duration 30m --reason "finish current expe
 
 默认清理宽限为 60 秒。自动强制停机默认关闭，可以为当前操作或周期明确授予 `--force-stop`。需要立即强制停机时，显式执行 `compute instance stop INSTANCE --force`。认证过期、平台拒绝申请、网络不可达或拒绝强制停止时，工具会保留 `auth_required` / `cleanup_pending` 等状态，而不是声称资源已释放。运行上限是调度约束，不是学校平台在指定秒钟必定完成释放的承诺。
 
+### 用脚本提交作业
+
+```sh
+bupt status --json
+bupt compute catalog ls --jsonl
+# 从目录选取 SPEC_ID，查看预计日价
+bupt compute job run --spec "$SPEC_ID" --max-runtime 1h --dry-run --json -- python3 --version
+
+# AUTHORIZED_RATE 是你接受的日价上限（积分/天）。每次提交用唯一的 REQUEST_KEY，重试时复用。
+job_id=$(bupt compute job run --spec "$SPEC_ID" --max-runtime 1h \
+  --max-points-per-day "$AUTHORIZED_RATE" --idempotency-key "$REQUEST_KEY" \
+  --detach --output id -- python3 --version) && bupt compute job wait "$job_id" --json
+```
+
+等待超时，用同一作业 ID 再运行 `bupt compute job wait ID --json`。用 `bupt help --all --json` 查命令。
+
 ## 后台作业、长连接与文件
 
 ```sh
