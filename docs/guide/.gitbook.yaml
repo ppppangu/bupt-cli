@@ -8,6 +8,6 @@ redirects:
   zai-ai-agent-zhong-shi-yong-bupt: agents.md
   shen-qing-gpu-bing-lian-jie-ssh: gpu.md
   shi-yong-mo-xing-bing-sheng-cheng-diao-yong-dai-ma: models.md
-  shang-chuan-wen-jian-bing-yun-xing-hou-tai-zuo-ye: jobs.md
+  shang-chuan-wen-jian-bing-yun-xing-hou-tai-zuo-ye: gpu.md
   jie-jue-chang-jian-wen-ti: troubleshooting.md
   cha-kan-yuehe-zhang-dan: usage.md

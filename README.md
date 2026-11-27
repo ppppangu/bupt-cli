@@ -32,7 +32,7 @@ bupt tui
 | 查自己的实例和运行状态 | `bupt compute instance` |
 | 查最近 7 天的模型用量和算力账单 | `bupt usage --days 7` |
 
-在脚本里运行 `bupt api model --output id`，每行返回一个模型 ID。Pi、Codex 和 Claude Code 用 `bupt login --agent` 获取扫码图片。[Agent 登录](docs/guide/agents.md) · [脚本输出与退出码](docs/usage.md#脚本契约与命令迁移) · [作业与文件传输](docs/guide/jobs.md)
+在脚本里运行 `bupt api model --output id`，每行返回一个模型 ID。Pi、Codex 和 Claude Code 用 `bupt login --agent` 获取扫码图片。[Agent 登录](docs/guide/agents.md) · [脚本输出与退出码](docs/usage.md#脚本契约与命令迁移) · [GPU 实例与作业](docs/guide/gpu.md)
 
 ## 从申请 GPU 到连接 SSH
 
