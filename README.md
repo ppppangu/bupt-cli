@@ -10,7 +10,7 @@
 
 ## Quick Start · 安装
 
-在 macOS、Linux 或 WSL2 的终端运行（支持 x86_64 和 arm64）。[使用指南](docs/guide/README.md) · [离线安装说明](packaging/使用说明.txt)
+在 macOS、Linux 或 WSL2 的终端运行（支持 x86_64 和 arm64）。[使用指南](https://bupt-cli.gitbook.io/bupt-cli-docs/) · [离线安装说明](packaging/使用说明.txt)
 
 ```sh
 curl -fsSL https://github.com/ppppangu/bupt-cli/releases/latest/download/install.sh | sh
