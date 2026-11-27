@@ -1,6 +1,6 @@
 # bupt 使用手册
 
-第一次安装请打开随包的「使用说明.txt」。中继示例中的 `./dist/bupt-linux-amd64` 是从源码构建后的路径。使用师生安装包时，选择解压目录下 `bin/` 中与服务器架构对应的程序。
+第一次使用请从[安装与登录指南](guide/README.md)开始。本手册供查阅完整命令、运行策略和控制器配置。中继示例里的 `./dist/bupt-linux-amd64` 是源码构建路径。使用离线安装包时，选择解压目录下 `bin/` 中与服务器架构对应的程序。
 
 ## 从总览开始
 
@@ -136,13 +136,13 @@ bupt compute preset set small --spec '模板名称@版本' --max-runtime 2h
 # 也可以复制已有实例的资源选择：
 bupt compute preset set small --from INSTANCE_ID --max-runtime 2h
 bupt compute preset use small
-bupt compute instance start another-name
+bupt compute instance create another-name
 bupt compute preset ls
 ```
 
 `--spec` 接受 ID 或唯一的精确名称/版本；名称有歧义时拒绝猜测。显式 `--spec` 不继承另一模板的默认预设；`--preset ''` 临时禁用默认预设。`preset set/use/rm --project` 写入项目 `.bupt.toml`，全局与账号配置保留独立。预设仅影响后续请求，不改写正在运行的策略。
 
-`up` 先返回可持久保存的 Run ID 再等待就绪，等待进度写入 stderr。关闭终端或等待超时后可继续：
+创建实例后请保存操作 ID。关闭终端或等待超时后，运行 `bupt compute instance wait --operation 操作ID` 续等。持有托管周期的 Run ID 时，可以查看周期状态、续等或结束该周期。
 
 ```sh
 bupt compute lease wait RUN_ID                    # 继续等待准备完成，不重复分配
